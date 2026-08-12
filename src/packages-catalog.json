@@ -1,0 +1,909 @@
+[
+  {
+    "name": "@vigolium/piolium",
+    "description": "Multi-phase security audits with specialist sub-agents, isolated context windows, capped concurrency, and resumable state — packaged as a Pi extension.",
+    "author": "j3ssie",
+    "downloads": 478728,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-mcp-adapter",
+    "description": "MCP (Model Context Protocol) adapter extension for Pi coding agent",
+    "author": "nicopreme",
+    "downloads": 260068,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-web-access",
+    "description": "Web search, URL fetching, GitHub repo cloning, PDF extraction, YouTube video understanding, and local video analysis for Pi coding agent. Supports OpenAI, Brave, Parallel, TinyFish, Search1API, Searchinfinity, Querit, Tavily, SERPdive, Kagi, Ollama, AnySe",
+    "author": "nicopreme",
+    "downloads": 188996,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-subagents",
+    "description": "Pi extension for delegating tasks to subagents with chains, parallel execution, and TUI clarification",
+    "author": "nicopreme",
+    "downloads": 180533,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "context-mode",
+    "description": "MCP plugin that saves 98% of your context window. Works with Claude Code, Gemini CLI, VS Code Copilot, OpenCode, and Codex CLI. Sandboxed code execution, FTS5 knowledge base, and intent-driven search.",
+    "author": "mksglu",
+    "downloads": 74485,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@tintinweb/pi-subagents",
+    "description": "A pi extension extension that brings smart Claude Code-style autonomous sub-agents to pi.",
+    "author": "tintinweb",
+    "downloads": 43055,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@juicesharp/rpiv-ask-user-question",
+    "description": "Pi extension. A structured questionnaire the model can put to you when it would otherwise guess, with typed options instead of free-form replies.",
+    "author": "juicesharp",
+    "downloads": 42764,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-lens",
+    "description": "Real-time code feedback for pi — LSP, linters, formatters, type-checking, structural analysis & booboo",
+    "author": "apmantza",
+    "downloads": 41758,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@remnic/plugin-pi",
+    "description": "Remnic memory extension for Pi Coding Agent",
+    "author": "joshuaswarren",
+    "downloads": 40396,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@dietrichgebert/ponytail",
+    "description": "Lazy senior dev mode for AI agents. The best code is the code you never wrote.",
+    "author": "dietrichgebert",
+    "downloads": 36146,
+    "types": [
+      "skill"
+    ]
+  },
+  {
+    "name": "bigpowers",
+    "description": "73 agent skills synthesizing 17 years of software engineering discipline into a prescriptive methodology for solo developers",
+    "author": "danielvm",
+    "downloads": 35796,
+    "types": [
+      "skill"
+    ]
+  },
+  {
+    "name": "@plannotator/pi-extension",
+    "description": "Plannotator Pi extension - interactive plan review with annotations, annotate agent messages, and review code/PRs",
+    "author": "backnotprop",
+    "downloads": 35471,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@juicesharp/rpiv-todo",
+    "description": "Pi extension. A todo list for the model, rendered as a live overlay that survives /reload and conversation compaction.",
+    "author": "juicesharp",
+    "downloads": 34634,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@7n/rules",
+    "description": "CLI еталонних правил і skills (префікс n-): синк у репозиторій, дельта-lint, конформність",
+    "author": "vitaliytv",
+    "downloads": 32922,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@gotgenes/pi-permission-system",
+    "description": "Permission enforcement extension for the Pi coding agent.",
+    "author": "gotgenes",
+    "downloads": 31022,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@quintinshaw/pi-dynamic-workflows",
+    "description": "Claude-Code-style dynamic workflows for Pi — fan a task out across 100s of subagents with real model routing, token/cost accounting, resume, git-worktree isolation, an interactive /workflows TUI, and a real /deep-research.",
+    "author": "quintinshaw",
+    "downloads": 28370,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "pi-simplify",
+    "description": "A Pi extension that reviews recently changed code for clarity, consistency, and maintainability.",
+    "author": "mdevy",
+    "downloads": 28336,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@nitra/cursor",
+    "description": "CLI для завантаження cursor-правил (префікс n-) у локальний репозиторій",
+    "author": "vitaliytv",
+    "downloads": 27690,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@ff-labs/pi-fff",
+    "description": "pi extension: FFF-powered fuzzy file and content search",
+    "author": "dmtr.kovalenko",
+    "downloads": 27176,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-goal-list-loop-audit",
+    "description": "Mission control for autonomous pi: interview-drafted goals, an audited task queue, and forever-loops (metric, spec, project-audit) that run for hours. An isolated extension-less auditor re-verifies every completion with raw evidence; confirmed drafts, dec",
+    "author": "dracond",
+    "downloads": 26235,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@narumitw/pi-goal",
+    "description": "Pi extension for autonomous /goal completion with opt-in experimental ordered queues.",
+    "author": "narumitw",
+    "downloads": 24224,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@raindrop-ai/pi-agent",
+    "description": "Raindrop observability for Pi Agent — automatic tracing via subscriber or pi-coding-agent extension",
+    "author": "rsd-raindrop",
+    "downloads": 23611,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@tangle-network/tcloud-agent",
+    "description": "Agent run-loop primitive over Tangle sandbox transports — runs an AgentProfile against a brief with criterion gates, budget caps, and streaming events. Includes TangleToolProvider for Pi tool integration.",
+    "author": "vutuanlinh2k2",
+    "downloads": 23267,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "pi-fabric",
+    "description": "A programmable tool and agent runtime for Pi",
+    "author": "monotykamary",
+    "downloads": 22847,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@mjasnikovs/pi-task",
+    "description": "Deterministic task planning and spec-orchestration for local models — crash-safe /task pipelines with verify/enforce gates, a real-time remote web view, and web/docs/fetch/worker subagent tools.",
+    "author": "mjasnikovs",
+    "downloads": 20773,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-hermes-memory",
+    "description": "🧠 Persistent memory + 🔍 session search + 🛡️ secret scanning for Pi. Token-aware policy-only memory by default, SQLite FTS5 search, auto-consolidation, procedural skills. 732 tests. Ported from Hermes agent.",
+    "author": "chandra447",
+    "downloads": 19357,
+    "types": [
+      "extension",
+      "skill"
+    ]
+  },
+  {
+    "name": "@danypops/papyrus",
+    "description": "Daemon-backed graph artifacts, evidence-bearing tasks, rules, skills, and native TUI workflows for Pi",
+    "author": "danypops",
+    "downloads": 17732,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "pi-intercom",
+    "description": "<p> <img src=\"banner.png\" alt=\"pi-intercom\" width=\"1100\"> </p>",
+    "author": "nicopreme",
+    "downloads": 16683,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@narumitw/pi-lsp",
+    "description": "Pi extension that exposes configurable, language-agnostic LSP tools through a shared runner.",
+    "author": "narumitw",
+    "downloads": 15434,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@narumitw/pi-plan-mode",
+    "description": "Pi extension that adds a Codex-like read-only /plan collaboration mode.",
+    "author": "narumitw",
+    "downloads": 15213,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "gentle-pi",
+    "description": "Turn Pi into el Gentleman: a senior-architect development harness with SDD/OpenSpec, subagents, strict TDD evidence, review guardrails, and skill discovery.",
+    "author": "alan_buscaglia",
+    "downloads": 14912,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@llblab/pi-telegram",
+    "description": "Telegram runtime adapter for Pi",
+    "author": "llblab",
+    "downloads": 14434,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-hashline-edit-pro",
+    "description": "Strict hashline read/replace tool for pi-coding-agent with hash-anchored edits (3-char, 62-symbol, perfect hashing)",
+    "author": "yugimob",
+    "downloads": 14307,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-prompt-template-model",
+    "description": "Prompt template model selector extension for pi coding agent",
+    "author": "nicopreme",
+    "downloads": 14266,
+    "types": [
+      "extension",
+      "prompt"
+    ]
+  },
+  {
+    "name": "pi-readseek",
+    "description": "Pi extension for LINE:HASH-anchored file operations and structural code navigation",
+    "author": "jarkkojs",
+    "downloads": 14127,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-landstrip",
+    "description": "Sandboxed Bash and process-backed agents for Pi",
+    "author": "jarkkojs",
+    "downloads": 14095,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@hypabolic/pi-hypa",
+    "description": "Pi extension that keeps noisy tool output out of your context window. Automatically rewrites shell commands through Hypa for local, deterministic compression, context-aware file tools, and recoverable evidence.",
+    "author": "atomic-mg",
+    "downloads": 13993,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "pi-memory",
+    "description": "Pi coding agent extension for memory with qmd-powered semantic search across daily logs, long-term memory, and scratchpad",
+    "author": "jayzeng",
+    "downloads": 13842,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@braintrust/pi-extension",
+    "description": "Braintrust extension for pi. Includes automatic tracing for pi sessions, turns, LLM calls, and tool executions to Braintrust.",
+    "author": "braintrust",
+    "downloads": 13679,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "pi-powerline-footer",
+    "description": "Powerline-style status bar extension for pi coding agent",
+    "author": "nicopreme",
+    "downloads": 13287,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "opencode-codebase-index",
+    "description": "Host-neutral semantic codebase search with embeddings, symbol discovery, and call-graph tooling",
+    "author": "helweg",
+    "downloads": 12544,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@howaboua/pi-codex-conversion",
+    "description": "Codex-oriented tool and prompt adapter for pi coding agent",
+    "author": "howaboua",
+    "downloads": 12256,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-agent-browser-native",
+    "description": "pi extension that exposes agent-browser as a native tool for browser automation",
+    "author": "fitchmultz",
+    "downloads": 11668,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@juicesharp/rpiv-voice",
+    "description": "Pi extension. Voice dictation via /voice — local on-device STT with sherpa-onnx Whisper (base multilingual int8), microphone capture via decibri.",
+    "author": "juicesharp",
+    "downloads": 11625,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-vault-mind",
+    "description": "Passive Obsidian vault extension for pi. Watches @agent markers, dispatches forked subagents (Miner, Broadcaster, Heavy-Lifter), stores in LanceDB with vector + FTS + graph. Multi-agent 'Drop & Forget' workflow for the pi agent ecosystem.",
+    "author": "kylebrodeur",
+    "downloads": 11173,
+    "types": [
+      "extension",
+      "skill"
+    ]
+  },
+  {
+    "name": "pi-rtk-optimizer",
+    "description": "Pi extension that optimizes RTK command rewriting and tool output compaction for the coding agent.",
+    "author": "masurii",
+    "downloads": 10976,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-deepseek-search",
+    "description": "Web search for Pi using DeepSeek's server side search. Only works with DeepSeek models.",
+    "author": "bxff",
+    "downloads": 10960,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-crew",
+    "description": "Pi extension for coordinated AI teams, workflows, worktrees, and async task orchestration",
+    "author": "bom0792",
+    "downloads": 10902,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "open-zk-kb",
+    "description": "Persistent memory for agents. Corrections stick, context compounds, every session starts smarter.",
+    "author": "tyudjk65y",
+    "downloads": 10446,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "projectops",
+    "description": "ProjectOps — 완전 자동화 GitHub 프로젝트 관리 템플릿 통합 CLI",
+    "author": "suhsaechan",
+    "downloads": 10233,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@ollama/pi-web-search",
+    "description": "Web search and fetch tools for Pi agent - uses Ollama's web search and fetch APIs",
+    "author": "jmorgan",
+    "downloads": 10117,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-goosedump",
+    "description": "Pi extension for goosedump session search, durable memory, and compaction",
+    "author": "jarkkojs",
+    "downloads": 10056,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "glimpseui",
+    "description": "Native micro-UI for scripts and agents — cross-platform WebView windows with bidirectional JSON communication",
+    "author": "haza",
+    "downloads": 9900,
+    "types": [
+      "prompt"
+    ]
+  },
+  {
+    "name": "@pi-stef/atlassian",
+    "description": "Pi extension and CLI for verified Atlassian Jira and Confluence tools.",
+    "author": "sfiorini",
+    "downloads": 9869,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@narumitw/pi-statusline",
+    "description": "Pi extension that replaces the footer with an information-rich statusline.",
+    "author": "narumitw",
+    "downloads": 9744,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-cursor-sdk",
+    "description": "pi provider extension backed by @cursor/sdk local and cloud agents",
+    "author": "fitchmultz",
+    "downloads": 9660,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-lmstudio",
+    "description": "LM Studio model provider extension for Pi coding agent",
+    "author": "stakira",
+    "downloads": 9517,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "pi-ask-user",
+    "description": "Interactive ask_user tool for pi-coding-agent with searchable split-pane selection UI, multi-select, and freeform input",
+    "author": "edlsh",
+    "downloads": 9423,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "superpowers-zh",
+    "description": "AI 编程超能力中文增强版 — superpowers（250k+ ⭐）完整汉化 + 4 个中国原创 skills，支持 Claude Code / Copilot CLI / Hermes Agent / Cursor / Claw Code / Windsurf / Kiro / Gemini CLI / Qoder 等 20 款工具",
+    "author": "jnmetacode",
+    "downloads": 9270,
+    "types": [
+      "skill"
+    ]
+  },
+  {
+    "name": "@reddb-io/red-skills-dev",
+    "description": "reddb.io dev plugin - engineering skills for code agents (autonomous /afk loop, /go dispatch, triage, tdd, diagnose, graph-aware codebase understanding, ...)",
+    "author": "fforattini",
+    "downloads": 8721,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "pi-cc-extensions",
+    "description": "A Pi productivity suite with Claude Code-style UI, fixed editor, context inspection, and agent/session references",
+    "author": "minuque",
+    "downloads": 8607,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@reddb-io/red-skills-memory",
+    "description": "reddb.io memory plugin - governed operational memory for code agents that lives on top of dev. Supports markdown notes, RedDB graph memory, zero-token governed recall, context packs, claim checks, readiness, optional lifecycle hooks, MCP/HTTP read surface",
+    "author": "fforattini",
+    "downloads": 8568,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "cc-safety-net",
+    "description": "A coding agent CLI hook - block destructive git and filesystem commands before execution",
+    "author": "kenryu",
+    "downloads": 8549,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@reddb-io/red-skills-brain",
+    "description": "reddb.io brain plugin - project-local RedDB knowledge repository for freeform captures and graph connections.",
+    "author": "fforattini",
+    "downloads": 8544,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@devflow-tools/claude-code-plugin",
+    "description": "DevFlow — Developer Intelligence Platform for Claude Code",
+    "author": "shilongfei",
+    "downloads": 8520,
+    "types": [
+      "skill"
+    ]
+  },
+  {
+    "name": "pi-llama-cpp",
+    "description": "Pi extension for llama.cpp integration. Supports router, single and legacy models. Supports multiple servers.",
+    "author": "gsanhueza",
+    "downloads": 8520,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@narumitw/pi-btw",
+    "description": "Pi extension that adds a /btw side-question command.",
+    "author": "narumitw",
+    "downloads": 8410,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@alexanderfortin/pi-deepseek-usage",
+    "description": "Pi extension for monitoring DeepSeek API balance",
+    "author": "alexanderfortin",
+    "downloads": 8406,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-markdown-preview",
+    "description": "Rendered markdown + LaTeX preview for pi, with terminal, browser, and PDF output",
+    "author": "omacl",
+    "downloads": 8326,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@agimon-ai/log-sink-mcp",
+    "description": "Log sink MCP server with HTTP ingestion and AI analysis",
+    "author": "agiflow-ai",
+    "downloads": 8214,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@juicesharp/rpiv-web-tools",
+    "description": "Pi extension. Web search and fetch for the model with pluggable providers (Brave, Tavily, Serper, Exa, You.com, Jina, Firecrawl, Perplexity, SearXNG, Ollama).",
+    "author": "juicesharp",
+    "downloads": 8148,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-btw",
+    "description": "A pi extension for parallel side conversations with /btw",
+    "author": "dbachelder",
+    "downloads": 8119,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-provider-litellm",
+    "description": "LiteLLM proxy provider extension for Pi",
+    "author": "balcsida",
+    "downloads": 7926,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-lean-ctx",
+    "description": "Pi Coding Agent extension — routes bash/read/grep/find/ls through lean-ctx for strong token savings. The embedded MCP bridge (on by default) adds a persistent session cache so unchanged re-reads cost ~13 tokens.",
+    "author": "pounce_ch",
+    "downloads": 7680,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "pi-mcp-extension",
+    "description": "MCP (Model Context Protocol) client extension for the Pi coding agent — connect Pi to any MCP server",
+    "author": "irahardianto",
+    "downloads": 7536,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "latchkey",
+    "description": "A CLI tool that injects API credentials into curl requests to third-party services",
+    "author": "hynek-urban",
+    "downloads": 7520,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "pi-codex-goal",
+    "description": "Codex-style goal tracking and continuation for pi.",
+    "author": "fitchmultz",
+    "downloads": 7437,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@firstpick/pi-package-webui",
+    "description": "Pi Web UI companion package with a local browser UI CLI plus /webui-start and /webui-status commands.",
+    "author": "firstpick",
+    "downloads": 7436,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-interview",
+    "description": "Interactive interview form extension for pi coding agent",
+    "author": "nicopreme",
+    "downloads": 7430,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-zentui",
+    "description": "A Starship-inspired statusline and Opencode-style TUI for Pi.",
+    "author": "lmilojevic",
+    "downloads": 7270,
+    "types": [
+      "extension",
+      "theme"
+    ]
+  },
+  {
+    "name": "betterwright",
+    "description": "A persistent, policy-guarded Playwright browser for AI agents with network controls, trusted credential filling, proof screenshots, and CAPTCHA helpers.",
+    "author": "curiosityos",
+    "downloads": 7247,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@ayulab/pi-rewind",
+    "description": "Pi extension providing /rewind checkpoint navigation",
+    "author": "ayu.exorcist",
+    "downloads": 7207,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-harness-runtime",
+    "description": "[BETA] Codex-style /usage status + autonomous coding harness for pi. Not production ready — expect breaking changes.",
+    "author": "manotluijiu",
+    "downloads": 7174,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "mitsupi",
+    "description": "Armin's pi coding agent commands, skills, extensions, and themes",
+    "author": "mitsuhiko",
+    "downloads": 7000,
+    "types": [
+      "extension",
+      "skill",
+      "theme"
+    ]
+  },
+  {
+    "name": "@runfusion/fusion",
+    "description": "Fusion CLI: HTTP API server, daemon, dashboard launcher, and task tooling for the Fusion AI coding agent.",
+    "author": "gsxdsm",
+    "downloads": 6890,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@shanepadgett/tau-agent",
+    "description": "Tau is a custom agentic harness built with pi extensions",
+    "author": "shanepadgett",
+    "downloads": 6831,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "gentle-engram",
+    "description": "Persistent memory for Pi agents — one local-or-cloud brain shared across sessions, compactions, and MCP agents",
+    "author": "alan_buscaglia",
+    "downloads": 6785,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@narumitw/pi-subagents",
+    "description": "Pi extension for delegating work to specialized isolated subagents.",
+    "author": "narumitw",
+    "downloads": 6737,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pi-subagents-j0k3r",
+    "description": "Installable Pi package that adds markdown-defined subagents, delegated task tools, history, and model profiles.",
+    "author": "j0k3r-dev-rgl",
+    "downloads": 6699,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@narumitw/pi-codex-usage",
+    "description": "Pi extension that shows Codex ChatGPT subscription usage without requiring Codex CLI.",
+    "author": "narumitw",
+    "downloads": 6696,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@xynogen/pix-pretty",
+    "description": "Enhanced tool output rendering with syntax highlighting, file icons, tree views, diff rendering, and FFF search",
+    "author": "xynogen",
+    "downloads": 6647,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@amaster.ai/pi-image-gen",
+    "description": "Pi extension for image generation via OpenAI gpt-image, Google Nano Banana (Gemini), Alibaba Qwen-Image, OpenRouter, and custom providers.",
+    "author": "qianchuan",
+    "downloads": 6642,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@juicesharp/rpiv-advisor",
+    "description": "Pi extension. A second opinion the model can request from a stronger reviewer model before it acts.",
+    "author": "juicesharp",
+    "downloads": 6555,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "pire-browser",
+    "description": "Cross-platform Pi extension and Firefox bridge for local browser automation",
+    "author": "ryenw",
+    "downloads": 6547,
+    "types": [
+      "extension",
+      "skill"
+    ]
+  },
+  {
+    "name": "@juanibiapina/pi-extension-settings",
+    "description": "Pi extension for centralized settings management across extensions",
+    "author": "juanibiapina",
+    "downloads": 6486,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@xaccefy/pi-xpi",
+    "description": "XPI — offensive security tools for Pi Agent. Casefile tracking, web search, library docs, exploit technique search, and todo tracking.",
+    "author": "xaccefy",
+    "downloads": 6407,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@reddb-io/red-skills-internal",
+    "description": "reddb.io internal plugin - maintainer-only skills for operating the red-skills repository.",
+    "author": "fforattini",
+    "downloads": 6350,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@narumitw/pi-chrome-devtools",
+    "description": "Pi extension that exposes Chrome DevTools Protocol tools.",
+    "author": "narumitw",
+    "downloads": 6341,
+    "types": [
+      "extension"
+    ]
+  },
+  {
+    "name": "@selesai/code",
+    "description": "Maintained, extension-first Pi coding agent with built-in workflows, subagents, web research, questions, skills, and an enhanced terminal UI.",
+    "author": "selesai",
+    "downloads": 6277,
+    "types": [
+      "package"
+    ]
+  },
+  {
+    "name": "@danypops/pi-packed",
+    "description": "Pi package lifecycle, validation, daemon, tools, profiles, and TUI",
+    "author": "danypops",
+    "downloads": 6168,
+    "types": [
+      "package"
+    ]
+  }
+]

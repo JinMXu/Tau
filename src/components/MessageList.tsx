@@ -1,0 +1,604 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { openPath } from "@tauri-apps/plugin-opener";
+import type { Block, ChatMessage } from "../chat-types";
+import type { MessageCatalog } from "../i18n";
+import {
+	BoltIcon,
+	BranchIcon,
+	CheckIcon,
+	ChevronDownIcon,
+	CopyIcon,
+	FileIcon,
+	FolderOpenIcon,
+	LoaderIcon,
+	SearchIcon,
+	SparkleIcon,
+	TerminalIcon,
+} from "../icons";
+import { Markdown } from "./Markdown";
+
+const toolIcon = (name: string, size = 14) => {
+	const key = name.toLowerCase();
+	if (key.startsWith("bash") || key.startsWith("exec") || key.startsWith("shell"))
+		return <TerminalIcon size={size} />;
+	if (key.startsWith("read") || key.startsWith("ls") || key.startsWith("find"))
+		return <FolderOpenIcon size={size} />;
+	if (key.startsWith("write") || key.startsWith("edit"))
+		return <FileIcon size={size} />;
+	if (key.startsWith("grep") || key.startsWith("search") || key.startsWith("web"))
+		return <SearchIcon size={size} />;
+	if (key.includes("apply") || key.includes("patch"))
+		return <BoltIcon size={size} />;
+	return <SparkleIcon size={size} />;
+};
+
+/** Keys worth surfacing as the one-line summary of a tool call. */
+const SUMMARY_KEYS = ["path", "file_path", "command", "pattern", "query", "url"];
+
+function toolSummary(args: string): string | null {
+	try {
+		const parsed = JSON.parse(args) as Record<string, unknown>;
+		for (const key of SUMMARY_KEYS) {
+			const value = parsed[key];
+			if (typeof value === "string" && value.trim()) return value.trim();
+		}
+		return null;
+	} catch {
+		/* args may be partial while streaming */
+		return null;
+	}
+}
+
+type ToolBlockT = Extract<Block, { kind: "tool" }>;
+
+/** Lines of tool output shown inline before the rest is tucked behind a toggle. */
+const OUTPUT_PREVIEW_LINES = 8;
+
+function ToolOutput({ text, error }: { text: string; error?: boolean }) {
+	const [expanded, setExpanded] = useState(false);
+	const body = text.replace(/\n+$/, "");
+	const lineCount = body ? body.split("\n").length : 0;
+	const truncated = lineCount > OUTPUT_PREVIEW_LINES;
+	return (
+		<div className={`tool-output${error ? " error" : ""}`}>
+			{body.trim() ? (
+				<pre className={truncated && !expanded ? "clamped" : undefined}>
+					{body}
+				</pre>
+			) : (
+				<div className="tool-output-empty">(no output)</div>
+			)}
+			{truncated && (
+				<button
+					className="tool-output-toggle"
+					onClick={() => setExpanded((v) => !v)}
+				>
+					{expanded ? "Show less" : `Show all ${lineCount} lines`}
+				</button>
+			)}
+		</div>
+	);
+}
+
+type DiffLine = { type: "ctx" | "del" | "add"; text: string };
+
+/** LCS line diff. Huge inputs degrade to whole-block old/new display. */
+function computeLineDiff(oldText: string, newText: string): DiffLine[] {
+	const a = oldText.replace(/\n$/, "").split("\n");
+	const b = newText.replace(/\n$/, "").split("\n");
+	const n = a.length;
+	const m = b.length;
+	if (n * m > 1_000_000) {
+		return [
+			...a.map((text): DiffLine => ({ type: "del", text })),
+			...b.map((text): DiffLine => ({ type: "add", text })),
+		];
+	}
+	const width = m + 1;
+	const dp = new Uint32Array((n + 1) * width);
+	for (let i = n - 1; i >= 0; i--) {
+		for (let j = m - 1; j >= 0; j--) {
+			dp[i * width + j] =
+				a[i] === b[j]
+					? dp[(i + 1) * width + j + 1] + 1
+					: Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1]);
+		}
+	}
+	const out: DiffLine[] = [];
+	let i = 0;
+	let j = 0;
+	while (i < n && j < m) {
+		if (a[i] === b[j]) {
+			out.push({ type: "ctx", text: a[i] });
+			i++;
+			j++;
+		} else if (dp[(i + 1) * width + j] >= dp[i * width + j + 1]) {
+			out.push({ type: "del", text: a[i] });
+			i++;
+		} else {
+			out.push({ type: "add", text: b[j] });
+			j++;
+		}
+	}
+	while (i < n) out.push({ type: "del", text: a[i++] });
+	while (j < m) out.push({ type: "add", text: b[j++] });
+	return out;
+}
+
+/**
+ * Diff blocks for edit/write-style tool args. Pi's `edit` tool takes an
+ * `edits: [{oldText, newText}, …]` array (multiple hunks per call), so each
+ * hunk becomes its own block. Returns null for non-file tools or while the
+ * JSON is still streaming in.
+ */
+function diffBlocksFromArgs(
+	args: string,
+): { label: string; lines: DiffLine[] }[] | null {
+	let parsed: Record<string, unknown>;
+	try {
+		parsed = JSON.parse(args) as Record<string, unknown>;
+	} catch {
+		return null; // args may be partial while streaming
+	}
+	const { edits, old_string, new_string, content, path, file_path, command } =
+		parsed;
+	const blocks: { label: string; lines: DiffLine[] }[] = [];
+	if (Array.isArray(edits) && edits.length > 0) {
+		const multi = edits.length > 1;
+		for (const item of edits) {
+			if (!item || typeof item !== "object") continue;
+			const rec = item as Record<string, unknown>;
+			const oldText = rec.oldText ?? rec.old_string;
+			const newText = rec.newText ?? rec.new_string;
+			if (typeof oldText === "string" && typeof newText === "string") {
+				blocks.push({
+					label: multi ? `edit ${blocks.length + 1}/${edits.length}` : "",
+					lines: computeLineDiff(oldText, newText),
+				});
+			}
+		}
+		return blocks.length ? blocks : null;
+	}
+	if (typeof old_string === "string" && typeof new_string === "string") {
+		return [{ label: "", lines: computeLineDiff(old_string, new_string) }];
+	}
+	if (
+		typeof content === "string" &&
+		typeof command !== "string" &&
+		(typeof path === "string" || typeof file_path === "string")
+	) {
+		return [
+			{
+				label: "",
+				lines: content
+					.replace(/\n$/, "")
+					.split("\n")
+					.map((text): DiffLine => ({ type: "add", text })),
+			},
+		];
+	}
+	return null;
+}
+
+function DiffView({
+	lines,
+	label,
+}: {
+	lines: DiffLine[];
+	label?: string;
+}) {
+	const [expanded, setExpanded] = useState(false);
+	const truncated = lines.length > OUTPUT_PREVIEW_LINES;
+	return (
+		<div className="tool-diff">
+			{label && <div className="diff-label">{label}</div>}
+			<pre className={truncated && !expanded ? "clamped" : undefined}>
+				{lines.map((l, i) => (
+					<span key={i} className={`diff-line ${l.type}`}>
+						<span className="diff-sign">
+							{l.type === "add" ? "+" : l.type === "del" ? "-" : " "}
+						</span>
+						{l.text}
+					</span>
+				))}
+			</pre>
+			{truncated && (
+				<button
+					className="tool-output-toggle"
+					onClick={() => setExpanded((v) => !v)}
+				>
+					{expanded ? "Show less" : `Show all ${lines.length} lines`}
+				</button>
+			)}
+		</div>
+	);
+}
+
+function ToolCard({
+	block,
+	result,
+	running,
+}: {
+	block: ToolBlockT;
+	/** The call's output — attached from the following tool-result message,
+	 * or the block itself when this card renders an orphan result. */
+	result?: ToolBlockT | null;
+	running: boolean;
+}) {
+	const [showArgs, setShowArgs] = useState(false);
+	const prettyName = block.name
+		.split("_")
+		.map((s) => s[0]?.toUpperCase() + s.slice(1))
+		.join(" ");
+	// For tool results the body is the tool's output, not call arguments, so
+	// skip the argument summary and the "open file" quick action.
+	let filePath: string | null = null;
+	let summary: string | null = null;
+	if (!block.result) {
+		try {
+			const parsed = JSON.parse(block.args) as { path?: unknown };
+			if (typeof parsed.path === "string" && parsed.path.trim()) {
+				filePath = parsed.path.trim();
+			}
+		} catch {
+			/* args may be partial while streaming */
+		}
+		summary = toolSummary(block.args);
+	}
+	const error = block.error || result?.error;
+	const toggleArgs = block.result
+		? undefined
+		: () => setShowArgs((v) => !v);
+	// Edit/write-style calls surface their changes as inline line diffs.
+	const diffBlocks = useMemo(
+		() => (block.result ? null : diffBlocksFromArgs(block.args)),
+		[block.result, block.args],
+	);
+	let diffAdd = 0;
+	let diffDel = 0;
+	if (diffBlocks) {
+		for (const b of diffBlocks) {
+			for (const l of b.lines) {
+				if (l.type === "add") diffAdd++;
+				else if (l.type === "del") diffDel++;
+			}
+		}
+	}
+	return (
+		<div
+			className={`tool-card${block.result ? " result" : ""}${error ? " error" : ""}${showArgs ? " args-open" : ""}`}
+		>
+			<div
+				className="tool-head"
+				role={toggleArgs ? "button" : undefined}
+				tabIndex={toggleArgs ? 0 : undefined}
+				aria-expanded={toggleArgs ? showArgs : undefined}
+				onClick={toggleArgs}
+				onKeyDown={
+					toggleArgs
+						? (e) => {
+								if (e.key === "Enter" || e.key === " ") {
+									e.preventDefault();
+									toggleArgs();
+								}
+							}
+						: undefined
+				}
+			>
+				<span
+					className={`tool-status${running ? " running" : ""}${error ? " error" : ""}`}
+				/>
+				<span className="tool-icon">{toolIcon(block.name)}</span>
+				<span className="tool-name">{prettyName || "tool"}</span>
+				{block.result && (
+					<span className="tool-result-label">
+						{block.error ? "error" : "result"}
+					</span>
+				)}
+				{summary && <span className="tool-summary">{summary}</span>}
+				{diffBlocks && (diffAdd > 0 || diffDel > 0) && (
+					<span className="diff-stats">
+						{diffDel > 0 && <span className="del">-{diffDel}</span>}
+						{diffAdd > 0 && <span className="add">+{diffAdd}</span>}
+					</span>
+				)}
+				{toggleArgs && (
+					<ChevronDownIcon
+						size={12}
+						className={`tool-chevron${showArgs ? " open" : ""}`}
+					/>
+				)}
+			</div>
+			{showArgs && !block.result && (
+				<>
+					<pre className="tool-args">{block.args}</pre>
+					{filePath && (
+						<div className="tool-file-actions">
+							<button onClick={() => void openPath(filePath)}>
+								<FileIcon size={12} />
+								<span>{filePath}</span>
+							</button>
+						</div>
+					)}
+				</>
+			)}
+			{diffBlocks && diffBlocks.length > 0 && (
+				<div className="tool-diffs">
+					{diffBlocks.map((b, i) => (
+						<DiffView
+							key={i}
+							lines={b.lines}
+							label={b.label || undefined}
+						/>
+					))}
+				</div>
+			)}
+			{result && <ToolOutput text={result.args} error={result.error} />}
+		</div>
+	);
+}
+
+function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }) {
+	return (
+		<details className="thinking-block">
+			<summary>
+				<span className={`thinking-dot${streaming ? " pulse" : ""}`} />
+				<span className="thinking-label">thinking</span>
+				<ChevronDownIcon size={12} className="tool-chevron" />
+			</summary>
+			<div className="thinking-body">{text}</div>
+		</details>
+	);
+}
+
+function AssistantFooter({ message }: { message: ChatMessage }) {
+	return (
+		<div className="assistant-footer">
+			<span className="assistant-name">Pi</span>
+			{message.replay && <span className="replay-badge">history</span>}
+		</div>
+	);
+}
+
+/** Single-message copy helpers (hover actions on each message row). */
+function messageToPlainText(m: ChatMessage): string {
+	return m.blocks
+		.filter((b) => b.kind === "text")
+		.map((b) => b.text)
+		.join("\n\n");
+}
+
+function messageToMarkdown(m: ChatMessage): string {
+	const role = m.role === "user" ? "User" : "Pi";
+	const parts = m.blocks
+		.map((b) => {
+			if (b.kind === "text") return b.text;
+			if (b.kind === "thinking")
+				return `<details><summary>thinking</summary>\n\n${b.text}\n</details>`;
+			return `<details><summary>tool: ${b.name}</summary>\n\n\`\`\`json\n${b.args}\n\`\`\`\n</details>`;
+		})
+		.filter(Boolean);
+	if (!parts.length) return "";
+	return `**${role}**:\n${parts.join("\n\n")}`;
+}
+
+function formatTime(ts?: string): string | null {
+	if (!ts) return null;
+	const d = new Date(ts);
+	if (Number.isNaN(d.getTime())) return null;
+	return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+export function TurnWaitIndicator() {
+	return (
+		<div className="turn-wait">
+			<LoaderIcon size={14} className="spin" />
+			<span>Pi is thinking…</span>
+		</div>
+	);
+}
+
+export function MessageList({
+	messages,
+	streaming,
+	autoScroll,
+	onFork,
+	t,
+}: {
+	messages: ChatMessage[];
+	streaming: boolean;
+	autoScroll?: boolean;
+	onFork?: (entryId: string) => void;
+	t: MessageCatalog;
+}) {
+	const scrollRef = useRef<HTMLDivElement>(null);
+	const [copiedId, setCopiedId] = useState<string | null>(null);
+	// Start "stuck" so the view lands at the latest message when a session
+	// (or history) is loaded; only the user's own scrolling can unstick it.
+	const stickRef = useRef(true);
+
+	// The ref element (`.messages`) grows with content; the actual scroll
+	// container is its parent `.chat-scroll`, so scroll that instead.
+	const follow = useCallback(() => {
+		if (autoScroll === false) return;
+		const el = scrollRef.current;
+		const scroller = el?.parentElement;
+		if (!el || !scroller) return;
+		if (stickRef.current) {
+			scroller.scrollTop = scroller.scrollHeight;
+		}
+	}, [autoScroll]);
+
+	// Follow growth driven by React state (streaming deltas, message end,
+	// history load…).
+	useEffect(() => {
+		follow();
+	}, [messages, streaming, autoScroll, follow]);
+
+	// Also follow growth that never re-renders: async content (images, fonts),
+	// the turn-wait indicator, window resizes.
+	useEffect(() => {
+		const el = scrollRef.current;
+		const scroller = el?.parentElement;
+		if (!el || !scroller) return;
+		const resizeObserver = new ResizeObserver(follow);
+		resizeObserver.observe(el);
+		resizeObserver.observe(scroller);
+		const mutationObserver = new MutationObserver(follow);
+		mutationObserver.observe(scroller, { childList: true, subtree: true });
+		// User intent: scrolling away unsticks, scrolling back to the bottom
+		// re-sticks.
+		const onScroll = () => {
+			stickRef.current =
+				scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <
+				120;
+		};
+		scroller.addEventListener("scroll", onScroll, { passive: true });
+		return () => {
+			resizeObserver.disconnect();
+			mutationObserver.disconnect();
+			scroller.removeEventListener("scroll", onScroll);
+		};
+	}, [follow]);
+
+	// Attach each tool-result message to the tool call that produced it, so a
+	// call and its output render as one card instead of two disconnected
+	// strips. Results arrive after the calls, in order; a new assistant
+	// message means earlier calls can no longer produce results.
+	const items = useMemo(() => {
+		const list: {
+			msg: ChatMessage;
+			attached: Map<number, ToolBlockT>;
+			consumed: Set<number>;
+		}[] = [];
+		let pending: { item: (typeof list)[number]; index: number }[] = [];
+		for (const msg of messages) {
+			if (msg.role === "assistant") pending = [];
+			const item = {
+				msg,
+				attached: new Map<number, ToolBlockT>(),
+				consumed: new Set<number>(),
+			};
+			if (msg.role === "tool") {
+				msg.blocks.forEach((b, i) => {
+					if (b.kind !== "tool") return;
+					const slot = pending.shift();
+					if (slot) {
+						slot.item.attached.set(slot.index, b);
+						item.consumed.add(i);
+					}
+				});
+				// Drop the message entirely once every block was attached.
+				if (item.consumed.size < msg.blocks.length) list.push(item);
+				continue;
+			}
+			list.push(item);
+			if (msg.role === "assistant") {
+				msg.blocks.forEach((b, i) => {
+					if (b.kind === "tool" && !b.result)
+						pending.push({ item, index: i });
+				});
+			}
+		}
+		return list;
+	}, [messages]);
+
+	const copyMessage = useCallback(
+		async (m: ChatMessage, mode: "md" | "text") => {
+			const content =
+				mode === "md" ? messageToMarkdown(m) : messageToPlainText(m);
+			if (!content) return;
+			const key = `${m.id}-${mode}`;
+			try {
+				await navigator.clipboard.writeText(content);
+				setCopiedId(key);
+				window.setTimeout(() => {
+					setCopiedId((cur) => (cur === key ? null : cur));
+				}, 1200);
+			} catch {
+				/* clipboard unavailable */
+			}
+		},
+		[],
+	);
+
+	return (
+		<div ref={scrollRef} className="messages">
+			{items.map(({ msg: m, attached, consumed }) => {
+				const time = m.role === "user" ? formatTime(m.timestamp) : null;
+				return (
+					<div key={m.id} className={`message ${m.role}`}>
+						{m.role === "assistant" && (
+							<AssistantFooter message={m} />
+						)}
+						{(m.role === "assistant" || (m.role === "user" && onFork && m.entryId)) && (
+							<div className="message-hover-actions">
+								{m.role === "user" && onFork && m.entryId && (
+									<button
+										className="fork-btn"
+										title={t.chat.branch}
+										onClick={() => onFork(m.entryId as string)}
+									>
+										<BranchIcon size={12} />
+									</button>
+								)}
+								<button
+									className="fork-btn"
+									title={t.chat.copy}
+									onClick={() => void copyMessage(m, "md")}
+								>
+									{copiedId === `${m.id}-md` ? (
+										<CheckIcon size={12} />
+									) : (
+										<CopyIcon size={12} />
+									)}
+								</button>
+								<button
+									className="fork-btn"
+									title={t.chat.copyPlainText}
+									onClick={() => void copyMessage(m, "text")}
+								>
+									{copiedId === `${m.id}-text` ? (
+										<CheckIcon size={12} />
+									) : (
+										<CopyIcon size={12} />
+									)}
+								</button>
+							</div>
+						)}
+						{m.blocks.map((b, i) => {
+							if (consumed.has(i)) return null;
+							if (b.kind === "text") {
+								return (
+									<div className="text-block" key={i}>
+										<Markdown text={b.text} streaming={m.streaming} />
+									</div>
+								);
+							}
+							if (b.kind === "thinking") {
+								return (
+									<ThinkingBlock
+										key={i}
+										text={b.text}
+										streaming={m.streaming}
+									/>
+								);
+							}
+							return (
+								<ToolCard
+									key={i}
+									block={b}
+									result={b.result ? b : (attached.get(i) ?? null)}
+									running={m.streaming && i === m.blocks.length - 1}
+								/>
+							);
+						})}
+						{m.error && <div className="msg-error">error: {m.error}</div>}
+						{m.streaming && <span className="cursor" />}
+						{time && <div className="message-meta">{time}</div>}
+					</div>
+				);
+			})}
+		</div>
+	);
+}
