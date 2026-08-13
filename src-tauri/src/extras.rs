@@ -120,10 +120,11 @@ pub struct GitBranchState {
 }
 
 fn run_git(project: &str, args: &[&str]) -> Result<String, String> {
-	let out = Command::new("git")
-		.arg("-C")
-		.arg(project)
-		.args(args)
+	let mut cmd = Command::new("git");
+	cmd.arg("-C").arg(project).args(args);
+	// Git is a console-subsystem binary: without CREATE_NO_WINDOW every
+	// branch probe from the borderless GUI pops a flashing cmd window.
+	let out = crate::pi::no_console_window(&mut cmd)
 		.output()
 		.map_err(|e| format!("git failed: {e}"))?;
 	if !out.status.success() {

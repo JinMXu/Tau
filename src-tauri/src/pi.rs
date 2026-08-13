@@ -300,7 +300,7 @@ fn probe_candidate(bin: &str) -> Option<PiBinaryInfo> {
 			_ => (Command::new(bin), None),
 		}
 	};
-	let out = cmd.arg("--version").output().ok()?;
+	let out = no_console_window(&mut cmd).arg("--version").output().ok()?;
 	if !out.status.success() {
 		return None;
 	}
@@ -399,6 +399,22 @@ pub(crate) fn pi_command(info: &PiBinaryInfo) -> Command {
 	} else {
 		Command::new(&info.bin)
 	}
+}
+
+/// Suppress the console window for a child process on Windows. Without this,
+/// every console-subsystem child (node, git, …) spawned from the borderless
+/// GUI (windows_subsystem = "windows", no console of its own) would pop a
+/// black cmd window that flashes open and closed.
+#[cfg(windows)]
+pub(crate) fn no_console_window(cmd: &mut Command) -> &mut Command {
+	use std::os::windows::process::CommandExt;
+	const CREATE_NO_WINDOW: u32 = 0x08000000;
+	cmd.creation_flags(CREATE_NO_WINDOW)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn no_console_window(cmd: &mut Command) -> &mut Command {
+	cmd
 }
 
 impl PiProcess {
