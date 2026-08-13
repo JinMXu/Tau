@@ -35,12 +35,16 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **工具产物预览** — 工具写入的文件在工具卡片上显示文件名，一键打开文件。
 - **首次启动引导** — 未选择工作目录时展示欢迎界面与引导按钮。
 - **上次会话自动恢复** — 重启后自动恢复上次打开的会话。
+- **多窗口** — 应用菜单「新窗口」或 Ctrl/Cmd+Shift+N 打开独立窗口，每个窗口拥有自己的 pi 进程与会话；同一会话文件同时只能被一个窗口打开（冲突时新窗口自动改用新会话）。窗口关闭时自动回收其 pi 进程。
+- **会话内搜索** — Ctrl/Cmd+F 在当前会话中全文搜索（文本/思考/工具参数），显示命中计数，上下跳转定位，当前消息内命中关键词高亮。
+- **归档会话查看与导出** — 归档管理页每行新增「查看」按钮，只读预览归档会话内容，可直接导出 Markdown / JSONL / 样式化 HTML。
+- **清理图片附件** — 会话菜单「清理图片附件」将 JSONL 中 base64 图片数据替换为占位符（保留 mimeType），大幅减小长期会话体积；操作前自动断开并重连，显示节省空间。
 - **原生菜单** — 应用/编辑/视图原生菜单（复制粘贴、全屏等）。
 - **调试日志** — 启动与连接事件写入应用配置目录的 `logs/tau.log`。
 - **窗口状态持久化** — 窗口大小/位置/最大化状态自动保存并在重启后恢复。
 - **设置** — 主题（浅色/深色/跟随系统）、6 种色调（Mist/Paper/Sand/Gray/Forest/Ocean）、字号、消息密度、聊天字体（系统/霞鹜文楷/朱雀仿宋）、内容宽度（标准/宽/超宽）、行距、语言、默认发送模式（steer/follow-up）、上下文用量开关、失败自动重试开关、默认思考级别、pi 版本信息、会话目录、归档管理。
 - **项目行操作** — 侧边栏项目行 hover 显示操作：在文件夹中显示、删除项目（归档该项目下全部会话，可恢复）。
-- **快捷键** — ⌘K 搜索、⌘N 新任务、⌘, 设置、⌘B 折叠侧边栏、⌘L 聚焦输入框、Shift+⌘A 归档当前会话（macOS 用 ⌘，Windows/Linux 对应 Ctrl；界面提示按平台自动切换）。
+- **快捷键** — ⌘K 搜索、⌘N 新任务、Shift+⌘N 新窗口、⌘, 设置、⌘B 折叠侧边栏、⌘L 聚焦输入框、⌘F 会话内搜索、Shift+⌘A 归档当前会话（macOS 用 ⌘，Windows/Linux 对应 Ctrl；界面提示按平台自动切换）。
 - **扩展 UI 对话框** — 处理 Pi 的 `extension_ui_request` 事件（select / confirm / input / notify），回传 `extension_ui_response`。
 - **持久化** — 主题、色调、字号、密度、语言、思考级别、展开的项目分组、侧边栏宽度均存于 localStorage，重启恢复。
 - **双语界面** — 中文 / English 一键切换。
@@ -93,9 +97,14 @@ npm run dev
 # 类型检查 + 生产构建
 npm run build
 
+# 前端单元测试（vitest：message-utils / settings / i18n）
+npm test
+
 # Rust 单元测试
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
+
+CI（GitHub Actions，`.github/workflows/ci.yml`）：push/PR 时自动运行 `tsc + vitest + 前端构建`（ubuntu）与 `cargo test --lib`（windows）。
 
 ## Pi RPC 命令
 

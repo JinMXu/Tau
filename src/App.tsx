@@ -2019,6 +2019,37 @@ export default function App() {
 		});
 	}, [t, disconnect, refreshSessions, connect, toast]);
 
+	// Same operation for archived/trashed sessions (never running, so no
+	// disconnect/reconnect dance).
+	const handleCompactArchived = useCallback(
+		async (path: string) => {
+			setConfirmState({
+				title: t.confirm.compactImagesTitle,
+				body: t.confirm.compactImagesBodyArchived,
+				confirmLabel: t.app.confirm,
+				onConfirm: async () => {
+					try {
+						const r = await compactSessionImages(path);
+						await refreshSessions();
+						if (r.removed > 0) {
+							const saved = Math.max(0, r.before - r.after);
+							toast(
+								t.chat.imagesCompacted
+									.replace("{n}", String(r.removed))
+									.replace("{size}", formatBytes(saved)),
+							);
+						} else {
+							toast(t.chat.imagesCompactedNone);
+						}
+					} catch (e) {
+						setError(String(e));
+					}
+				},
+			});
+		},
+		[t, refreshSessions, toast],
+	);
+
 	const handleExtensionRespond = useCallback(
 		async (id: string, payload: Record<string, unknown>) => {
 			setExtensionRequest(null);
@@ -2343,6 +2374,7 @@ export default function App() {
 						onPurge={handlePurge}
 						onRestoreAll={handleRestoreAll}
 						onViewArchived={openArchivedPreview}
+						onCompactArchived={handleCompactArchived}
 						onClose={() => setSettingsOpen(false)}
 						onOpenSessionDir={openSessionDir}
 					/>

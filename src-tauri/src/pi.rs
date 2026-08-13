@@ -679,8 +679,9 @@ pub(crate) fn kill_window_process_inner(
 static WINDOW_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Open another Tau window (each window runs its own pi process/session).
+/// Generic over the runtime so it works with the mock runtime in tests.
 #[tauri::command]
-fn pi_new_window(app: AppHandle) -> Result<(), String> {
+fn pi_new_window<R: tauri::Runtime>(app: AppHandle<R>) -> Result<(), String> {
 	let stamp = std::time::SystemTime::now()
 		.duration_since(std::time::UNIX_EPOCH)
 		.map(|d| d.as_millis())
@@ -2321,6 +2322,8 @@ mod tests {
 		let _ = std::fs::remove_file(&path);
 	}
 }
+
+
 
 
 

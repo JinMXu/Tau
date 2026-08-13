@@ -203,6 +203,7 @@ export function SettingsPanel({
 	onPurge,
 	onRestoreAll,
 	onViewArchived,
+	onCompactArchived,
 	onClose,
 	onOpenSessionDir,
 }: {
@@ -216,6 +217,7 @@ export function SettingsPanel({
 	onPurge: (path: string) => void;
 	onRestoreAll: () => void;
 	onViewArchived: (path: string, title: string) => void;
+	onCompactArchived: (path: string) => void;
 	onClose: () => void;
 	onOpenSessionDir: () => void;
 }) {
@@ -898,6 +900,13 @@ export function SettingsPanel({
 											onClick={() => onViewArchived(a.path, a.title)}
 										>
 											<EyeIcon size={14} />
+										</button>
+										<button
+											className="icon-btn"
+											title={t.chat.compactImages}
+											onClick={() => onCompactArchived(a.path)}
+										>
+											<BoltIcon size={14} />
 										</button>
 										<button
 											className="icon-btn"

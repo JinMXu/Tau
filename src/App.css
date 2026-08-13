@@ -4351,3 +4351,28 @@ textarea {
 	0% { background: rgba(250, 204, 21, 0.22); }
 	100% { background: transparent; }
 }
+
+.archived-search-input {
+	flex: 1;
+	min-width: 120px;
+	background: transparent;
+	border: none;
+	outline: none;
+	color: inherit;
+	font-size: 13px;
+}
+
+.archived-preview-plain {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.archived-plain-message {
+	white-space: pre-wrap;
+	padding: 8px 0;
+}
+
+.highlighted-text {
+	white-space: pre-wrap;
+}

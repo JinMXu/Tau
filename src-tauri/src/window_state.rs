@@ -11,7 +11,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow, WindowEvent};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WindowEvent};
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 struct WindowState {
@@ -22,7 +22,7 @@ struct WindowState {
 	maximized: bool,
 }
 
-fn state_path(app: &AppHandle, label: &str) -> PathBuf {
+fn state_path<R: tauri::Runtime>(app: &AppHandle<R>, label: &str) -> PathBuf {
 	// One state file per window label: with multi-window support every window
 	// used to read/write the same file, so new windows restored the main
 	// window's geometry (stacking on top of it) and each window's move/resize
@@ -42,7 +42,7 @@ fn state_path(app: &AppHandle, label: &str) -> PathBuf {
 /// Whether the window's current position intersects any connected monitor.
 /// Guards against restoring a window onto a display that has been unplugged
 /// (which would leave it unreachable off-screen).
-fn on_screen(window: &WebviewWindow) -> bool {
+fn on_screen<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
 	let Ok(size) = window.outer_size() else { return true };
 	let Ok(pos) = window.outer_position() else { return true };
 	let Ok(monitors) = window.available_monitors() else { return true };
@@ -60,8 +60,8 @@ fn on_screen(window: &WebviewWindow) -> bool {
 }
 
 /// Restore the window size/position saved from the previous run.
-pub fn restore(window: &WebviewWindow) {
-	let path = state_path(&window.app_handle(), window.label());
+pub fn restore<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+	let path = state_path(window.app_handle(), window.label());
 	let Ok(raw) = fs::read_to_string(&path) else { return };
 	let Ok(state) = serde_json::from_str::<WindowState>(&raw) else {
 		return;
@@ -91,8 +91,8 @@ pub fn restore(window: &WebviewWindow) {
 }
 
 /// Persist window geometry (debounced) while the window is being resized/moved.
-pub fn attach(window: &WebviewWindow) {
-	let path = state_path(&window.app_handle(), window.label());
+pub fn attach<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+	let path = state_path(window.app_handle(), window.label());
 	let state = Arc::new(Mutex::new(WindowState {
 		width: 800.0,
 		height: 600.0,

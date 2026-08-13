@@ -288,6 +288,7 @@ export const messages = {
 			deleteProjectBody: "将归档该项目下的 {count} 个会话（可恢复），确定吗？",
 			compactImagesTitle: "清理图片附件",
 			compactImagesBody: "将移除会话文件中的 base64 图片数据（占位保留），不可恢复。会话将先断开再重新连接。确定继续吗？",
+			compactImagesBodyArchived: "将移除会话文件中的 base64 图片数据（占位保留），不可恢复。确定继续吗？",
 		},
 		menu: {
 			app: "应用",
@@ -601,6 +602,7 @@ export const messages = {
 			deleteProjectBody: "This will archive {count} session(s) under this project (restorable). Continue?",
 			compactImagesTitle: "Compact image attachments",
 			compactImagesBody: "This removes base64 image data from the session file (placeholders are kept) and cannot be undone. The session will disconnect and reconnect. Continue?",
+			compactImagesBodyArchived: "This removes base64 image data from the session file (placeholders are kept) and cannot be undone. Continue?",
 		},
 		menu: {
 			app: "App",
