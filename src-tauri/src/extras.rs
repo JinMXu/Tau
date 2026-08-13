@@ -33,6 +33,11 @@ fn auth_file_path() -> PathBuf {
 	pi_agent_dir().join("auth.json")
 }
 
+/// Serializes read-modify-write updates so concurrent key edits can't clobber
+/// each other (write_auth_map is an atomic tmp+rename, but the read+write pair
+/// still needs mutual exclusion).
+static AUTH_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn read_auth_map() -> serde_json::Map<String, serde_json::Value> {
 	let path = auth_file_path();
 	let Ok(raw) = fs::read_to_string(&path) else {
@@ -82,6 +87,9 @@ pub fn pi_auth_set_key(provider: String, key: String) -> Result<(), String> {
 	if provider.is_empty() || key.is_empty() {
 		return Err("provider and key must not be empty".into());
 	}
+	let _guard = AUTH_MUTEX
+		.lock()
+		.map_err(|e| format!("auth lock poisoned: {e}"))?;
 	let mut map = read_auth_map();
 	map.insert(provider, serde_json::json!({ "type": "api_key", "key": key }));
 	write_auth_map(&map)
@@ -89,6 +97,9 @@ pub fn pi_auth_set_key(provider: String, key: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn pi_auth_remove(provider: String) -> Result<(), String> {
+	let _guard = AUTH_MUTEX
+		.lock()
+		.map_err(|e| format!("auth lock poisoned: {e}"))?;
 	let mut map = read_auth_map();
 	map.remove(&provider);
 	write_auth_map(&map)
@@ -216,13 +227,7 @@ pub struct PiSkillEntry {
 
 fn run_pi_cli(args: &[&str]) -> Result<String, String> {
 	let info = pi::probe_pi().ok_or("pi binary not found. Install pi or set PI_BIN.")?;
-	let mut cmd = if info.via_cmd {
-		let mut c = Command::new("cmd");
-		c.arg("/C").arg(&info.bin);
-		c
-	} else {
-		Command::new(&info.bin)
-	};
+	let mut cmd = pi::pi_command(&info);
 	cmd.args(args)
 		.stdin(Stdio::null())
 		.stdout(Stdio::piped())
@@ -373,10 +378,20 @@ pub async fn pi_package_remove(source: String) -> Result<(), String> {
 }
 
 fn scan_skill_dir(dir: &Path, location: &str, out: &mut Vec<PiSkillEntry>) {
+	scan_skill_dir_at(dir, location, out, 0)
+}
+
+fn scan_skill_dir_at(dir: &Path, location: &str, out: &mut Vec<PiSkillEntry>, depth: usize) {
+	// Depth cap + no symlink following (`file_type` doesn't traverse links)
+	// so a cycle inside an installed package can't recurse forever.
+	if depth > 6 {
+		return;
+	}
 	let Ok(entries) = fs::read_dir(dir) else { return };
 	for entry in entries.flatten() {
 		let path = entry.path();
-		if path.is_dir() {
+		let Ok(ft) = entry.file_type() else { continue };
+		if ft.is_dir() {
 			if path.join("SKILL.md").is_file() {
 				let name = entry.file_name().to_string_lossy().into_owned();
 				let description = fs::read_to_string(path.join("SKILL.md"))
@@ -388,9 +403,10 @@ fn scan_skill_dir(dir: &Path, location: &str, out: &mut Vec<PiSkillEntry>) {
 					.filter(|d| !d.is_empty());
 				out.push(PiSkillEntry { name, description, location: location.to_string() });
 			} else if entry.file_name() != "node_modules" {
-				scan_skill_dir(&path, location, out);
+				scan_skill_dir_at(&path, location, out, depth + 1);
 			}
-		} else if path.extension().and_then(|e| e.to_str()) == Some("md")
+		} else if ft.is_file()
+			&& path.extension().and_then(|e| e.to_str()) == Some("md")
 			&& path.file_name().and_then(|n| n.to_str()) != Some("SKILL.md")
 		{
 			let name = entry
@@ -434,36 +450,50 @@ pub async fn pi_installed_skills(packages: Vec<PiPackageEntry>) -> Result<Vec<Pi
 }
 
 #[tauri::command]
-pub fn pi_move_session(path: String, new_project: String) -> Result<(), String> {
-	let path = PathBuf::from(&path);
+pub async fn pi_move_session(
+	state: tauri::State<'_, crate::pi::PiState>,
+	path: String,
+	new_project: String,
+) -> Result<(), String> {
+	let path = pi::require_session_path(Path::new(&path))?;
+	if pi::is_running_session(&state, &path) {
+		return Err("stop the running session before moving it".into());
+	}
 	let new_project = new_project.trim().to_string();
 	if new_project.is_empty() {
 		return Err("target directory must not be empty".into());
 	}
 	let canonical = fs::canonicalize(&new_project)
 		.map_err(|e| format!("invalid target directory: {e}"))?;
-	let raw = fs::read_to_string(&path).map_err(|e| format!("failed to read session: {e}"))?;
-	let mut out_lines: Vec<String> = Vec::new();
-	let mut changed = false;
-	for line in raw.lines() {
-		let Ok(mut v) = serde_json::from_str::<serde_json::Value>(line) else {
-			out_lines.push(line.to_string());
-			continue;
-		};
-		if v.get("type").and_then(|x| x.as_str()) == Some("session") {
-			v["cwd"] = serde_json::Value::String(canonical.to_string_lossy().into_owned());
-			changed = true;
+	// Rewriting a large session file (with big base64 image lines) takes a
+	// moment; keep it off the UI thread.
+	run_blocking(move || {
+		let raw = fs::read_to_string(&path)
+			.map_err(|e| format!("failed to read session: {e}"))?;
+		let mut out_lines: Vec<String> = Vec::new();
+		let mut changed = false;
+		for line in raw.lines() {
+			let Ok(mut v) = serde_json::from_str::<serde_json::Value>(line) else {
+				out_lines.push(line.to_string());
+				continue;
+			};
+			if v.get("type").and_then(|x| x.as_str()) == Some("session") {
+				v["cwd"] =
+					serde_json::Value::String(canonical.to_string_lossy().into_owned());
+				changed = true;
+			}
+			out_lines.push(v.to_string());
 		}
-		out_lines.push(v.to_string());
-	}
-	if !changed {
-		return Err("session header not found in file".into());
-	}
-	let tmp = path.with_extension("jsonl.tmp");
-	fs::write(&tmp, out_lines.join("\n") + "\n")
-		.map_err(|e| format!("failed to write session: {e}"))?;
-	fs::rename(&tmp, &path).map_err(|e| format!("failed to persist session: {e}"))?;
-	Ok(())
+		if !changed {
+			return Err("session header not found in file".into());
+		}
+		let tmp = path.with_extension("jsonl.tmp");
+		fs::write(&tmp, out_lines.join("\n") + "\n")
+			.map_err(|e| format!("failed to write session: {e}"))?;
+		fs::rename(&tmp, &path).map_err(|e| format!("failed to persist session: {e}"))?;
+		Ok(())
+	})
+	.await
 }
 
 

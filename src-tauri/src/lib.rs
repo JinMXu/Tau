@@ -112,6 +112,14 @@ pub fn run() {
 			if let Some(win) = app.get_webview_window("main") {
 				window_state::restore(&win);
 				window_state::attach(&win);
+				// Kill the main window's pi process when the window closes
+				// (other windows may keep the app alive).
+				let inner = app.state::<crate::pi::PiState>().handle();
+				let _ = win.on_window_event(move |event| {
+					if let tauri::WindowEvent::Destroyed = event {
+						crate::pi::kill_window_process_inner(&inner, "main");
+					}
+				});
 			}
 			Ok(())
 		})

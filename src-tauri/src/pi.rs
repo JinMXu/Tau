@@ -1,42 +1,61 @@
+use std::collections::HashMap;
 use std::{
 	fs::File,
-	io::{BufRead, BufReader, Write},
+	io::{BufRead, BufReader, Read, Write},
 	path::{Path, PathBuf},
 	process::{Child, ChildStdin, Command, Stdio},
+	sync::atomic::{AtomicBool, Ordering},
 	sync::{Arc, Mutex},
 	thread,
+	time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
+/// One independent pi RPC process per window (multi-window support).
 pub struct PiState {
-	inner: Arc<Mutex<PiProcess>>,
+	inner: Arc<Mutex<HashMap<String, PiProcess>>>,
+}
+
+impl PiState {
+	/// Clone of the process map handle (for window-destroy handlers that must
+	/// outlive the borrowed `State`).
+	pub(crate) fn handle(&self) -> Arc<Mutex<HashMap<String, PiProcess>>> {
+		self.inner.clone()
+	}
 }
 
 impl Default for PiState {
 	fn default() -> Self {
-		Self { inner: Arc::new(Mutex::new(PiProcess::default())) }
+		Self { inner: Arc::new(Mutex::new(HashMap::new())) }
 	}
 }
 
 #[derive(Default)]
-struct PiProcess {
+pub(crate) struct PiProcess {
 	child: Option<Child>,
 	stdin: Option<ChildStdin>,
 	workspace: Option<PathBuf>,
 	session_file: Option<PathBuf>,
+	/// Set when the current child is stopped on purpose (`pi_stop`, or being
+	/// replaced by a newer `pi_start`); the exit reader reports a crash only
+	/// when the flag is still false.
+	explicit_stop: Arc<AtomicBool>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PiBinaryInfo {
 	pub(crate) bin: String,
 	pub(crate) version: String,
-	/// Whether the binary must be launched through `cmd /C` (Windows .cmd/.bat shims).
+	/// Resolved (node, script) pair when pi is an npm-style `.cmd`/`.bat` shim
+	/// (Windows) or when `PI_BIN` points at a JS entrypoint. Spawning node
+	/// directly keeps cmd.exe from re-interpreting `&`, `|`, `%VAR%`, … inside
+	/// our arguments (system prompts, session names, package sources).
 	#[serde(skip)]
-	pub(crate) via_cmd: bool,
+	pub(crate) direct: Option<(String, String)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -119,46 +138,204 @@ fn default_session_dir() -> PathBuf {
 		.unwrap_or_else(|| PathBuf::from(".pi/agent/sessions"))
 }
 
-fn probe(bin: &str) -> Option<String> {
-	let out = Command::new(bin).arg("--version").output().ok()?;
-	if !out.status.success() {
-		return None;
+/// Resolve an npm/yarn-style Windows command shim (`.cmd`/`.bat`) to the node
+/// binary and JS entrypoint it would run, so pi can be spawned directly
+/// without cmd.exe mangling arguments that contain `&`, `|`, `%VAR%`, ….
+fn resolve_shim_target(shim: &Path) -> Option<(PathBuf, PathBuf)> {
+	let content = std::fs::read_to_string(shim).ok()?;
+	let dir = shim.parent()?.to_path_buf();
+	let mut node: Option<PathBuf> = None;
+	let mut script: Option<PathBuf> = None;
+	for line in content.lines() {
+		let mut rest = line;
+		while let Some(start) = rest.find('"') {
+			let after = &rest[start + 1..];
+			let Some(end) = after.find('"') else { break };
+			let mut quoted = &after[..end];
+			if quoted.contains("%_prog%") {
+				// Node binary resolved by the shim's own logic; see fallback below.
+			} else if quoted.starts_with("%dp0%") || quoted.starts_with("%~dp0") {
+				quoted = quoted
+					.trim_start_matches("%dp0%")
+					.trim_start_matches("%~dp0")
+					.trim_start_matches(['\\', '/']);
+				let candidate = dir.join(quoted);
+				if candidate
+					.file_name()
+					.is_some_and(|n| n == "node" || n == "node.exe")
+				{
+					node = Some(candidate);
+				} else {
+					script = Some(candidate);
+				}
+			}
+			rest = &after[end + 1..];
+		}
 	}
-	let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
-	if version.is_empty() {
-		return None;
+	// The shim only uses a node.exe next to itself when it exists
+	// (`IF EXIST "%dp0%\node.exe"`); otherwise node resolves via PATH.
+	let mut node = node.filter(|n| n.exists());
+	if node.is_none() {
+		let local = dir.join("node.exe");
+		if local.exists() {
+			node = Some(local);
+		}
 	}
-	Some(version)
+	let node = node.unwrap_or_else(|| PathBuf::from("node"));
+	Some((node, script?))
 }
 
-fn probe_via_cmd(bin: &str) -> Option<String> {
-	let out = Command::new("cmd").args(["/C", bin, "--version"]).output().ok()?;
-	if !out.status.success() {
-		return None;
+/// Find `bin` in PATH (or return it as-is when it has a directory component).
+/// On Windows, bare names are also matched against the PATHEXT extensions
+/// (`.COM;.EXE;.BAT;.CMD`) so a `pi.cmd` shim is found the same way
+/// CreateProcess would find it — without this, the bare "pi" candidate in
+/// `probe_pi_uncached` would bypass shim resolution entirely.
+fn resolve_in_path(bin: &str) -> Option<PathBuf> {
+	if bin.contains('\\') || bin.contains('/') {
+		return Some(PathBuf::from(bin));
 	}
-	let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
-	if version.is_empty() {
-		return None;
-	}
-	Some(version)
-}
-
-pub(crate) fn probe_pi() -> Option<PiBinaryInfo> {
-	let mut candidates: Vec<(&str, bool)> = vec![("pi", false)];
-	if cfg!(windows) {
-		candidates.extend([("pi.exe", false), ("pi.cmd", true), ("pi.bat", true)]);
-	}
-	if let Ok(env_bin) = std::env::var("PI_BIN") {
-		let via_cmd = env_bin.ends_with(".cmd") || env_bin.ends_with(".bat");
-		candidates.insert(0, (Box::leak(env_bin.into_boxed_str()), via_cmd));
-	}
-	for (bin, via_cmd) in candidates {
-		let version = if via_cmd { probe_via_cmd(bin) } else { probe(bin) };
-		if let Some(version) = version {
-			return Some(PiBinaryInfo { bin: bin.to_string(), version, via_cmd });
+	let path = std::env::var_os("PATH")?;
+	for dir in std::env::split_paths(&path) {
+		let candidate = dir.join(bin);
+		if candidate.is_file() {
+			return Some(candidate);
+		}
+		#[cfg(windows)]
+		if candidate.extension().is_none() {
+			let pathext = std::env::var("PATHEXT")
+				.unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+			for ext in pathext.split(';') {
+				let ext = ext.trim();
+				if ext.is_empty() {
+					continue;
+				}
+				let with_ext = dir.join(format!("{bin}{ext}"));
+				if with_ext.is_file() {
+					return Some(with_ext);
+				}
+			}
 		}
 	}
 	None
+}
+
+/// Probe one pi candidate and figure out how to launch it safely.
+fn probe_candidate(bin: &str) -> Option<PiBinaryInfo> {
+	let (mut cmd, direct) = if bin.ends_with(".js")
+		|| bin.ends_with(".mjs")
+		|| bin.ends_with(".cjs")
+	{
+		// `PI_BIN` may point straight at the JS entrypoint.
+		let mut c = Command::new("node");
+		c.arg(bin);
+		(c, Some(("node".to_string(), bin.to_string())))
+	} else if bin.ends_with(".cmd") || bin.ends_with(".bat") {
+		// Probe candidates are bare names; resolve the shim's full path so its
+		// directory (and the node_modules tree next to it) can be found.
+		let shim = resolve_in_path(bin)?;
+		let (node, script) = resolve_shim_target(&shim)?;
+		let mut c = Command::new(&node);
+		c.arg(&script);
+		(
+			c,
+			Some((
+				node.to_string_lossy().into_owned(),
+				script.to_string_lossy().into_owned(),
+			)),
+		)
+	} else {
+		// A bare name may still resolve to a `.cmd`/`.bat` shim on PATH
+		// (npm global installs ship only the shim, no `pi.exe`). Resolve it
+		// to node + script so pi is never launched through cmd.exe (which
+		// would reinterpret `&`, `|`, `%VAR%`, … inside our arguments).
+		match resolve_in_path(bin) {
+			Some(resolved)
+				if resolved
+					.file_name()
+					.and_then(|n| n.to_str())
+					.is_some_and(|n| n.ends_with(".cmd") || n.ends_with(".bat")) =>
+			{
+				match resolve_shim_target(&resolved) {
+					Some((node, script)) => {
+						let mut c = Command::new(&node);
+						c.arg(&script);
+						(
+							c,
+							Some((
+								node.to_string_lossy().into_owned(),
+								script.to_string_lossy().into_owned(),
+							)),
+						)
+					}
+					None => (Command::new(bin), None),
+				}
+			}
+			_ => (Command::new(bin), None),
+		}
+	};
+	let out = cmd.arg("--version").output().ok()?;
+	if !out.status.success() {
+		return None;
+	}
+	let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+	if version.is_empty() {
+		return None;
+	}
+	Some(PiBinaryInfo { bin: bin.to_string(), version, direct })
+}
+
+/// Cached pi probe result. Successful probes are cached for the app's
+/// lifetime (pi doesn't change underneath a running app — restart to pick up
+/// an upgrade). Failed probes are retried after a short backoff so a
+/// late-installed pi is still picked up without paying the spawn cost on
+/// every `pi_start`/`pi list` call.
+struct ProbeCacheEntry {
+	info: Option<PiBinaryInfo>,
+	checked_at: Instant,
+}
+
+static PROBE_CACHE: Mutex<Option<ProbeCacheEntry>> = Mutex::new(None);
+
+const PROBE_FAIL_RETRY: Duration = Duration::from_secs(10);
+
+pub(crate) fn probe_pi() -> Option<PiBinaryInfo> {
+	if let Ok(guard) = PROBE_CACHE.lock() {
+		if let Some(entry) = guard.as_ref() {
+			if entry.info.is_some() || entry.checked_at.elapsed() < PROBE_FAIL_RETRY {
+				return entry.info.clone();
+			}
+		}
+	}
+	let info = probe_pi_uncached();
+	if let Ok(mut guard) = PROBE_CACHE.lock() {
+		*guard = Some(ProbeCacheEntry { info: info.clone(), checked_at: Instant::now() });
+	}
+	info
+}
+
+fn probe_pi_uncached() -> Option<PiBinaryInfo> {
+	if let Ok(env_bin) = std::env::var("PI_BIN") {
+		if let Some(info) = probe_candidate(&env_bin) {
+			return Some(info);
+		}
+	}
+	let mut candidates: Vec<&str> = vec!["pi"];
+	if cfg!(windows) {
+		candidates.extend(["pi.exe", "pi.cmd", "pi.bat"]);
+	}
+	candidates.iter().find_map(|bin| probe_candidate(bin))
+}
+
+/// Base `Command` for launching pi. Never goes through cmd.exe argument
+/// parsing: npm shims are resolved to node + script at probe time.
+pub(crate) fn pi_command(info: &PiBinaryInfo) -> Command {
+	if let Some((node, script)) = &info.direct {
+		let mut c = Command::new(node);
+		c.arg(script);
+		c
+	} else {
+		Command::new(&info.bin)
+	}
 }
 
 impl PiProcess {
@@ -171,18 +348,13 @@ impl PiProcess {
 		session_name: Option<&str>,
 		system_prompt: Option<&str>,
 		tools: Option<&[String]>,
-		state: Arc<Mutex<PiProcess>>,
-		app: &AppHandle,
+		state: Arc<Mutex<HashMap<String, PiProcess>>>,
+		label: String,
+		window: &WebviewWindow,
 	) -> Result<(), String> {
 		self.kill();
 
-		let mut cmd = if info.via_cmd {
-			let mut c = Command::new("cmd");
-			c.arg("/C").arg(&info.bin);
-			c
-		} else {
-			Command::new(&info.bin)
-		};
+		let mut cmd = pi_command(info);
 		cmd.arg("--mode")
 			.arg("rpc")
 			.arg("--session-dir")
@@ -231,10 +403,16 @@ impl PiProcess {
 		let stdout = child.stdout.take().ok_or("failed to take pi stdout")?;
 		let stderr = child.stderr.take().ok_or("failed to take pi stderr")?;
 		let pid = child.id();
+		// Per-child flag: `kill()` sets it so the reader thread can tell an
+		// intentional stop apart from a crash.
+		let stop_flag = Arc::new(AtomicBool::new(false));
 
-		let app_stdout = app.clone();
-		let app_stderr = app.clone();
+		let app_stdout = window.app_handle().clone();
+		let win_stdout = window.clone();
+		let win_stderr = window.clone();
 		let state = state.clone();
+		let label_thread = label.clone();
+		let stop_flag_thread = stop_flag.clone();
 		thread::spawn(move || {
 			let reader = BufReader::new(stdout);
 			for line in reader.lines() {
@@ -247,21 +425,27 @@ impl PiProcess {
 				}
 				let payload: Value =
 					serde_json::from_str(&line).unwrap_or_else(|_| Value::String(line));
-				let _ = app_stdout.emit("pi://event", &payload);
+				let _ = win_stdout.emit("pi://event", &payload);
 			}
 			let mut guard = state.lock().unwrap();
-			let is_current = guard.child.as_ref().is_some_and(|c| c.id() == pid);
+			let is_current = guard
+				.get(&label_thread)
+				.and_then(|p| p.child.as_ref())
+				.is_some_and(|c| c.id() == pid);
 			if is_current {
-				guard.child = None;
-				guard.stdin = None;
+				if let Some(p) = guard.get_mut(&label_thread) {
+					p.child = None;
+					p.stdin = None;
+				}
 			}
 			drop(guard);
-			// Only report the exit when the *current* pi process died. Processes
-			// replaced by a newer `pi_start` are killed on purpose; reporting
-			// them would make the frontend think the connection dropped.
-			if is_current {
+			// Only report the exit when the *current* pi process died and it
+			// was not stopped on purpose. Processes replaced by a newer
+			// `pi_start` or killed by `pi_stop` must not make the frontend
+			// think the connection dropped.
+			if is_current && !stop_flag_thread.load(Ordering::Relaxed) {
 				crate::runtime_log::log_error(&app_stdout, "pi process exited");
-				let _ = app_stdout.emit("pi://exit", ());
+				let _ = win_stdout.emit("pi://exit", ());
 			}
 		});
 
@@ -272,7 +456,10 @@ impl PiProcess {
 					Ok(line) => line,
 					Err(_) => break,
 				};
-				let _ = app_stderr.emit("pi://stderr", line);
+				// Window-scoped emit: each window only sees its own pi's stderr
+				// (an app-level emit would leak every window's logs into every
+				// window's stderr panel).
+				let _ = win_stderr.emit("pi://stderr", line);
 			}
 		});
 
@@ -280,10 +467,14 @@ impl PiProcess {
 		self.stdin = Some(stdin);
 		self.workspace = Some(PathBuf::from(workspace));
 		self.session_file = session_file.map(PathBuf::from);
+		self.explicit_stop = stop_flag;
 		Ok(())
 	}
 
 	fn kill(&mut self) {
+		// Mark the (about to die) child as intentionally stopped so its
+		// stdout reader doesn't report a crash to the frontend.
+		self.explicit_stop.store(true, Ordering::Relaxed);
 		self.stdin.take();
 		if let Some(mut child) = self.child.take() {
 			// When spawned via `cmd /C`, killing only the cmd process would orphan
@@ -331,6 +522,93 @@ fn file_stem(path: &Path) -> String {
 		.to_string()
 }
 
+fn canonical_dir(p: &Path) -> Option<PathBuf> {
+	std::fs::canonicalize(p).ok()
+}
+
+/// Canonicalize `path`, falling back to the raw path when canonicalization
+/// fails (e.g. the file doesn't exist). Used for running-session comparisons:
+/// `PiProcess.session_file` stores the path as the frontend sent it (raw,
+/// possibly without the `\\?\` prefix canonicalize adds on Windows), so both
+/// sides must be canonicalized before comparing.
+fn canonical_or(path: &Path) -> PathBuf {
+	std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Resolve `path` and require it to live under the sessions directory.
+pub(crate) fn require_session_path(path: &Path) -> Result<PathBuf, String> {
+	let base = std::fs::canonicalize(default_session_dir())
+		.map_err(|e| format!("sessions directory unavailable: {e}"))?;
+	let full = std::fs::canonicalize(path)
+		.map_err(|e| format!("session not found: {}: {e}", path.display()))?;
+	if !full.starts_with(&base) {
+		return Err("session path is outside the sessions directory".into());
+	}
+	Ok(full)
+}
+
+/// Whether `path` is the session file of a running pi process in ANY window.
+/// Paths are compared canonicalized on both sides: the stored session file is
+/// the raw string the frontend sent, while callers pass canonicalized paths
+/// (Windows canonicalize adds a `\\?\` prefix, so a raw-vs-canonical string
+/// comparison would silently never match).
+pub(crate) fn is_running_session(state: &PiState, path: &Path) -> bool {
+	let full = canonical_or(path);
+	state.inner.lock().ok().is_some_and(|map| {
+		map.values().any(|p| {
+			p.session_file
+				.as_deref()
+				.is_some_and(|s| canonical_or(s) == full)
+		})
+	})
+}
+
+/// Kill the pi process belonging to a window label (called when a window is
+/// destroyed). Takes the cloned process-map handle so window-destroy handlers
+/// can outlive the borrowed `State`.
+pub(crate) fn kill_window_process_inner(
+	inner: &Arc<Mutex<HashMap<String, PiProcess>>>,
+	label: &str,
+) {
+	if let Ok(mut map) = inner.lock() {
+		if let Some(p) = map.get_mut(label) {
+			p.kill();
+		}
+	}
+}
+
+/// Open another Tau window (each window runs its own pi process/session).
+#[tauri::command]
+fn pi_new_window(app: AppHandle) -> Result<(), String> {
+	let stamp = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.map(|d| d.as_millis())
+		.unwrap_or(0);
+	let label = format!("main-{stamp}");
+	let win = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::default())
+		.title("Tau")
+		.inner_size(800.0, 600.0)
+		.decorations(false)
+		.build()
+		.map_err(|e| e.to_string())?;
+	crate::window_state::restore(&win);
+	crate::window_state::attach(&win);
+	// Kill the window's pi process when its window closes (the app itself
+	// may stay alive with other windows open).
+	let inner = app.state::<PiState>().handle();
+	let label_clone = label.clone();
+	let _ = win.on_window_event(move |event| {
+		if let tauri::WindowEvent::Destroyed = event {
+			if let Ok(mut map) = inner.lock() {
+				if let Some(p) = map.get_mut(&label_clone) {
+					p.kill();
+				}
+			}
+		}
+	});
+	Ok(())
+}
+
 fn parse_iso_ms(s: &str) -> Option<u64> {
 	// Accept "2026-08-10T06:31:02.384Z" style timestamps.
 	let s = s.trim();
@@ -356,6 +634,64 @@ fn parse_iso_ms(s: &str) -> Option<u64> {
 	let secs = days * 86400 + h * 3600 + mi * 60 + sec;
 	// Sub-second precision is irrelevant here; epoch in ms.
 	Some((secs as u64).saturating_mul(1000))
+}
+
+/// Maximum size of a single JSONL line we are willing to hold in memory.
+/// Lines larger than this (typically huge base64 image messages) are skipped;
+/// without this a single pathological line could balloon memory use while
+/// listing/searching sessions.
+const MAX_JSONL_LINE: usize = 16 * 1024 * 1024;
+
+/// Like `BufRead::lines`, but skips lines larger than `max` bytes so a
+/// pathological session file can't allocate unbounded memory.
+struct LimitedLines<R> {
+	reader: R,
+	max: usize,
+	buf: Vec<u8>,
+}
+
+impl<R> LimitedLines<R> {
+	fn new(reader: R, max: usize) -> Self {
+		Self { reader, max, buf: Vec::with_capacity(8 * 1024) }
+	}
+}
+
+impl<R: BufRead> Iterator for LimitedLines<R> {
+	type Item = std::io::Result<String>;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		loop {
+			self.buf.clear();
+			let mut limited = (&mut self.reader).take((self.max + 1) as u64);
+			match limited.read_until(b'\n', &mut self.buf) {
+				Ok(0) => return None,
+				Ok(n) if n > self.max => {
+					// Discard the remainder of the oversized line so the next
+					// iteration stays aligned on a line boundary.
+					loop {
+						self.buf.clear();
+						let mut sink = (&mut self.reader).take(64 * 1024);
+						match sink.read_until(b'\n', &mut self.buf) {
+							Ok(0) => break,
+							Ok(_) if self.buf.last() == Some(&b'\n') => break,
+							Ok(_) => {}
+							Err(_) => break,
+						}
+					}
+				}
+				Ok(_) => {
+					if self.buf.last() == Some(&b'\n') {
+						self.buf.pop();
+					}
+					if self.buf.last() == Some(&b'\r') {
+						self.buf.pop();
+					}
+					return Some(Ok(String::from_utf8_lossy(&self.buf).into_owned()));
+				}
+				Err(e) => return Some(Err(e)),
+			}
+		}
+	}
 }
 
 fn extract_block_text(content: Option<&serde_json::Value>) -> Option<String> {
@@ -411,7 +747,7 @@ fn scan_session(path: &Path, limit: usize) -> SessionScan {
 		Err(_) => return scan,
 	};
 	let reader = BufReader::new(file);
-	for line in reader.lines().take(limit).flatten() {
+	for line in LimitedLines::new(reader, MAX_JSONL_LINE).take(limit).flatten() {
 		if line.trim().is_empty() {
 			continue;
 		}
@@ -473,42 +809,93 @@ fn trash_dir() -> PathBuf {
 	aux_root().join(".pi-gui-trash")
 }
 
-fn collect_sessions(dir: &Path, out: &mut Vec<PiSessionInfo>) {
-	let entries = match std::fs::read_dir(dir) {
-		Ok(entries) => entries,
-		Err(_) => return,
-	};
+/// Walk the sessions tree for `*.jsonl` files. Depth-capped and symlink-safe
+/// (`DirEntry::file_type` does not follow links), so a symlink cycle in the
+/// sessions directory can't cause unbounded recursion.
+fn session_files(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+	if depth > 8 {
+		return;
+	}
+	let Ok(entries) = std::fs::read_dir(dir) else { return };
 	for entry in entries.flatten() {
 		let path = entry.path();
-		if path.is_dir() {
+		let Ok(ft) = entry.file_type() else { continue };
+		if ft.is_dir() {
 			if is_aux_dir(&path.file_name().unwrap_or_default().to_string_lossy()) {
 				continue;
 			}
-			collect_sessions(&path, out);
-		} else if path.extension().is_some_and(|ext| ext == "jsonl") {
-			let meta = entry.metadata().ok();
-			let scan = scan_session(&path, 400);
-			out.push(PiSessionInfo {
-				path: path.to_string_lossy().into_owned(),
-				name: file_stem(&path),
-				project: scan.project,
-				title: if scan.title.is_empty() {
-					file_stem(&path)
-				} else {
-					scan.title
-				},
-				model: scan.model,
-				created_at: scan.created_at,
-				message_count: scan.message_count,
-				mtime_ms: meta
-					.as_ref()
-					.and_then(|m| m.modified().ok())
-					.map(unix_ms)
-					.unwrap_or(0),
-				size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-			});
+			session_files(&path, out, depth + 1);
+		} else if ft.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
+			out.push(path);
 		}
 	}
+}
+
+/// Run `f` over `items` on worker threads (bounded by available parallelism)
+/// and collect the results in order. Falls back to a plain loop for tiny
+/// inputs.
+fn par_map<T: Send>(items: Vec<PathBuf>, f: impl Fn(&Path) -> T + Sync) -> Vec<T> {
+	let n = items.len();
+	if n <= 1 {
+		return items.iter().map(|p| f(p)).collect();
+	}
+	let threads = std::thread::available_parallelism()
+		.map(|p| p.get())
+		.unwrap_or(4)
+		.min(n);
+	let next = std::sync::atomic::AtomicUsize::new(0);
+	std::thread::scope(|scope| {
+		let mut handles = Vec::with_capacity(threads);
+		for _ in 0..threads {
+			handles.push(scope.spawn(|| {
+				let mut local = Vec::new();
+				loop {
+					let i = next.fetch_add(1, Ordering::Relaxed);
+					if i >= n {
+						break;
+					}
+					local.push((i, f(&items[i])));
+				}
+				local
+			}));
+		}
+		let mut out: Vec<Option<T>> = (0..n).map(|_| None).collect();
+		for h in handles {
+			for (i, v) in h.join().unwrap_or_default() {
+				out[i] = Some(v);
+			}
+		}
+		out.into_iter().filter_map(|v| v).collect()
+	})
+}
+
+fn collect_sessions(dir: &Path, out: &mut Vec<PiSessionInfo>) {
+	let mut files = Vec::new();
+	session_files(dir, &mut files, 0);
+	let infos = par_map(files, |path| {
+		let meta = std::fs::metadata(path).ok();
+		let scan = scan_session(path, 400);
+		PiSessionInfo {
+			path: path.to_string_lossy().into_owned(),
+			name: file_stem(path),
+			project: scan.project,
+			title: if scan.title.is_empty() {
+				file_stem(path)
+			} else {
+				scan.title
+			},
+			model: scan.model,
+			created_at: scan.created_at,
+			message_count: scan.message_count,
+			mtime_ms: meta
+				.as_ref()
+				.and_then(|m| m.modified().ok())
+				.map(unix_ms)
+				.unwrap_or(0),
+			size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+		}
+	});
+	out.extend(infos);
 }
 
 fn parse_message_blocks(message: &serde_json::Value) -> Vec<PiParsedBlock> {
@@ -573,7 +960,7 @@ fn read_session_messages(path: &Path) -> Vec<PiParsedMessage> {
 		Err(_) => return out,
 	};
 	let reader = BufReader::new(file);
-	for line in reader.lines().flatten() {
+	for line in LimitedLines::new(reader, MAX_JSONL_LINE).flatten() {
 		if line.trim().is_empty() {
 			continue;
 		}
@@ -638,13 +1025,13 @@ fn read_session_messages(path: &Path) -> Vec<PiParsedMessage> {
 #[tauri::command]
 fn pi_binary() -> Result<PiBinaryInfo, String> {
 	probe_pi().ok_or_else(|| {
-		"pi binary not found. Install pi (see https://github.com/earendil-works/pi) or set PI_BIN.".into()
+		"pi binary not found. Install pi via npm (https://github.com/earendil-works/pi) or set PI_BIN to the pi executable or its cli.js entrypoint.".into()
 	})
 }
 
 #[tauri::command]
 fn pi_start(
-	app: AppHandle,
+	window: WebviewWindow,
 	state: State<'_, PiState>,
 	workspace: String,
 	session_file: Option<String>,
@@ -654,17 +1041,33 @@ fn pi_start(
 	tools: Option<Vec<String>>,
 ) -> Result<(), String> {
 	let info = probe_pi().ok_or("pi binary not found")?;
-	let mut inner = state.inner.lock().unwrap();
+	let label = window.label().to_string();
+	let mut map = state.inner.lock().unwrap();
+	// One pi process per session file: reject a second window opening the
+	// same JSONL (concurrent appends would corrupt it). Compare canonicalized
+	// paths so alternate spellings (symlinks, `..`, Windows `\\?\` prefixes)
+	// can't bypass the guard.
+	if let Some(sf) = session_file.as_deref() {
+		let full = canonical_or(Path::new(sf));
+		if map.values().any(|p| {
+			p.session_file
+				.as_deref()
+				.is_some_and(|s| canonical_or(s) == full)
+		}) {
+			return Err("session is already open in another window".into());
+		}
+	}
 	crate::runtime_log::log_info(
-		&app,
+		&window.app_handle(),
 		&format!(
-			"pi_start workspace={workspace} session={} fork={} tools={}",
+			"pi_start window={label} workspace={workspace} session={} fork={} tools={}",
 			session_file.as_deref().unwrap_or("<new>"),
 			fork_of.as_deref().unwrap_or(""),
 			tools.as_deref().map(|t| t.join(",")).unwrap_or_else(|| "default".into()),
 		),
 	);
-	inner.spawn(
+	let entry = map.entry(label.clone()).or_default();
+	entry.spawn(
 		&info,
 		&workspace,
 		session_file.as_deref(),
@@ -673,83 +1076,147 @@ fn pi_start(
 		system_prompt.as_deref(),
 		tools.as_deref(),
 		state.inner.clone(),
-		&app,
+		label,
+		&window,
 	)
 }
 
 #[tauri::command]
-fn pi_stop(state: State<'_, PiState>) -> Result<(), String> {
-	let mut inner = state.inner.lock().unwrap();
-	inner.kill();
+fn pi_stop(window: WebviewWindow, state: State<'_, PiState>) -> Result<(), String> {
+	let label = window.label().to_string();
+	let mut map = state.inner.lock().unwrap();
+	if let Some(p) = map.get_mut(&label) {
+		p.kill();
+	}
 	Ok(())
 }
 
+/// JSON-RPC command types the GUI is allowed to forward to pi. Anything else
+/// is rejected — a compromised webview can't drive the pi pipe beyond this
+/// set (defense in depth on top of the CSP).
+const ALLOWED_RPC_TYPES: &[&str] = &[
+	"prompt",
+	"steer",
+	"follow_up",
+	"abort",
+	"abort_bash",
+	"abort_retry",
+	"new_session",
+	"compact",
+	"set_model",
+	"set_thinking_level",
+	"get_available_models",
+	"get_state",
+	"get_available_thinking_levels",
+	"set_session_name",
+	"switch_session",
+	"fork",
+	"clone",
+	"get_messages",
+	"get_session_stats",
+	"get_commands",
+	"set_auto_retry",
+	"extension_ui_response",
+];
+
 #[tauri::command]
-fn pi_send(state: State<'_, PiState>, command: Value) -> Result<(), String> {
-	let mut inner = state.inner.lock().unwrap();
-	inner.send(&command)
+fn pi_send(window: WebviewWindow, state: State<'_, PiState>, command: Value) -> Result<(), String> {
+	let kind = command.get("type").and_then(|x| x.as_str()).unwrap_or("");
+	if !ALLOWED_RPC_TYPES.contains(&kind) {
+		return Err(format!("unknown pi command type: {kind}"));
+	}
+	let label = window.label().to_string();
+	let mut map = state.inner.lock().unwrap();
+	let p = map.get_mut(&label).ok_or("pi is not running")?;
+	p.send(&command)
 }
 
 #[tauri::command]
-fn pi_status(state: State<'_, PiState>) -> Result<PiStatus, String> {
-	let inner = state.inner.lock().unwrap();
+fn pi_status(window: WebviewWindow, state: State<'_, PiState>) -> Result<PiStatus, String> {
+	let label = window.label().to_string();
+	let map = state.inner.lock().unwrap();
+	// A window that never started pi (fresh multi-window) reports idle
+	// instead of an error so the frontend startup probe stays clean.
+	let Some(p) = map.get(&label) else {
+		return Ok(PiStatus { running: false, workspace: None, session_file: None });
+	};
 	Ok(PiStatus {
-		running: inner.child.is_some(),
-		workspace: inner.workspace.as_ref().map(|p| p.to_string_lossy().into_owned()),
-		session_file: inner.session_file.as_ref().map(|p| p.to_string_lossy().into_owned()),
+		running: p.child.is_some(),
+		workspace: p.workspace.as_ref().map(|p| p.to_string_lossy().into_owned()),
+		session_file: p.session_file.as_ref().map(|p| p.to_string_lossy().into_owned()),
 	})
 }
 
-#[tauri::command]
-fn pi_list_sessions() -> Result<Vec<PiSessionInfo>, String> {
-	let mut out = Vec::new();
-	collect_sessions(&default_session_dir(), &mut out);
-	out.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
-	Ok(out)
+/// Runs a blocking closure on the dedicated blocking thread pool so the UI
+/// thread is never frozen while scanning session files or running the pi
+/// CLI. (Sync Tauri commands run on the main thread — every window would
+/// freeze while a large session directory is scanned.)
+async fn run_blocking<T, F>(f: F) -> Result<T, String>
+where
+	T: Send + 'static,
+	F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+	tauri::async_runtime::spawn_blocking(f)
+		.await
+		.map_err(|e| format!("background task failed: {e}"))?
 }
 
 #[tauri::command]
-fn pi_read_session(path: String) -> Result<Vec<PiParsedMessage>, String> {
-	let p = PathBuf::from(&path);
-	if !p.exists() {
-		return Err(format!("session not found: {path}"));
-	}
-	Ok(read_session_messages(&p))
+async fn pi_list_sessions() -> Result<Vec<PiSessionInfo>, String> {
+	run_blocking(|| {
+		let mut out = Vec::new();
+		collect_sessions(&default_session_dir(), &mut out);
+		out.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
+		Ok(out)
+	})
+	.await
 }
 
 #[tauri::command]
-fn pi_search_sessions(query: String, limit: Option<usize>) -> Result<Vec<PiSearchHit>, String> {
+async fn pi_read_session(path: String) -> Result<Vec<PiParsedMessage>, String> {
+	let p = require_session_path(Path::new(&path))?;
+	run_blocking(move || Ok(read_session_messages(&p))).await
+}
+
+#[tauri::command]
+async fn pi_search_sessions(
+	query: String,
+	limit: Option<usize>,
+) -> Result<Vec<PiSearchHit>, String> {
 	let query = query.trim().to_lowercase();
-	let mut hits = Vec::new();
 	if query.is_empty() {
-		return Ok(hits);
+		return Ok(Vec::new());
 	}
 	let limit = limit.unwrap_or(50).min(200);
-	let mut sessions = Vec::new();
-	collect_sessions(&default_session_dir(), &mut sessions);
-	for session in sessions {
-		if hits.len() >= limit {
-			break;
-		}
-		let title_hit = session.title.to_lowercase().contains(&query);
-		let mut snippet_hit = String::new();
-		if !title_hit {
-			if let Some(snippet) = search_snippet(&PathBuf::from(&session.path), &query) {
-				snippet_hit = snippet;
+	run_blocking(move || {
+		let mut hits = Vec::new();
+		let mut sessions = Vec::new();
+		collect_sessions(&default_session_dir(), &mut sessions);
+		for session in sessions {
+			if hits.len() >= limit {
+				break;
+			}
+			let title_hit = session.title.to_lowercase().contains(&query);
+			let mut snippet_hit = String::new();
+			if !title_hit {
+				if let Some(snippet) = search_snippet(&PathBuf::from(&session.path), &query) {
+					snippet_hit = snippet;
+				}
+			}
+			if title_hit || !snippet_hit.is_empty() {
+				hits.push(PiSearchHit {
+					path: session.path,
+					title: session.title,
+					project: session.project,
+					snippet: if title_hit { String::new() } else { snippet_hit },
+					updated_at: session.mtime_ms,
+				});
 			}
 		}
-		if title_hit || !snippet_hit.is_empty() {
-			hits.push(PiSearchHit {
-				path: session.path,
-				title: session.title,
-				project: session.project,
-				snippet: if title_hit { String::new() } else { snippet_hit },
-				updated_at: session.mtime_ms,
-			});
-		}
-	}
-	hits.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-	Ok(hits)
+		hits.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+		Ok(hits)
+	})
+	.await
 }
 
 /// Find the first line containing the query (case-insensitive) and return a
@@ -757,7 +1224,9 @@ fn pi_search_sessions(query: String, limit: Option<usize>) -> Result<Vec<PiSearc
 fn search_snippet(path: &Path, query: &str) -> Option<String> {
 	let file = File::open(path).ok()?;
 	let reader = BufReader::new(file);
-	for line in reader.lines().flatten() {
+	for line in LimitedLines::new(reader, MAX_JSONL_LINE).flatten() {
+		// Case-insensitive search is bounded by the line cap above; lines
+		// beyond it (base64 image blobs) are skipped rather than lowercased.
 		if line.to_lowercase().contains(query) {
 			let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
 				continue;
@@ -831,14 +1300,128 @@ fn meta_original_path(dir: &Path, file_name: &str) -> Option<String> {
 		.map(|s| s.to_string())
 }
 
-#[tauri::command]
-fn pi_archive_session(path: String) -> Result<(), String> {
-	move_with_sidecar(&PathBuf::from(&path), &archive_dir())
+/// Move a session file into the archive (or trash) directory with its
+/// original-path sidecar. The path must already be validated as a session
+/// file; the command wrapper adds running-session and boundary checks.
+fn move_session_to_aux(path: &Path, target_dir: &Path) -> Result<(), String> {
+	let full = std::fs::canonicalize(path)
+		.map_err(|e| format!("session not found: {}: {e}", path.display()))?;
+	let archive = canonical_dir(&archive_dir());
+	let trash = canonical_dir(&trash_dir());
+	if archive.as_ref().is_some_and(|d| full.starts_with(d))
+		|| trash.as_ref().is_some_and(|d| full.starts_with(d))
+	{
+		return Err("session is already archived".into());
+	}
+	move_with_sidecar(&full, target_dir)
 }
 
 #[tauri::command]
-fn pi_delete_session(path: String) -> Result<(), String> {
-	move_with_sidecar(&PathBuf::from(&path), &trash_dir())
+fn pi_archive_session(state: State<'_, PiState>, path: String) -> Result<(), String> {
+	let p = require_session_path(Path::new(&path))?;
+	if is_running_session(&state, &p) {
+		return Err("stop the running session before archiving it".into());
+	}
+	move_session_to_aux(&p, &archive_dir())
+}
+
+#[tauri::command]
+fn pi_delete_session(state: State<'_, PiState>, path: String) -> Result<(), String> {
+	let p = require_session_path(Path::new(&path))?;
+	if is_running_session(&state, &p) {
+		return Err("stop the running session before deleting it".into());
+	}
+	move_session_to_aux(&p, &trash_dir())
+}
+
+/// Recursively blank the `data` payload of image content blocks; returns the
+/// number of images stripped.
+fn strip_image_data(v: &mut serde_json::Value) -> usize {
+	let mut n = 0;
+	match v {
+		serde_json::Value::Object(map) => {
+			if map.get("type").and_then(|x| x.as_str()) == Some("image") {
+				if let Some(data) = map.get_mut("data") {
+					if data.as_str().is_some_and(|s| !s.is_empty()) {
+						*data = serde_json::Value::String(String::new());
+						n += 1;
+					}
+				}
+			}
+			for (_, child) in map.iter_mut() {
+				n += strip_image_data(child);
+			}
+		}
+		serde_json::Value::Array(arr) => {
+			for child in arr.iter_mut() {
+				n += strip_image_data(child);
+			}
+		}
+		_ => {}
+	}
+	n
+}
+
+/// Compact a session file: replace base64 image payloads with an empty
+/// placeholder so long-lived sessions with attachments stop ballooning. The
+/// session must not be running (pi may be appending to it concurrently).
+/// Runs on the blocking pool — a session with hundreds of MB of image data
+/// takes a moment to rewrite.
+fn compact_session_images_inner(p: &Path) -> Result<serde_json::Value, String> {
+	let before = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+	let tmp_path = p.with_extension("jsonl.tmp");
+	let mut removed = 0usize;
+	{
+		let file = File::open(p).map_err(|e| format!("failed to read session: {e}"))?;
+		let reader = BufReader::new(file);
+		let mut writer = std::io::BufWriter::new(
+			File::create(&tmp_path).map_err(|e| format!("failed to create temp file: {e}"))?,
+		);
+		for line in reader.lines() {
+			let line = line.map_err(|e| format!("failed to read session: {e}"))?;
+			match serde_json::from_str::<serde_json::Value>(&line) {
+				Ok(mut v) => {
+					removed += strip_image_data(&mut v);
+					writeln!(writer, "{}", v)
+						.map_err(|e| format!("failed to write session: {e}"))?;
+				}
+				Err(_) => {
+					writeln!(writer, "{line}")
+						.map_err(|e| format!("failed to write session: {e}"))?;
+				}
+			}
+		}
+		writer.flush().map_err(|e| format!("failed to write session: {e}"))?;
+	}
+	if removed == 0 {
+		let _ = std::fs::remove_file(&tmp_path);
+		return Ok(serde_json::json!({
+			"ok": true,
+			"removed": 0,
+			"before": before,
+			"after": before
+		}));
+	}
+	std::fs::rename(&tmp_path, p).map_err(|e| format!("failed to persist session: {e}"))?;
+	let after = std::fs::metadata(p).map(|m| m.len()).unwrap_or(before);
+	Ok(serde_json::json!({
+		"ok": true,
+		"removed": removed,
+		"before": before,
+		"after": after
+	}))
+}
+
+#[tauri::command]
+async fn pi_compact_session_images(
+	state: State<'_, PiState>,
+	path: String,
+) -> Result<serde_json::Value, String> {
+	let p = require_session_path(Path::new(&path))?;
+	if is_running_session(&state, &p) {
+		return Err("stop the running session before compacting it".into());
+	}
+	run_blocking(move || compact_session_images_inner(&p)).await
 }
 
 #[tauri::command]
@@ -885,32 +1468,46 @@ fn pi_list_archived_sessions() -> Result<Vec<PiArchivedSession>, String> {
 #[tauri::command]
 fn pi_restore_session(path: String) -> Result<(), String> {
 	let path = PathBuf::from(&path);
-	let file_name = path
+	let full = std::fs::canonicalize(&path)
+		.map_err(|e| format!("session not found: {}: {e}", path.display()))?;
+	let in_archive = canonical_dir(&archive_dir()).is_some_and(|d| full.starts_with(&d));
+	let in_trash = canonical_dir(&trash_dir()).is_some_and(|d| full.starts_with(&d));
+	if !in_archive && !in_trash {
+		return Err("only archived/trashed sessions can be restored".into());
+	}
+	let target_dir = if in_archive { archive_dir() } else { trash_dir() };
+	let file_name = full
 		.file_name()
 		.ok_or_else(|| "invalid session path".to_string())?;
-	let target_dir = if path.parent().is_some_and(|p| p == archive_dir().as_path()) {
-		archive_dir()
-	} else {
-		trash_dir()
-	};
 	let original = meta_original_path(&target_dir, &file_name.to_string_lossy());
+	// The original path recorded in the sidecar must stay inside the sessions
+	// directory (compare against the canonical base so `..` tricks don't work).
+	let base = canonical_dir(&aux_root());
 	let restore_to = original
 		.map(PathBuf::from)
-		.filter(|p| p.starts_with(&aux_root()))
+		.filter(|p| base.as_ref().is_some_and(|b| p.starts_with(b)))
 		.unwrap_or_else(|| aux_root().join(file_name));
 	if restore_to.exists() {
+		// A file already lives at the original location; move it aside INSIDE
+		// the sessions directory (previous code used a relative path, which
+		// silently moved the session next to the app's cwd).
 		let stamp = std::time::SystemTime::now()
 			.duration_since(std::time::UNIX_EPOCH)
 			.map(|d| d.as_millis())
 			.unwrap_or(0);
-		let stem = file_name.to_string_lossy();
-		let renamed = PathBuf::from(format!("{stem}-{stamp}"));
-		let _ = std::fs::rename(&restore_to, &renamed);
+		let stem = restore_to
+			.file_stem()
+			.unwrap_or_default()
+			.to_string_lossy()
+			.into_owned();
+		let renamed = restore_to.with_file_name(format!("{stem}-{stamp}.jsonl"));
+		std::fs::rename(&restore_to, &renamed)
+			.map_err(|e| format!("failed to move existing session aside: {e}"))?;
 	}
 	if let Some(parent) = restore_to.parent() {
 		let _ = std::fs::create_dir_all(parent);
 	}
-	std::fs::rename(&path, &restore_to)
+	std::fs::rename(&full, &restore_to)
 		.map_err(|e| format!("failed to restore session: {e}"))?;
 	let _ = std::fs::remove_file(target_dir.join(format!(
 		"{}.meta",
@@ -922,24 +1519,22 @@ fn pi_restore_session(path: String) -> Result<(), String> {
 #[tauri::command]
 fn pi_purge_session(path: String) -> Result<(), String> {
 	let path = PathBuf::from(&path);
-	if !(path.starts_with(&archive_dir()) || path.starts_with(&trash_dir())) {
+	let full = std::fs::canonicalize(&path)
+		.map_err(|e| format!("session not found: {}: {e}", path.display()))?;
+	let in_archive = canonical_dir(&archive_dir()).is_some_and(|d| full.starts_with(&d));
+	let in_trash = canonical_dir(&trash_dir()).is_some_and(|d| full.starts_with(&d));
+	if !(in_archive || in_trash) {
 		return Err("only archived/trashed sessions can be purged".into());
 	}
-	if path.exists() {
-		std::fs::remove_file(&path)
-			.map_err(|e| format!("failed to delete session: {e}"))?;
-	}
-	let meta_path = path.with_extension("jsonl.meta");
+	std::fs::remove_file(&full).map_err(|e| format!("failed to delete session: {e}"))?;
+	let meta_path = full.with_extension("jsonl.meta");
 	let _ = std::fs::remove_file(meta_path);
 	Ok(())
 }
 
 #[tauri::command]
 fn pi_reveal_session(path: String) -> Result<(), String> {
-	let path = PathBuf::from(&path);
-	if !path.exists() {
-		return Err(format!("session not found: {}", path.display()));
-	}
+	let path = require_session_path(Path::new(&path))?;
 	#[cfg(target_os = "windows")]
 	{
 		use std::os::windows::process::CommandExt;
@@ -974,10 +1569,7 @@ fn pi_export_chat(
 ) -> Result<serde_json::Value, String> {
 	use tauri_plugin_dialog::DialogExt;
 
-	let path = PathBuf::from(&session_path);
-	if !path.exists() {
-		return Err(format!("session not found: {session_path}"));
-	}
+	let path = require_session_path(Path::new(&session_path))?;
 	let default_name = path
 		.file_stem()
 		.and_then(|s| s.to_str())
@@ -1022,18 +1614,16 @@ fn pi_export_chat(
 }
 
 /// Export a session JSONL to a styled HTML file via `pi --export` (one-shot
-/// CLI run; the running RPC session is untouched).
+/// CLI run; the running RPC session is untouched). The save dialog stays on
+/// the UI thread; the pi CLI run moves to the blocking pool.
 #[tauri::command]
-fn pi_export_html(
+async fn pi_export_html(
 	app: AppHandle,
 	session_path: String,
 ) -> Result<serde_json::Value, String> {
 	use tauri_plugin_dialog::DialogExt;
 
-	let path = PathBuf::from(&session_path);
-	if !path.exists() {
-		return Err(format!("session not found: {session_path}"));
-	}
+	let path = require_session_path(Path::new(&session_path))?;
 	let default_name = path
 		.file_stem()
 		.and_then(|s| s.to_str())
@@ -1061,44 +1651,41 @@ fn pi_export_html(
 		}
 	};
 
-	let info = probe_pi().ok_or("pi binary not found")?;
-	let mut cmd = if info.via_cmd {
-		let mut c = Command::new("cmd");
-		c.arg("/C").arg(&info.bin);
-		c
-	} else {
-		Command::new(&info.bin)
-	};
-	cmd.arg("--export")
-		.arg(&path)
-		.arg(&target)
-		.arg("--offline")
-		.stdin(Stdio::null())
-		.stdout(Stdio::piped())
-		.stderr(Stdio::piped());
-	#[cfg(windows)]
-	{
-		use std::os::windows::process::CommandExt;
-		const CREATE_NO_WINDOW: u32 = 0x08000000;
-		cmd.creation_flags(CREATE_NO_WINDOW);
-	}
-	let out = cmd.output().map_err(|e| format!("failed to run pi: {e}"))?;
-	if !out.status.success() {
-		let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-		return Err(if stderr.is_empty() {
-			String::from_utf8_lossy(&out.stdout).trim().to_string()
-		} else {
-			stderr
-		});
-	}
-	if !target.exists() {
-		return Err("pi did not produce an export file".into());
-	}
-	Ok(serde_json::json!({
-		"ok": true,
-		"canceled": false,
-		"path": target.to_string_lossy().into_owned()
-	}))
+	run_blocking(move || {
+		let info = probe_pi().ok_or("pi binary not found")?;
+		let mut cmd = pi_command(&info);
+		cmd.arg("--export")
+			.arg(&path)
+			.arg(&target)
+			.arg("--offline")
+			.stdin(Stdio::null())
+			.stdout(Stdio::piped())
+			.stderr(Stdio::piped());
+		#[cfg(windows)]
+		{
+			use std::os::windows::process::CommandExt;
+			const CREATE_NO_WINDOW: u32 = 0x08000000;
+			cmd.creation_flags(CREATE_NO_WINDOW);
+		}
+		let out = cmd.output().map_err(|e| format!("failed to run pi: {e}"))?;
+		if !out.status.success() {
+			let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+			return Err(if stderr.is_empty() {
+				String::from_utf8_lossy(&out.stdout).trim().to_string()
+			} else {
+				stderr
+			});
+		}
+		if !target.exists() {
+			return Err("pi did not produce an export file".into());
+		}
+		Ok(serde_json::json!({
+			"ok": true,
+			"canceled": false,
+			"path": target.to_string_lossy().into_owned()
+		}))
+	})
+	.await
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1120,94 +1707,98 @@ pub struct PiUsageEntry {
 /// Scan every session JSONL for LLM `usage` records (one per assistant
 /// message). The frontend aggregates by day/model/project for the usage
 /// dashboard.
-fn collect_usage(dir: &Path, out: &mut Vec<PiUsageEntry>) {
-	let Ok(entries) = std::fs::read_dir(dir) else {
-		return;
-	};
-	for entry in entries.flatten() {
-		let path = entry.path();
-		if path.is_dir() {
-			if is_aux_dir(&path.file_name().unwrap_or_default().to_string_lossy()) {
-				continue;
+/// Scan one session file for LLM `usage` records (one per assistant message).
+fn usage_from_file(path: &Path) -> Vec<PiUsageEntry> {
+	let mut out = Vec::new();
+	let Ok(file) = File::open(path) else { return out };
+	let reader = BufReader::new(file);
+	let mut project: Option<String> = None;
+	for line in LimitedLines::new(reader, MAX_JSONL_LINE).flatten() {
+		if line.trim().is_empty() {
+			continue;
+		}
+		let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+			continue;
+		};
+		let Some(kind) = v.get("type").and_then(|x| x.as_str()) else {
+			continue;
+		};
+		match kind {
+			"session" => {
+				project = v
+					.get("cwd")
+					.and_then(|x| x.as_str())
+					.filter(|s| !s.is_empty())
+					.map(|s| s.to_string());
 			}
-			collect_usage(&path, out);
-		} else if path.extension().is_some_and(|e| e == "jsonl") {
-			let Ok(file) = File::open(&path) else { continue };
-			let reader = BufReader::new(file);
-			let mut project: Option<String> = None;
-			for line in reader.lines().flatten() {
-				if line.trim().is_empty() {
-					continue;
-				}
-				let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+			"message" => {
+				let Some(usage) = v.pointer("/message/usage") else {
 					continue;
 				};
-				let Some(kind) = v.get("type").and_then(|x| x.as_str()) else {
-					continue;
+				let date = v
+					.get("timestamp")
+					.and_then(|x| x.as_str())
+					.map(|s| s.chars().take(10).collect::<String>())
+					.unwrap_or_default();
+				let provider = v
+					.pointer("/message/provider")
+					.and_then(|x| x.as_str())
+					.unwrap_or("")
+					.to_string();
+				let model = v
+					.pointer("/message/model")
+					.and_then(|x| x.as_str())
+					.unwrap_or("")
+					.to_string();
+				let num = |key: &str| {
+					usage.get(key).and_then(|x| x.as_u64()).unwrap_or(0)
 				};
-				match kind {
-					"session" => {
-						project = v
-							.get("cwd")
-							.and_then(|x| x.as_str())
-							.filter(|s| !s.is_empty())
-							.map(|s| s.to_string());
-					}
-					"message" => {
-						let Some(usage) = v.pointer("/message/usage") else {
-							continue;
-						};
-						let date = v
-							.get("timestamp")
-							.and_then(|x| x.as_str())
-							.map(|s| s.chars().take(10).collect::<String>())
-							.unwrap_or_default();
-						let provider = v
-							.pointer("/message/provider")
-							.and_then(|x| x.as_str())
-							.unwrap_or("")
-							.to_string();
-						let model = v
-							.pointer("/message/model")
-							.and_then(|x| x.as_str())
-							.unwrap_or("")
-							.to_string();
-						let num = |key: &str| {
-							usage.get(key).and_then(|x| x.as_u64()).unwrap_or(0)
-						};
-						let cost = usage
-							.pointer("/cost/total")
-							.and_then(|x| x.as_f64())
-							.unwrap_or(0.0);
-						out.push(PiUsageEntry {
-							date,
-							provider,
-							model,
-							project: project.clone(),
-							session_path: path.to_string_lossy().into_owned(),
-							input: num("input"),
-							output: num("output"),
-							cache_read: num("cacheRead"),
-							reasoning: num("reasoning"),
-							total: usage
-								.get("totalTokens")
-								.and_then(|x| x.as_u64())
-								.unwrap_or(0),
-							cost,
-						});
-					}
-					_ => {}
-				}
+				let cost = usage
+					.pointer("/cost/total")
+					.and_then(|x| x.as_f64())
+					.unwrap_or(0.0);
+				out.push(PiUsageEntry {
+					date,
+					provider,
+					model,
+					project: project.clone(),
+					session_path: path.to_string_lossy().into_owned(),
+					input: num("input"),
+					output: num("output"),
+					cache_read: num("cacheRead"),
+					reasoning: num("reasoning"),
+					total: usage
+						.get("totalTokens")
+						.and_then(|x| x.as_u64())
+						.unwrap_or(0),
+					cost,
+				});
 			}
+			_ => {}
 		}
 	}
+	out
+}
+
+/// Scan every session JSONL for LLM `usage` records (one per assistant
+/// message). The frontend aggregates by day/model/project for the usage
+/// dashboard. Files are scanned on worker threads so a large session set
+/// doesn't block the UI thread.
+fn collect_usage(dir: &Path, out: &mut Vec<PiUsageEntry>) {
+	let mut files = Vec::new();
+	session_files(dir, &mut files, 0);
+	let entries = par_map(files, usage_from_file);
+	out.extend(entries.into_iter().flatten());
 }
 
 #[tauri::command]
-fn pi_usage_stats() -> Result<Vec<PiUsageEntry>, String> {
-	let mut out = Vec::new();
-	collect_usage(&default_session_dir(), &mut out);
-	Ok(out)
+async fn pi_usage_stats() -> Result<Vec<PiUsageEntry>, String> {
+	run_blocking(|| {
+		let mut out = Vec::new();
+		collect_usage(&default_session_dir(), &mut out);
+		Ok(out)
+	})
+	.await
 }
 
 #[tauri::command]
@@ -1221,6 +1812,7 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 	builder
 		.manage(PiState::default())
 		.invoke_handler(tauri::generate_handler![
+			pi_new_window,
 			pi_binary,
 			pi_start,
 			pi_stop,
@@ -1229,6 +1821,7 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			pi_export_chat,
 			pi_export_html,
 			pi_usage_stats,
+			pi_compact_session_images,
 			pi_list_sessions,
 			pi_open_workspace,
 			pi_read_session,
@@ -1340,6 +1933,30 @@ mod tests {
 	}
 
 	#[test]
+	fn resolves_npm_command_shims() {
+		let dir = std::env::temp_dir().join(format!("pi-gui-shim-test-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		std::fs::write(
+			dir.join("pi.cmd"),
+			"@ECHO off\r\n\
+			 GOTO start\r\n\
+			 :start\r\n\
+			 SETLOCAL\r\n\
+			 IF EXIST \"%dp0%\\node.exe\" (SET \"_prog=%dp0%\\node.exe\") ELSE (SET \"_prog=node\")\r\n\
+			 endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\pkg\\dist\\cli.js\" %*\r\n",
+		)
+		.unwrap();
+		let (node, script) = resolve_shim_target(&dir.join("pi.cmd")).unwrap();
+		assert_eq!(node, PathBuf::from("node"));
+		assert_eq!(
+			script,
+			dir.join("node_modules").join("pkg").join("dist").join("cli.js")
+		);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
 	fn parses_tool_calls_and_search_snippets() {
 		let path = write_temp_session("scan-tools", &[
 			r#"{"type":"session","version":3,"id":"abc","timestamp":"2026-08-10T06:31:02.384Z","cwd":"D:\\projects\\demo"}"#,
@@ -1356,4 +1973,93 @@ mod tests {
 
 		let _ = std::fs::remove_file(&path);
 	}
+
+	/// Exercises the session-dir boundary checks against a temp session dir
+	/// (PI_SESSION_DIR is process-global, so all scenarios run in one test).
+	#[test]
+	fn session_commands_enforce_boundaries() {
+		let dir = std::env::temp_dir().join(format!("pi-gui-sess-test-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		std::env::set_var("PI_SESSION_DIR", &dir);
+		std::env::remove_var("PI_BIN");
+
+		let session = dir.join("abc.jsonl");
+		std::fs::write(
+			&session,
+			"{\"type\":\"session\",\"version\":3,\"id\":\"s1\",\"cwd\":\"D:\\\\demo\"}\n",
+		)
+		.unwrap();
+
+		// require_session_path: inside is fine, outside is rejected.
+		// (canonicalize returns `\\?\`-prefixed paths on Windows)
+		let full = require_session_path(&session).unwrap();
+		assert_eq!(full.file_name().and_then(|n| n.to_str()), Some("abc.jsonl"));
+		assert!(full.starts_with(std::fs::canonicalize(&dir).unwrap()));
+		let outside = std::env::temp_dir().join(format!("pi-gui-outside-{}", std::process::id()));
+		std::fs::write(&outside, "{}").unwrap();
+		assert!(require_session_path(&outside).is_err());
+		assert!(require_session_path(&dir.join("missing.jsonl")).is_err());
+
+		// is_running_session: false by default, true when a window's process
+		// state points at the file.
+		let state = PiState::default();
+		assert!(!is_running_session(&state, &session));
+		{
+			let mut map = state.inner.lock().unwrap();
+			let mut proc = PiProcess::default();
+			proc.session_file = Some(session.clone());
+			map.insert("main".to_string(), proc);
+		}
+		assert!(is_running_session(&state, &session));
+		state.inner.lock().unwrap().remove("main");
+
+		// Archive: works once, rejects double-archive and the trash copy.
+		move_session_to_aux(&session, &archive_dir()).unwrap();
+		assert!(!session.exists());
+		let archived = archive_dir().join("abc.jsonl");
+		assert!(archived.exists());
+		assert!(move_session_to_aux(&archived, &archive_dir()).is_err());
+
+		// Restore: only archive/trash paths are accepted.
+		assert!(pi_restore_session(outside.to_string_lossy().into_owned()).is_err());
+		pi_restore_session(archived.to_string_lossy().into_owned()).unwrap();
+		assert!(session.exists());
+		assert!(!archived.exists());
+
+		// Delete -> trash, then purge.
+		move_session_to_aux(&session, &trash_dir()).unwrap();
+		let trashed = trash_dir().join("abc.jsonl");
+		assert!(trashed.exists());
+		assert!(pi_purge_session(session.to_string_lossy().into_owned()).is_err());
+		pi_purge_session(trashed.to_string_lossy().into_owned()).unwrap();
+		assert!(!trashed.exists());
+
+		let _ = std::fs::remove_file(&outside);
+		let _ = std::fs::remove_dir_all(&dir);
+		std::env::remove_var("PI_SESSION_DIR");
+	}
+
+	#[test]
+	fn limited_lines_skips_oversized_lines() {
+		let path = std::env::temp_dir().join(format!("pi-gui-lines-test-{}", std::process::id()));
+		let mut file = File::create(&path).unwrap();
+		writeln!(file, "small-a").unwrap();
+		writeln!(file, "{}", "x".repeat(1024)).unwrap(); // oversized
+		writeln!(file, "small-b").unwrap();
+		drop(file);
+
+		let file = File::open(&path).unwrap();
+		let lines: Vec<String> = LimitedLines::new(BufReader::new(file), 64)
+			.flatten()
+			.collect();
+		assert_eq!(lines, vec!["small-a".to_string(), "small-b".to_string()]);
+		let _ = std::fs::remove_file(&path);
+	}
 }
+
+
+
+
+
+
