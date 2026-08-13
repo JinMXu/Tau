@@ -12,6 +12,40 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  build: {
+    // @streamdown/code statically imports shiki's FULL language bundle
+    // (~9.6MB / 1.7MB gzip). Acceptable for a local desktop app — assets load
+    // from disk, not the network — so silence the chunk-size warning instead
+    // of hacking around the plugin's imports.
+    chunkSizeWarningLimit: 12000,
+    rollupOptions: {
+      output: {
+        // Split the (large) streamdown/shiki tree out of the main bundle:
+        // better caching and no >500kB single-chunk warnings. React stays in
+        // the vendor chunk — splitting it out created a vendor → react →
+        // vendor import cycle (harmless but noisy).
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (
+            id.includes("shiki") ||
+            id.includes("streamdown") ||
+            id.includes("@streamdown") ||
+            id.includes("rehype") ||
+            id.includes("remark") ||
+            id.includes("unist") ||
+            id.includes("hast") ||
+            id.includes("mdast") ||
+            id.includes("micromark") ||
+            id.includes("vfile") ||
+            id.includes("unified")
+          ) {
+            return "markdown";
+          }
+          return "vendor";
+        },
+      },
+    },
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
