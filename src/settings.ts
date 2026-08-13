@@ -37,6 +37,14 @@ export interface AppSettings {
 	systemPrompt: string;
 	/** Tools Pi is allowed to use. Empty array = all tools enabled. */
 	customTools: AgentToolName[];
+	/** Tools Pi is explicitly forbidden from using (--exclude-tools). */
+	excludedTools: AgentToolName[];
+	/** Appended to the system prompt without replacing it (--append-system-prompt). */
+	appendSystemPrompt: string;
+	/** llama.cpp router server URL (/llama). */
+	llamaServerUrl: string;
+	/** Optional API key for the llama.cpp router. */
+	llamaApiKey: string;
 	/** After an interrupt, keep delivering the queued follow-up messages. */
 	continueQueuedAfterInterrupt: boolean;
 	/** Chat font family (chat messages only; falls back to system fonts). */
@@ -70,6 +78,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	thinkingLevel: "medium",
 	systemPrompt: "",
 	customTools: [],
+	excludedTools: [],
+	appendSystemPrompt: "",
+	llamaServerUrl: "http://127.0.0.1:8080",
+	llamaApiKey: "",
 	continueQueuedAfterInterrupt: true,
 	chatFontFamily: "system",
 	chatContentWidth: "standard",
@@ -121,6 +133,24 @@ export function loadSettings(): AppSettings {
 					? parsed.language
 					: DEFAULT_SETTINGS.language,
 			customTools,
+			excludedTools: Array.isArray(parsed.excludedTools)
+				? parsed.excludedTools.filter(
+						(t): t is AgentToolName =>
+							typeof t === "string" && ALL_TOOL_SET.has(t),
+					)
+				: DEFAULT_SETTINGS.excludedTools,
+			appendSystemPrompt:
+				typeof parsed.appendSystemPrompt === "string"
+					? parsed.appendSystemPrompt
+					: DEFAULT_SETTINGS.appendSystemPrompt,
+			llamaServerUrl:
+				typeof parsed.llamaServerUrl === "string" && parsed.llamaServerUrl.trim()
+					? parsed.llamaServerUrl
+					: DEFAULT_SETTINGS.llamaServerUrl,
+			llamaApiKey:
+				typeof parsed.llamaApiKey === "string"
+					? parsed.llamaApiKey
+					: DEFAULT_SETTINGS.llamaApiKey,
 			continueQueuedAfterInterrupt:
 				typeof parsed.continueQueuedAfterInterrupt === "boolean"
 					? parsed.continueQueuedAfterInterrupt

@@ -434,7 +434,9 @@ impl PiProcess {
 		fork_of: Option<&str>,
 		session_name: Option<&str>,
 		system_prompt: Option<&str>,
+		append_system_prompt: Option<&str>,
 		tools: Option<&[String]>,
+		excluded_tools: Option<&[String]>,
 		models: Option<&str>,
 		state: Arc<Mutex<HashMap<String, PiProcess>>>,
 		label: String,
@@ -473,6 +475,15 @@ impl PiProcess {
 				cmd.arg("--system-prompt").arg(prompt);
 			}
 		}
+		if let Some(prompt) = append_system_prompt {
+			let prompt = prompt.trim();
+			if !prompt.is_empty() {
+				if prompt.len() > 30000 {
+					return Err("append-system-prompt is too long (max 30000 chars)".into());
+				}
+				cmd.arg("--append-system-prompt").arg(prompt);
+			}
+		}
 		// Tool allowlist: Some([]) = disable all tools, Some([...]) = allowlist,
 		// None = keep pi defaults (all tools).
 		if let Some(tools) = tools {
@@ -480,6 +491,13 @@ impl PiProcess {
 				cmd.arg("--no-tools");
 			} else {
 				cmd.arg("--tools").arg(tools.join(","));
+			}
+		}
+		// Tool exclude list: Some([...]) = --exclude-tools (keeps everything
+		// else enabled, works alongside the allowlist above).
+		if let Some(tools) = excluded_tools {
+			if !tools.is_empty() {
+				cmd.arg("--exclude-tools").arg(tools.join(","));
 			}
 		}
 		cmd.current_dir(workspace)
@@ -1185,6 +1203,8 @@ fn pi_start(
 	system_prompt: Option<String>,
 	tools: Option<Vec<String>>,
 	models: Option<String>,
+	excluded_tools: Option<Vec<String>>,
+	append_system_prompt: Option<String>,
 ) -> Result<(), String> {
 	let info = probe_pi().ok_or("pi binary not found")?;
 	let label = window.label().to_string();
@@ -1231,7 +1251,9 @@ fn pi_start(
 		fork_of.as_deref(),
 		session_name.as_deref(),
 		system_prompt.as_deref(),
+		append_system_prompt.as_deref(),
 		tools.as_deref(),
+		excluded_tools.as_deref(),
 		models.as_deref(),
 		state.inner.clone(),
 		label,
@@ -2158,6 +2180,254 @@ async fn pi_share_session(session_path: String) -> Result<String, String> {
 	.await
 }
 
+// ===================================================================
+// Project trust (/trust): read/write ~/.pi/agent/trust.json with the same
+// shape pi uses — a map of canonical absolute directory → true|false — and
+// the global `defaultProjectTrust` fallback in ~/.pi/agent/settings.json.
+// ===================================================================
+fn agent_dir() -> PathBuf {
+	home_dir()
+		.map(|h| h.join(".pi").join("agent"))
+		.unwrap_or_else(|| PathBuf::from(".pi/agent"))
+}
+
+fn trust_file_path() -> PathBuf {
+	agent_dir().join("trust.json")
+}
+
+fn settings_file_path() -> PathBuf {
+	agent_dir().join("settings.json")
+}
+
+fn read_json_map(path: &Path) -> serde_json::Map<String, serde_json::Value> {
+	let Ok(content) = std::fs::read_to_string(path) else {
+		return serde_json::Map::new();
+	};
+	serde_json::from_str(&content).unwrap_or_default()
+}
+
+fn write_json_map(path: &Path, map: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+	if let Some(dir) = path.parent() {
+		let _ = std::fs::create_dir_all(dir);
+	}
+	std::fs::write(path, serde_json::to_string_pretty(map).unwrap_or_default())
+		.map_err(|e| format!("failed to write {}: {e}", path.display()))
+}
+
+/// Nearest saved decision for a directory, walking up its parents (mirrors
+/// pi's findNearestTrustEntry). Keys are stored as-is (absolute paths).
+fn find_nearest_trust(
+	map: &serde_json::Map<String, serde_json::Value>,
+	dir: &Path,
+) -> Option<bool> {
+	let mut current = dir;
+	loop {
+		if let Some(v) = map.get(current.to_string_lossy().as_ref()) {
+			return v.as_bool();
+		}
+		match current.parent() {
+			Some(p) if p != current => current = p,
+			_ => return None,
+		}
+	}
+}
+
+#[tauri::command]
+fn pi_trust_get(project: String) -> Result<Option<bool>, String> {
+	let map = read_json_map(&trust_file_path());
+	Ok(find_nearest_trust(&map, Path::new(&project)))
+}
+
+/// decision: Some(true) = trust, Some(false) = deny, None = clear the entry.
+#[tauri::command]
+fn pi_trust_set(project: String, decision: Option<bool>) -> Result<(), String> {
+	let mut map = read_json_map(&trust_file_path());
+	match decision {
+		Some(d) => {
+			map.insert(project.clone(), serde_json::json!(d));
+		}
+		None => {
+			map.remove(&project);
+		}
+	}
+	write_json_map(&trust_file_path(), &map)
+}
+
+#[tauri::command]
+fn pi_trust_default_get() -> Result<String, String> {
+	let map = read_json_map(&settings_file_path());
+	Ok(map
+		.get("defaultProjectTrust")
+		.and_then(|x| x.as_str())
+		.unwrap_or("ask")
+		.to_string())
+}
+
+#[tauri::command]
+fn pi_trust_default_set(value: String) -> Result<(), String> {
+	if !["ask", "always", "never"].contains(&value.as_str()) {
+		return Err("invalid trust mode: expected ask/always/never".into());
+	}
+	let path = settings_file_path();
+	let mut map = read_json_map(&path);
+	map.insert("defaultProjectTrust".into(), serde_json::json!(value));
+	write_json_map(&path, &map)
+}
+
+// ===================================================================
+// External editor (TUI Ctrl+G): write the draft to a temp file, open the
+// system editor, wait for it to close, and read the result back.
+// ===================================================================
+#[tauri::command]
+async fn pi_external_edit(text: Option<String>) -> Result<String, String> {
+	run_blocking(move || {
+		let tmp = std::env::temp_dir().join(format!("tau-editor-{}.md", std::process::id()));
+		std::fs::write(&tmp, text.unwrap_or_default())
+			.map_err(|e| format!("failed to write draft: {e}"))?;
+		let editor = std::env::var("VISUAL")
+			.or_else(|_| std::env::var("EDITOR"))
+			.ok();
+		let status = if let Some(ed) = editor {
+			no_console_window(&mut Command::new(&ed)).arg(&tmp).status()
+		} else {
+			#[cfg(target_os = "macos")]
+			{
+				Command::new("open")
+					.args(["-W", "-a", "TextEdit"])
+					.arg(&tmp)
+					.status()
+			}
+			#[cfg(not(target_os = "macos"))]
+			{
+				let mut cmd = Command::new(if cfg!(windows) { "notepad.exe" } else { "nano" });
+				cmd.arg(&tmp);
+				#[cfg(windows)]
+				no_console_window(&mut cmd);
+				cmd.status()
+			}
+		};
+		let result = std::fs::read_to_string(&tmp);
+		let _ = std::fs::remove_file(&tmp);
+		match (status, result) {
+			(Ok(s), Ok(content)) if s.success() => Ok(content),
+			(Ok(s), Ok(_)) => Err(format!("editor exited with status {s}")),
+			(Ok(_), Err(e)) => Err(format!("failed to read draft back: {e}")),
+			(Err(e), _) => Err(format!("failed to launch editor: {e}")),
+		}
+	})
+	.await
+}
+
+// ===================================================================
+// llama.cpp router (/llama): thin HTTP proxy to llama-server via curl.
+// The webview CSP forbids direct fetches, so all calls go through here.
+// ===================================================================
+fn run_curl(args: &[String], timeout_secs: u32) -> Result<String, String> {
+	let mut cmd = Command::new("curl");
+	cmd.args(["-s", "-m", &timeout_secs.to_string()])
+		.args(args)
+		.stdin(Stdio::null())
+		.stdout(Stdio::piped())
+		.stderr(Stdio::piped());
+	no_console_window(&mut cmd);
+	let out = cmd.output().map_err(|e| format!("curl unavailable: {e}（管理 llama.cpp 需要 curl）"))?;
+	if !out.status.success() {
+		let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+		let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+		return Err(if !stderr.is_empty() {
+			stderr
+		} else if !stdout.is_empty() {
+			stdout
+		} else {
+			format!("curl exited with status {}", out.status)
+		});
+	}
+	Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn llama_curl_args(
+	url: &str,
+	api_key: &Option<String>,
+	suffix: &str,
+) -> Result<(Vec<String>, Option<PathBuf>), String> {
+	let mut args = Vec::new();
+	if let Some(k) = api_key.as_deref().filter(|k| !k.is_empty()) {
+		args.push("-H".to_string());
+		args.push(format!("Authorization: Bearer {k}"));
+	}
+	args.push(format!("{url}{suffix}"));
+	Ok((args, None))
+}
+
+#[tauri::command]
+async fn pi_llama_models(url: String, api_key: Option<String>) -> Result<Vec<String>, String> {
+	run_blocking(move || {
+		let (args, _) = llama_curl_args(&url, &api_key, "/v1/models")?;
+		let body = run_curl(&args, 10)?;
+		let v: serde_json::Value = serde_json::from_str(&body)
+			.map_err(|e| format!("unexpected router response: {e} — {}", body.chars().take(160).collect::<String>()))?;
+		let ids = v
+			.get("models")
+			.and_then(|m| m.as_array())
+			.map(|arr| {
+				arr.iter()
+					.filter_map(|m| m.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()))
+					.collect::<Vec<_>>()
+			})
+			.unwrap_or_default();
+		Ok(ids)
+	})
+	.await
+}
+
+#[tauri::command]
+async fn pi_llama_load(
+	url: String,
+	api_key: Option<String>,
+	name: String,
+) -> Result<(), String> {
+	run_blocking(move || {
+		let (mut args, _) = llama_curl_args(&url, &api_key, "/v1/load")?;
+		args.insert(0, "-X".to_string());
+		args.insert(1, "POST".to_string());
+		args.insert(2, "-H".to_string());
+		args.insert(3, "Content-Type: application/json".to_string());
+		let body = serde_json::json!({ "name": name }).to_string();
+		let tmp = std::env::temp_dir().join(format!("tau-llama-{}.json", std::process::id()));
+		std::fs::write(&tmp, &body).map_err(|e| format!("failed to write request: {e}"))?;
+		let mut data_args = vec!["-d".to_string(), format!("@{}", tmp.display())];
+		data_args.append(&mut args);
+		let result = run_curl(&data_args, 300);
+		let _ = std::fs::remove_file(&tmp);
+		result.map(|_| ())
+	})
+	.await
+}
+
+#[tauri::command]
+async fn pi_llama_unload(
+	url: String,
+	api_key: Option<String>,
+	name: String,
+) -> Result<(), String> {
+	run_blocking(move || {
+		let (mut args, _) = llama_curl_args(&url, &api_key, "/v1/unload")?;
+		args.insert(0, "-X".to_string());
+		args.insert(1, "POST".to_string());
+		args.insert(2, "-H".to_string());
+		args.insert(3, "Content-Type: application/json".to_string());
+		let body = serde_json::json!({ "name": name }).to_string();
+		let tmp = std::env::temp_dir().join(format!("tau-llama-{}.json", std::process::id()));
+		std::fs::write(&tmp, &body).map_err(|e| format!("failed to write request: {e}"))?;
+		let mut data_args = vec!["-d".to_string(), format!("@{}", tmp.display())];
+		data_args.append(&mut args);
+		let result = run_curl(&data_args, 300);
+		let _ = std::fs::remove_file(&tmp);
+		result.map(|_| ())
+	})
+	.await
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PiUsageEntry {
@@ -2293,6 +2563,14 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			pi_project_files,
 			pi_import_session,
 			pi_share_session,
+			pi_external_edit,
+			pi_trust_get,
+			pi_trust_set,
+			pi_trust_default_get,
+			pi_trust_default_set,
+			pi_llama_models,
+			pi_llama_load,
+			pi_llama_unload,
 			pi_usage_stats,
 			pi_compact_session_images,
 			pi_list_sessions,

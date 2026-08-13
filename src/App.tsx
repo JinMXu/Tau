@@ -37,6 +37,10 @@ import {
 	start,
 	status,
 	stop,
+	trustDefaultGet,
+	trustDefaultSet,
+	trustGet,
+	trustSet,
 	type AuthProviderStatus,
 	type GitBranchState,
 	type PiArchivedSession,
@@ -82,6 +86,7 @@ import { HotkeysDialog } from "./components/HotkeysDialog";
 import { ScopedModelsDialog } from "./components/ScopedModelsDialog";
 import { CompactDialog } from "./components/CompactDialog";
 import { ShareDialog } from "./components/ShareDialog";
+import { LlamaDialog } from "./components/LlamaDialog";
 import type { ModelEntry } from "./components/Composer";
 import "./App.css";
 import { TitleBar } from "./components/TitleBar";
@@ -278,6 +283,12 @@ export default function App() {
 	const [shareUrl, setShareUrl] = useState<string | null>(null);
 	// ---- direct bash command (!cmd / !!cmd) streaming ----
 	const activeBashRef = useRef<{ id: string; messageId: number } | null>(null);
+	// ---- /reload (restart pi to reload extensions/skills/prompts) ----
+	// ---- /trust (project trust decisions) ----
+	const [trustDecision, setTrustDecision] = useState<boolean | null>(null);
+	const [trustDefault, setTrustDefault] = useState<string>("ask");
+	// ---- /llama ----
+	const [llamaOpen, setLlamaOpen] = useState(false);
 
 	// ---- follow-up / steering queue (managed locally, delivered one at a time) ----
 	const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
@@ -1314,8 +1325,12 @@ export default function App() {
 						forkOf: opts?.forkOf ?? null,
 						sessionName: opts?.sessionName ?? null,
 						systemPrompt: settings.systemPrompt || null,
+						appendSystemPrompt: settings.appendSystemPrompt || null,
 						tools: settings.customTools.length
 							? settings.customTools
+							: null,
+						excludedTools: settings.excludedTools.length
+							? settings.excludedTools
 							: null,
 						// Scoped model patterns for Ctrl+P cycling (/scoped-models).
 						models: settings.scopedModels.length
@@ -1378,7 +1393,9 @@ export default function App() {
 			workspace,
 			loadHistory,
 			settings.systemPrompt,
+			settings.appendSystemPrompt,
 			settings.customTools,
+			settings.excludedTools,
 			settings.scopedModels,
 			sessions,
 			toast,
@@ -2452,6 +2469,69 @@ export default function App() {
 		[connect, sessions],
 	);
 
+	// ---- /reload: restart pi so extensions/skills/prompts/themes reload ----
+	const reload = useCallback(async () => {
+		if (busy) {
+			toast(t.chat.busyToast);
+			return;
+		}
+		const resume = sessionPathRef.current;
+		await disconnect();
+		setMessages([]);
+		await connect({ sessionFile: resume });
+		toast(t.chat.reloaded);
+	}, [busy, disconnect, connect, toast, t]);
+
+	// ---- /trust: current project decision + global fallback ----
+	const refreshTrust = useCallback(async () => {
+		try {
+			const [decision, def] = await Promise.all([
+				workspace ? trustGet(workspace) : Promise.resolve(null),
+				trustDefaultGet(),
+			]);
+			setTrustDecision(decision);
+			setTrustDefault(def);
+		} catch {
+			/* trust store may not exist yet */
+		}
+	}, [workspace]);
+	useEffect(() => {
+		void refreshTrust();
+	}, [refreshTrust]);
+
+	const setProjectTrust = useCallback(
+		async (decision: boolean | null) => {
+			if (!workspace) return;
+			try {
+				await trustSet(workspace, decision);
+				setTrustDecision(decision);
+				toast(
+					decision === null
+						? t.chat.trustCleared
+						: decision
+							? t.chat.trusted
+							: t.chat.trustDenied,
+				);
+			} catch (e) {
+				setError(String(e));
+			}
+		},
+		[workspace, t, toast],
+	);
+
+	const setDefaultTrust = useCallback(
+		async (value: string) => {
+			try {
+				await trustDefaultSet(value);
+				setTrustDefault(value);
+				toast(t.chat.trustDefaultSaved);
+			} catch (e) {
+				setError(String(e));
+			}
+		},
+		[t, toast],
+	);
+
 	const handleCheckoutBranch = useCallback(
 		async (name: string) => {
 			if (!workspace) return;
@@ -2754,6 +2834,13 @@ export default function App() {
 						onClose={() => setSettingsOpen(false)}
 						onOpenSessionDir={openSessionDir}
 						onOpenScopedModels={() => setScopedModelsOpen(true)}
+						onReload={reload}
+						onOpenLlama={() => setLlamaOpen(true)}
+						workspace={workspace}
+						trustDecision={trustDecision}
+						trustDefault={trustDefault}
+						onSetProjectTrust={(d) => void setProjectTrust(d)}
+						onSetDefaultTrust={(v) => void setDefaultTrust(v)}
 					/>
 				) : (
 					<ChatArea
@@ -2954,6 +3041,14 @@ export default function App() {
 				url={shareUrl}
 				t={t}
 				onClose={() => setShareUrl(null)}
+			/>
+
+			<LlamaDialog
+				open={llamaOpen}
+				url={settings.llamaServerUrl}
+				apiKey={settings.llamaApiKey}
+				t={t}
+				onClose={() => setLlamaOpen(false)}
 			/>
 
 			<div className="toasts">

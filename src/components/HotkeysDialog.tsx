@@ -47,6 +47,7 @@ export function HotkeysDialog({
 				{ keys: ["@"], label: t.hotkeys.referenceFile },
 				{ keys: ["!"], label: t.hotkeys.shellCommand },
 				{ keys: ["!!"], label: t.hotkeys.shellHidden },
+				{ keys: ["Ctrl+G"], label: t.hotkeys.externalEditor },
 			],
 		},
 		{

@@ -12,7 +12,7 @@ import {
 import type { Attachment, SendBehavior } from "../chat-types";
 import { projectNameFromPath, type MessageCatalog } from "../i18n";
 import type { GitBranchState, PiCommand } from "../pi";
-import { projectFiles } from "../pi";
+import { externalEdit, projectFiles } from "../pi";
 import {
 	CheckIcon,
 	ChevronDownIcon,
@@ -276,6 +276,7 @@ export function Composer({
 	});
 	const historyRef = useRef(history);
 	const historyIndexRef = useRef(-1);
+	const [extError, setExtError] = useState<string | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -1128,6 +1129,14 @@ export function Composer({
 						</button>
 					</div>
 				)}
+				{extError && (
+					<div className="ext-editor-error">
+						<span>{extError}</span>
+						<button className="link-btn" onClick={() => setExtError(null)}>
+							{t.app.close}
+						</button>
+					</div>
+				)}
 				{attachments.length > 0 && (
 					<div className="attachment-strip">
 						{attachments.map((a) => (
@@ -1282,6 +1291,27 @@ export function Composer({
 						if (e.shiftKey && e.key === "Tab" && !slashOpen && !atOpen) {
 							e.preventDefault();
 							onCycleThinking();
+							return;
+						}
+						// Ctrl+G: edit the draft in the system editor (TUI ctrl+g).
+						if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "g") {
+							e.preventDefault();
+							void (async () => {
+								try {
+									const edited = await externalEdit(text);
+									setText(edited);
+									caretRef.current = edited.length;
+									requestAnimationFrame(() => {
+										const el = textareaRef.current;
+										if (el) {
+											el.focus();
+											el.setSelectionRange(edited.length, edited.length);
+										}
+									});
+								} catch (err) {
+									setExtError(String(err));
+								}
+							})();
 							return;
 						}
 					}}

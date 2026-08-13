@@ -13,22 +13,27 @@ import {
 	type PiPackageEntry,
 	type PiSkillEntry,
 } from "../pi";
-import type { MessageCatalog } from "../i18n";
+import { projectNameFromPath, type MessageCatalog } from "../i18n";
 import {
 	ArchiveIcon,
 	BarChartIcon,
 	BoltIcon,
+	CheckIcon,
 	ChevronLeftIcon,
+	CopyIcon,
 	EditIcon,
 	EyeIcon,
 	GridIcon,
 	InfoIcon,
+	RefreshIcon,
 	RestoreIcon,
 	SettingsIcon,
 	SparkleIcon,
+	TerminalIcon,
 	TrashIcon,
 } from "../icons";
 import type { AppSettings, ColorScale, Density, Theme } from "../settings";
+import { ALL_AGENT_TOOLS } from "../settings";
 import { PACKAGES_CATALOG, formatDownloads } from "../packages-catalog";
 import { UsageStats } from "./UsageStats";
 
@@ -159,7 +164,20 @@ function ProviderRow({
 	const [editing, setEditing] = useState(false);
 	const [key, setKey] = useState("");
 	const [busy, setBusy] = useState(false);
+	const [oauthHelp, setOauthHelp] = useState(false);
+	const [copiedCmd, setCopiedCmd] = useState(false);
 	const configured = Boolean(status?.hasKey);
+	const isOAuth = status?.kind === "oauth";
+
+	const copyLoginCmd = async () => {
+		try {
+			await navigator.clipboard.writeText(`pi\n/login ${provider}`);
+			setCopiedCmd(true);
+			setTimeout(() => setCopiedCmd(false), 1500);
+		} catch {
+			/* ignore */
+		}
+	};
 
 	const save = async () => {
 		if (!key.trim()) return;
@@ -237,9 +255,33 @@ function ProviderRow({
 					)}
 				</div>
 			) : (
-				<button className="btn secondary small" onClick={() => setEditing(true)}>
-					{configured ? t.settings.apiKey : t.settings.saveKey}
-				</button>
+				<div className="provider-actions">
+					<button className="btn secondary small" onClick={() => setEditing(true)}>
+						{configured ? t.settings.apiKey : t.settings.saveKey}
+					</button>
+					{isOAuth && (
+						<button
+							className="btn secondary small"
+							title={t.settings.oauthLoginHint}
+							onClick={() => setOauthHelp((v) => !v)}
+						>
+							{t.settings.oauthLogin}
+						</button>
+					)}
+				</div>
+			)}
+			{oauthHelp && (
+				<div className="oauth-help">
+					<p>{t.settings.oauthHelpBody.replace("{provider}", provider)}</p>
+					<div className="oauth-help-cmd mono">
+						<span>pi</span>
+						<span className="oauth-help-arrow">→</span>
+						<span>/login {provider}</span>
+						<button className="icon-btn" title={t.chat.copy} onClick={() => void copyLoginCmd()}>
+							{copiedCmd ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
+						</button>
+					</div>
+				</div>
 			)}
 		</li>
 	);
@@ -260,6 +302,13 @@ export function SettingsPanel({
 	onClose,
 	onOpenSessionDir,
 	onOpenScopedModels,
+	onReload,
+	onOpenLlama,
+	workspace,
+	trustDecision,
+	trustDefault,
+	onSetProjectTrust,
+	onSetDefaultTrust,
 }: {
 	t: MessageCatalog;
 	settings: AppSettings;
@@ -275,6 +324,13 @@ export function SettingsPanel({
 	onClose: () => void;
 	onOpenSessionDir: () => void;
 	onOpenScopedModels: () => void;
+	onReload: () => void;
+	onOpenLlama: () => void;
+	workspace: string | null;
+	trustDecision: boolean | null;
+	trustDefault: string;
+	onSetProjectTrust: (decision: boolean | null) => void;
+	onSetDefaultTrust: (value: string) => void;
 }) {
 	const themeOptions: { id: Theme; label: string }[] = [
 		{ id: "light", label: t.settings.themeLight },
@@ -769,6 +825,100 @@ export function SettingsPanel({
 							</button>
 						</div>
 					</Row>
+					<Row label={t.settings.excludedTools} hint={t.settings.excludedToolsHint}>
+						<div className="excluded-tools">
+							{ALL_AGENT_TOOLS.map((tool) => {
+								const excluded = settings.excludedTools.includes(tool);
+								return (
+									<label
+										key={tool}
+										className={`excluded-tool-chip ${excluded ? "excluded" : ""}`}
+									>
+										<input
+											type="checkbox"
+											checked={excluded}
+											onChange={(e) => {
+												const next = new Set(settings.excludedTools);
+												if (e.target.checked) next.add(tool);
+												else next.delete(tool);
+												onChange({
+													...settings,
+													excludedTools: ALL_AGENT_TOOLS.filter((x) =>
+															next.has(x),
+														),
+												});
+											}}
+										/>
+										<span>
+											{(t.chat.agentToolNames as Record<string, string>)[tool] ?? tool}
+										</span>
+									</label>
+								);
+							})}
+						</div>
+					</Row>
+					<Row label={t.settings.llama} hint={t.settings.llamaHint}>
+						<div className="llama-settings-row">
+							<input
+								className="llama-url-input mono"
+								value={settings.llamaServerUrl}
+								placeholder="http://127.0.0.1:8080"
+								spellCheck={false}
+								onChange={(e) =>
+									onChange({ ...settings, llamaServerUrl: e.target.value })
+								}
+							/>
+							<input
+								type="password"
+								className="llama-key-input mono"
+								value={settings.llamaApiKey}
+								placeholder={t.settings.llamaApiKeyPlaceholder}
+								spellCheck={false}
+								onChange={(e) =>
+									onChange({ ...settings, llamaApiKey: e.target.value })
+								}
+							/>
+							<button className="btn secondary" onClick={onOpenLlama}>
+								<TerminalIcon size={13} />
+								<span>{t.settings.llamaManage}</span>
+							</button>
+						</div>
+					</Row>
+					<Row label={t.settings.trust} hint={t.settings.trustHint}>
+						<div className="trust-row">
+							<span className="trust-project mono" title={workspace ?? undefined}>
+								{workspace
+									? t.settings.trustFor.replace("{project}", projectNameFromPath(workspace))
+									: t.settings.trustNoProject}
+							</span>
+							<div className="trust-buttons">
+								<button
+									className={`btn small ${trustDecision === true ? "primary" : "secondary"}`}
+									disabled={!workspace}
+									onClick={() => onSetProjectTrust(trustDecision === true ? null : true)}
+								>
+									{t.settings.trustTrust}
+								</button>
+								<button
+									className={`btn small ${trustDecision === false ? "danger" : "secondary"}`}
+									disabled={!workspace}
+									onClick={() => onSetProjectTrust(trustDecision === false ? null : false)}
+								>
+									{t.settings.trustDeny}
+								</button>
+							</div>
+							<select
+								className="trust-default"
+								value={trustDefault}
+								title={t.settings.trustDefaultHint}
+								onChange={(e) => onSetDefaultTrust(e.target.value)}
+							>
+								<option value="ask">{t.settings.trustDefaultAsk}</option>
+								<option value="always">{t.settings.trustDefaultAlways}</option>
+								<option value="never">{t.settings.trustDefaultNever}</option>
+							</select>
+						</div>
+					</Row>
 					</section>
 					)}
 
@@ -814,6 +964,25 @@ export function SettingsPanel({
 							{t.settings.reset}
 						</button>
 					)}
+					<h4 className="settings-sub">{t.settings.appendSystemPrompt}</h4>
+					<p className="settings-hint">{t.settings.appendSystemPromptHint}</p>
+					<textarea
+						className="system-prompt-editor"
+						rows={4}
+						value={settings.appendSystemPrompt}
+						placeholder={t.settings.appendSystemPromptPlaceholder}
+						onChange={(e) =>
+							onChange({ ...settings, appendSystemPrompt: e.target.value })
+						}
+					/>
+					{settings.appendSystemPrompt && (
+						<button
+							className="link-btn"
+							onClick={() => onChange({ ...settings, appendSystemPrompt: "" })}
+						>
+							{t.settings.reset}
+						</button>
+					)}
 					</section>
 					)}
 
@@ -821,9 +990,15 @@ export function SettingsPanel({
 					<section className="settings-section">
 						<div className="settings-section-title-row">
 							<h3>{t.settings.extensions}</h3>
-						<button className="link-btn" onClick={refreshPackages}>
-							{t.sidebar.refresh}
-						</button>
+						<div className="settings-section-actions">
+							<button className="link-btn" onClick={onReload}>
+								<RefreshIcon size={12} />
+								<span>{t.settings.reload}</span>
+							</button>
+							<button className="link-btn" onClick={refreshPackages}>
+								{t.sidebar.refresh}
+							</button>
+						</div>
 					</div>
 					<p className="settings-hint">{t.settings.extensionsHint}</p>
 

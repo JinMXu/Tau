@@ -154,6 +154,10 @@ export async function start(
 		systemPrompt?: string | null;
 		/** Tool allowlist; empty array disables all tools, undefined = all tools. */
 		tools?: string[] | null;
+		/** Tool exclude list (--exclude-tools); undefined = none excluded. */
+		excludedTools?: string[] | null;
+		/** Appended to the system prompt without replacing it. */
+		appendSystemPrompt?: string | null;
 		/** Model patterns for Ctrl+P cycling (--models flag, scoped models). */
 		models?: string | null;
 	},
@@ -165,6 +169,8 @@ export async function start(
 		sessionName: opts?.sessionName ?? null,
 		systemPrompt: opts?.systemPrompt ?? null,
 		tools: opts?.tools ?? null,
+		excludedTools: opts?.excludedTools ?? null,
+		appendSystemPrompt: opts?.appendSystemPrompt ?? null,
 		models: opts?.models ?? null,
 	});
 }
@@ -324,4 +330,55 @@ export async function importSession(): Promise<string | null> {
 /** Share the session as a private GitHub gist (needs `gh` CLI). Returns URL. */
 export async function shareSession(sessionPath: string): Promise<string> {
 	return invoke("pi_share_session", { sessionPath });
+}
+
+/** Open the draft in the system editor; returns the edited text. */
+export async function externalEdit(text: string): Promise<string> {
+	return invoke("pi_external_edit", { text });
+}
+
+/** Nearest saved trust decision for a project (true=trust, false=deny). */
+export async function trustGet(project: string): Promise<boolean | null> {
+	return invoke("pi_trust_get", { project });
+}
+
+/** Save/clear a project trust decision (null clears). */
+export async function trustSet(
+	project: string,
+	decision: boolean | null,
+): Promise<void> {
+	return invoke("pi_trust_set", { project, decision });
+}
+
+/** Global fallback trust mode: "ask" | "always" | "never". */
+export async function trustDefaultGet(): Promise<string> {
+	return invoke("pi_trust_default_get");
+}
+
+export async function trustDefaultSet(value: string): Promise<void> {
+	return invoke("pi_trust_default_set", { value });
+}
+
+/** Loaded model ids from the llama.cpp router (GET /v1/models). */
+export async function llamaModels(
+	url: string,
+	apiKey: string,
+): Promise<string[]> {
+	return invoke("pi_llama_models", { url, apiKey });
+}
+
+export async function llamaLoad(
+	url: string,
+	apiKey: string,
+	name: string,
+): Promise<void> {
+	return invoke("pi_llama_load", { url, apiKey, name });
+}
+
+export async function llamaUnload(
+	url: string,
+	apiKey: string,
+	name: string,
+): Promise<void> {
+	return invoke("pi_llama_unload", { url, apiKey, name });
 }

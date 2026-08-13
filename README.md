@@ -18,7 +18,8 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **`@` 文件引用 + `!` 终端命令** — 输入 `@` 模糊搜索项目文件并补全路径（Tab 补全）；`!cmd` 直接执行 shell 命令（输出随下一条消息发给模型），`!!cmd` 执行但不上文，输出实时流式显示在聊天卡片中。
 - **提示词历史** — 输入框 ↑/↓ 浏览历史发送记录。
 - **会话导出** — 会话菜单支持导出为 Markdown、原始 JSONL 或带样式的 HTML 文件（原生保存对话框，HTML 由 pi CLI 生成）。
-- **自定义 Agent 工具** — Composer 扳手按钮可勾选允许 Pi 使用的工具（read/write/edit/bash/grep/find/ls），下次连接会话时通过 `--tools` 生效。
+- **自定义 Agent 工具** — Composer 扳手按钮可勾选允许 Pi 使用的工具（read/write/edit/bash/grep/find/ls），下次连接会话时通过 `--tools` 生效；设置页可勾选**排除工具**（`--exclude-tools`），其余工具保持可用。
+- **外部编辑器** — Ctrl+G 在系统编辑器中编辑输入框草稿（$VISUAL/$EDITOR，Windows 默认记事本）。
 - **聊天内 API Key 提示** — 发送消息时若所选 Provider 未配置 Key，直接在聊天内弹窗填写，无需跳转设置页。
 - **消息级复制** — 每条消息 hover 出现操作按钮：分支（用户消息）、复制为 Markdown、复制纯文本。
 - **Escape 中断** — 全局 Esc 键中断当前回合（输入框或对话框打开时不触发）。
@@ -30,9 +31,11 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **复制 / 重命名 / 显示位置** — 会话菜单支持复制为 Markdown、重命名、在文件管理器中显示。
 - **归档 / 删除 / 恢复** — 软删除移入归档区，可随时恢复；彻底删除移入回收站，仍可手动 purge。
 - **全文搜索** — ⌘K 唤起搜索浮层，跨所有会话标题和消息内容搜索，带片段预览，点击跳转。
-- **扩展与 Skills 管理** — 内置精选 Pi 包目录（100 个，按下载量排序，支持搜索），一键安装/移除扩展、skills、提示词、主题；支持自定义包源（npm/git/本地路径）；列出已安装的 skills。
-- **模型提供商配置** — 设置页动态读取 Pi 内置的全部模型提供商（约 40 个：Anthropic/OpenAI/Gemini/DeepSeek/Kimi/OpenRouter 等，含 `models.json` 自定义提供商），可逐个配置 API Key，读写 `~/.pi/agent/auth.json`，与 Pi CLI 共享凭据，OAuth 登录状态同样可见。
-- **自定义系统提示词** — 设置页内置 Markdown 编辑器，自定义 Pi 的系统指令，下次连接会话时通过 `--system-prompt` 生效。
+- **扩展与 Skills 管理** — 内置精选 Pi 包目录（100 个，按下载量排序，支持搜索），一键安装/移除扩展、skills、提示词、主题；支持自定义包源（npm/git/本地路径）；列出已安装的 skills；一键**重载扩展与技能**（重启 pi 进程，免手动断开重连）。
+- **项目信任（/trust）** — 设置页可对当前项目保存信任/拒绝决策（写入 `~/.pi/agent/trust.json`），并可配置全局默认模式（ask/always/never，写入 settings.json）。
+- **llama.cpp 路由（/llama）** — 设置页配置本地 llama-server 地址与 API Key，模型管理面板可查看已加载模型、按名称加载/卸载。
+- **模型提供商配置** — 设置页动态读取 Pi 内置的全部模型提供商（约 40 个：Anthropic/OpenAI/Gemini/DeepSeek/Kimi/OpenRouter 等，含 `models.json` 自定义提供商），可逐个配置 API Key，读写 `~/.pi/agent/auth.json`，与 Pi CLI 共享凭据，OAuth 登录状态同样可见（含 OAuth 登录引导：复制 `pi` + `/login <provider>` 命令在终端完成授权，登出即清除凭据）。
+- **自定义系统提示词** — 设置页内置 Markdown 编辑器，自定义 Pi 的系统指令，下次连接会话时通过 `--system-prompt` 生效；支持**追加式提示词**（`--append-system-prompt`，不替换默认提示词）。
 - **Git 分支集成** — 工作目录为 Git 仓库时，Composer 显示当前分支（含未提交文件数徽标），可一键切换已有分支或创建新分支。
 - **消息级分支** — 任意用户消息 hover 出现分支按钮，从该消息 fork 出新会话并自动切换。
 - **上下文用量显示** — 会话标题栏实时显示上下文窗口占用百分比（tooltip 含 tokens 明细与费用），阈值变色提醒。

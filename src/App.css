@@ -4849,3 +4849,262 @@ textarea {
 	max-height: 120px;
 	overflow-y: auto;
 }
+
+/* ---- excluded tools (settings) ---- */
+.excluded-tools {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	flex: 1;
+}
+
+.excluded-tool-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 3px 9px;
+	border-radius: 12px;
+	border: 1px solid var(--menu-border);
+	background: var(--input-bg);
+	font-size: var(--fs-xs);
+	color: var(--text-2);
+	cursor: pointer;
+	user-select: none;
+	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.excluded-tool-chip input {
+	accent-color: var(--link);
+	margin: 0;
+}
+
+.excluded-tool-chip.excluded {
+	background: var(--danger-soft, var(--hover));
+	color: var(--text-1);
+	border-color: var(--danger, #e5484d);
+}
+
+/* ---- llama settings (settings page) ---- */
+.llama-settings-row {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	flex: 1;
+	min-width: 0;
+}
+
+.llama-settings-row .llama-url-input {
+	flex: 1;
+	min-width: 120px;
+}
+
+.llama-settings-row .llama-key-input {
+	flex: 1;
+	min-width: 100px;
+}
+
+.llama-settings-row .btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+/* ---- trust (settings page) ---- */
+.trust-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: 1;
+	min-width: 0;
+	flex-wrap: wrap;
+}
+
+.trust-project {
+	flex: 1;
+	min-width: 100px;
+	font-size: var(--fs-xs);
+	color: var(--text-2);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.trust-buttons {
+	display: flex;
+	gap: 6px;
+}
+
+.trust-buttons .btn.small {
+	padding: 3px 10px;
+	font-size: var(--fs-xs);
+}
+
+.trust-default {
+	background: var(--input-bg);
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-sm);
+	color: var(--text-1);
+	font-size: var(--fs-xs);
+	padding: 3px 6px;
+	outline: none;
+}
+
+/* ---- provider OAuth help ---- */
+.provider-actions {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+}
+
+.oauth-help {
+	margin-top: 8px;
+	background: var(--input-bg);
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-sm);
+	padding: 8px 10px;
+	font-size: var(--fs-xs);
+	color: var(--text-2);
+}
+
+.oauth-help p {
+	margin: 0 0 6px;
+}
+
+.oauth-help-cmd {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: var(--fs-xs);
+	color: var(--link);
+}
+
+.oauth-help-arrow {
+	color: var(--text-3);
+}
+
+/* ---- llama dialog ---- */
+.llama-dialog {
+	width: min(520px, calc(100vw - 80px));
+}
+
+.tree-dialog-header-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.llama-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: var(--fs-xs);
+	color: var(--text-3);
+}
+
+.dot-status {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--text-3);
+}
+
+.llama-status.on .dot-status {
+	background: #30a46c;
+}
+
+.llama-models {
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-sm);
+	background: var(--input-bg);
+	padding: 6px;
+	margin-bottom: 10px;
+	max-height: 240px;
+	overflow-y: auto;
+}
+
+.llama-models-label {
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--text-3);
+	padding: 4px 6px;
+}
+
+.llama-empty {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 12px;
+	font-size: var(--fs-xs);
+	color: var(--text-3);
+	justify-content: center;
+}
+
+.llama-model-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 8px;
+	border-radius: var(--r-sm);
+	font-size: var(--fs-xs);
+	color: var(--text-1);
+}
+
+.llama-model-row:hover {
+	background: var(--hover);
+}
+
+.llama-model-name {
+	flex: 1;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.llama-load-row {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.llama-load-row input {
+	flex: 1;
+}
+
+.llama-load-row .btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+/* ---- extensions reload button ---- */
+.settings-section-title-row .settings-section-actions {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+}
+
+.settings-section-title-row .link-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+/* ---- external editor error hint (composer) ---- */
+.ext-editor-error {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	background: var(--danger-soft, var(--hover));
+	border: 1px solid var(--danger, #e5484d);
+	border-radius: var(--r-sm);
+	padding: 6px 10px;
+	margin-bottom: 8px;
+	font-size: var(--fs-xs);
+	color: var(--text-1);
+	word-break: break-all;
+}
