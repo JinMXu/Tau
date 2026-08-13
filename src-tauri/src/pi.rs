@@ -417,6 +417,14 @@ pub(crate) fn no_console_window(cmd: &mut Command) -> &mut Command {
 	cmd
 }
 
+/// Maximum size of a single RPC event line we are willing to buffer. pi
+/// sends one JSON event per line; a huge tool result can make a single line
+/// tens of MB. BufRead::lines() would allocate that unboundedly — combined
+/// with the webview's render spike at message_end that is exactly the OOM
+/// window the crashes were reported in. Lines beyond the cap are dropped
+/// (the UI degrades gracefully; the process survives).
+const MAX_EVENT_LINE: usize = 64 * 1024 * 1024;
+
 impl PiProcess {
 	fn spawn(
 		&mut self,
@@ -494,7 +502,7 @@ impl PiProcess {
 		let stop_flag_thread = stop_flag.clone();
 		thread::spawn(move || {
 			let reader = BufReader::new(stdout);
-			for line in reader.lines() {
+			for line in LimitedLines::new(reader, MAX_EVENT_LINE) {
 				let line = match line {
 					Ok(line) => line,
 					Err(_) => break,

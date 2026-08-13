@@ -1010,6 +1010,20 @@ textarea {
 	line-height: var(--ousia-chat-line-height);
 }
 
+/* Degraded rendering for oversized messages (see Markdown.tsx): plain,
+ * scrollable, wrapped text — no markdown parse, no syntax highlighting. */
+.markdown-plain {
+	font-family: var(--chat-font, var(--font-sans));
+	font-size: var(--ousia-chat-font-size);
+	line-height: var(--ousia-chat-line-height);
+	white-space: pre-wrap;
+	word-break: break-word;
+	margin: 0;
+	max-height: 60vh;
+	overflow: auto;
+	color: var(--text-1);
+}
+
 .ousia-chat-markdown :where(*, p, ul, ol, li, blockquote, table, th, td) {
 	font-family: inherit;
 }

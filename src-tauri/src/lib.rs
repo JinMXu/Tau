@@ -127,6 +127,19 @@ pub fn run() {
 			}));
 			runtime_log::log_info(app.handle(), "app started");
 			let _ = build_menu(app.handle(), "zh");
+			// Heartbeat: a hard-killed process leaves no exit trace; the last
+			// heartbeat timestamp narrows the crash moment to a 15s window.
+			{
+				let handle = app.handle().clone();
+				std::thread::spawn(move || {
+					let mut tick = 0u32;
+					loop {
+						std::thread::sleep(std::time::Duration::from_secs(15));
+						tick += 1;
+						runtime_log::log_info(&handle, &format!("heartbeat #{tick}"));
+					}
+				});
+			}
 			if let Some(win) = app.get_webview_window("main") {
 				window_state::restore(&win);
 				window_state::attach(&win);
