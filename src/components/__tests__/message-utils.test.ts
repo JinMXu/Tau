@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+	chatMessageToMarkdown,
+	chatMessageToPlainText,
 	computeLineDiff,
 	diffBlocksFromArgs,
+	parsedMessagesToMarkdown,
 	searchMessages,
 	splitOnQuery,
 	toolSummary,
@@ -138,5 +141,75 @@ describe("splitOnQuery", () => {
 
 	it("returns the whole text for an empty query", () => {
 		expect(splitOnQuery("abc", "")).toEqual([{ text: "abc", match: false }]);
+	});
+});
+
+describe("chatMessageToMarkdown", () => {
+	const msg: ChatMessage = {
+		id: 1,
+		role: "assistant",
+		blocks: [
+			{ kind: "thinking", text: "internal note" },
+			{ kind: "text", text: "Done." },
+			{ kind: "tool", name: "bash", args: "{\"command\":\"ls\"}" },
+		],
+		streaming: false,
+	};
+
+	it("renders text, thinking and tool blocks as details", () => {
+		const md = chatMessageToMarkdown(msg);
+		expect(md).toContain("**Pi**:");
+		expect(md).toContain("<details><summary>thinking</summary>");
+		expect(md).toContain("Done.");
+		expect(md).toContain("<summary>tool: bash</summary>");
+		expect(md).toContain('{"command":"ls"}');
+	});
+
+	it("labels user and tool roles", () => {
+		expect(
+			chatMessageToMarkdown({
+				...msg,
+				role: "user",
+				blocks: [{ kind: "text", text: "hi" }],
+			}),
+		).toBe("**User**:\nhi");
+		expect(
+			chatMessageToMarkdown({
+				...msg,
+				role: "tool",
+				blocks: [{ kind: "text", text: "out" }],
+			}),
+		).toBe("**Tool**:\nout");
+	});
+
+	it("returns empty for messages without renderable blocks", () => {
+		expect(chatMessageToMarkdown({ ...msg, blocks: [] })).toBe("");
+	});
+});
+
+describe("chatMessageToPlainText", () => {
+	it("joins only text blocks", () => {
+		expect(
+			chatMessageToPlainText({
+				id: 1,
+				role: "assistant",
+				blocks: [
+					{ kind: "text", text: "a" },
+					{ kind: "tool", name: "bash", args: "{}" },
+					{ kind: "text", text: "b" },
+				],
+				streaming: false,
+			}),
+		).toBe("a\n\nb");
+	});
+});
+
+describe("parsedMessagesToMarkdown", () => {
+	it("separates messages with a horizontal rule", () => {
+		const md = parsedMessagesToMarkdown([
+			{ role: "user", timestamp: null, blocks: [{ kind: "text", text: "hi" }] },
+			{ role: "assistant", timestamp: null, blocks: [{ kind: "text", text: "yo" }] },
+		]);
+		expect(md).toBe("**User**:\nhi\n\n---\n\n**Pi**:\nyo");
 	});
 });

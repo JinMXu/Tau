@@ -19,6 +19,8 @@ import { Markdown } from "./Markdown";
 import {
 	diffBlocksFromArgs,
 	splitOnQuery,
+	chatMessageToMarkdown,
+	chatMessageToPlainText,
 	toolSummary,
 	type DiffLine,
 } from "./message-utils";
@@ -43,7 +45,15 @@ type ToolBlockT = Extract<Block, { kind: "tool" }>;
 /** Lines of tool output shown inline before the rest is tucked behind a toggle. */
 const OUTPUT_PREVIEW_LINES = 8;
 
-function ToolOutput({ text, error }: { text: string; error?: boolean }) {
+function ToolOutput({
+	text,
+	error,
+	t,
+}: {
+	text: string;
+	error?: boolean;
+	t: MessageCatalog;
+}) {
 	const [expanded, setExpanded] = useState(false);
 	const body = text.replace(/\n+$/, "");
 	const lineCount = body ? body.split("\n").length : 0;
@@ -55,14 +65,16 @@ function ToolOutput({ text, error }: { text: string; error?: boolean }) {
 					{body}
 				</pre>
 			) : (
-				<div className="tool-output-empty">(no output)</div>
+				<div className="tool-output-empty">{t.chat.noOutput}</div>
 			)}
 			{truncated && (
 				<button
 					className="tool-output-toggle"
 					onClick={() => setExpanded((v) => !v)}
 				>
-					{expanded ? "Show less" : `Show all ${lineCount} lines`}
+					{expanded
+						? t.chat.showLess
+						: t.chat.showAllLines.replace("{count}", String(lineCount))}
 				</button>
 			)}
 		</div>
@@ -72,9 +84,11 @@ function ToolOutput({ text, error }: { text: string; error?: boolean }) {
 function DiffView({
 	lines,
 	label,
+	t,
 }: {
 	lines: DiffLine[];
 	label?: string;
+	t: MessageCatalog;
 }) {
 	const [expanded, setExpanded] = useState(false);
 	const truncated = lines.length > OUTPUT_PREVIEW_LINES;
@@ -96,7 +110,9 @@ function DiffView({
 					className="tool-output-toggle"
 					onClick={() => setExpanded((v) => !v)}
 				>
-					{expanded ? "Show less" : `Show all ${lines.length} lines`}
+					{expanded
+						? t.chat.showLess
+						: t.chat.showAllLines.replace("{count}", String(lines.length))}
 				</button>
 			)}
 		</div>
@@ -107,12 +123,14 @@ function ToolCard({
 	block,
 	result,
 	running,
+	t,
 }: {
 	block: ToolBlockT;
 	/** The call's output — attached from the following tool-result message,
 	 * or the block itself when this card renders an orphan result. */
 	result?: ToolBlockT | null;
 	running: boolean;
+	t: MessageCatalog;
 }) {
 	const [showArgs, setShowArgs] = useState(false);
 	const prettyName = block.name
@@ -181,7 +199,7 @@ function ToolCard({
 				<span className="tool-name">{prettyName || "tool"}</span>
 				{block.result && (
 					<span className="tool-result-label">
-						{block.error ? "error" : "result"}
+						{block.error ? t.chat.error : t.chat.result}
 					</span>
 				)}
 				{summary && <span className="tool-summary">{summary}</span>}
@@ -218,21 +236,30 @@ function ToolCard({
 							key={i}
 							lines={b.lines}
 							label={b.label || undefined}
+							t={t}
 						/>
 					))}
 				</div>
 			)}
-			{result && <ToolOutput text={result.args} error={result.error} />}
+			{result && <ToolOutput text={result.args} error={result.error} t={t} />}
 		</div>
 	);
 }
 
-function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }) {
+function ThinkingBlock({
+	text,
+	streaming,
+	t,
+}: {
+	text: string;
+	streaming: boolean;
+	t: MessageCatalog;
+}) {
 	return (
 		<details className="thinking-block">
 			<summary>
 				<span className={`thinking-dot${streaming ? " pulse" : ""}`} />
-				<span className="thinking-label">thinking</span>
+				<span className="thinking-label">{t.chat.thinking}</span>
 				<ChevronDownIcon size={12} className="tool-chevron" />
 			</summary>
 			<div className="thinking-body">{text}</div>
@@ -240,35 +267,13 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }
 	);
 }
 
-function AssistantFooter({ message }: { message: ChatMessage }) {
+function AssistantFooter({ message, t }: { message: ChatMessage; t: MessageCatalog }) {
 	return (
 		<div className="assistant-footer">
 			<span className="assistant-name">Pi</span>
-			{message.replay && <span className="replay-badge">history</span>}
+			{message.replay && <span className="replay-badge">{t.chat.history}</span>}
 		</div>
 	);
-}
-
-/** Single-message copy helpers (hover actions on each message row). */
-function messageToPlainText(m: ChatMessage): string {
-	return m.blocks
-		.filter((b) => b.kind === "text")
-		.map((b) => b.text)
-		.join("\n\n");
-}
-
-function messageToMarkdown(m: ChatMessage): string {
-	const role = m.role === "user" ? "User" : "Pi";
-	const parts = m.blocks
-		.map((b) => {
-			if (b.kind === "text") return b.text;
-			if (b.kind === "thinking")
-				return `<details><summary>thinking</summary>\n\n${b.text}\n</details>`;
-			return `<details><summary>tool: ${b.name}</summary>\n\n\`\`\`json\n${b.args}\n\`\`\`\n</details>`;
-		})
-		.filter(Boolean);
-	if (!parts.length) return "";
-	return `**${role}**:\n${parts.join("\n\n")}`;
 }
 
 function formatTime(ts?: string): string | null {
@@ -278,11 +283,11 @@ function formatTime(ts?: string): string | null {
 	return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function TurnWaitIndicator() {
+export function TurnWaitIndicator({ t }: { t: MessageCatalog }) {
 	return (
 		<div className="turn-wait">
 			<LoaderIcon size={14} className="spin" />
-			<span>Pi is thinking…</span>
+			<span>{t.chat.turnWait}</span>
 		</div>
 	);
 }
@@ -400,7 +405,7 @@ export function MessageList({
 	const copyMessage = useCallback(
 		async (m: ChatMessage, mode: "md" | "text") => {
 			const content =
-				mode === "md" ? messageToMarkdown(m) : messageToPlainText(m);
+				mode === "md" ? chatMessageToMarkdown(m) : chatMessageToPlainText(m);
 			if (!content) return;
 			const key = `${m.id}-${mode}`;
 			try {
@@ -443,7 +448,7 @@ export function MessageList({
 						className={`message ${m.role}${isSearchTarget ? " message-search-target" : ""}`}
 					>
 						{m.role === "assistant" && (
-							<AssistantFooter message={m} />
+							<AssistantFooter message={m} t={t} />
 						)}
 						{(m.role === "assistant" || (m.role === "user" && onFork && m.entryId)) && (
 							<div className="message-hover-actions">
@@ -507,11 +512,32 @@ export function MessageList({
 								);
 							}
 							if (b.kind === "thinking") {
+								if (isSearchTarget && searchQuery) {
+									// Highlight matches inside thinking blocks too, so a
+									// hit there is visible (not just counted).
+									return (
+										<div
+											className="text-block thinking highlighted-text"
+											key={i}
+										>
+											{splitOnQuery(b.text, searchQuery).map((p, j) =>
+												p.match ? (
+													<mark key={j} className="session-search-hit">
+														{p.text}
+													</mark>
+												) : (
+													<span key={j}>{p.text}</span>
+												),
+											)}
+										</div>
+									);
+								}
 								return (
 									<ThinkingBlock
 										key={i}
 										text={b.text}
 										streaming={m.streaming}
+										t={t}
 									/>
 								);
 							}
@@ -521,6 +547,7 @@ export function MessageList({
 									block={b}
 									result={b.result ? b : (attached.get(i) ?? null)}
 									running={m.streaming && i === m.blocks.length - 1}
+									t={t}
 								/>
 							);
 						})}

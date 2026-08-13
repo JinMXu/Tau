@@ -448,7 +448,7 @@ export function ChatArea({
 				/>
 				{showTurnWait && !streaming && (
 					<div className="turn-wait-wrap">
-						<TurnWaitIndicator />
+						<TurnWaitIndicator t={t} />
 					</div>
 				)}
 			</div>

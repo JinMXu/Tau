@@ -30,16 +30,23 @@ function getThemeSnapshot(): "light" | "dark" {
 	return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
 }
 
-/** Open external links in the system browser instead of navigating the webview. */
+/**
+ * Open external links in the system browser instead of navigating the
+ * webview. In-page anchors (#…) fall through to the default scroll
+ * behaviour; other non-external links (file:, relative) are swallowed so
+ * the webview never navigates away from the app.
+ */
 function onMarkdownClick(event: MouseEvent<HTMLDivElement>) {
 	const anchor = (event.target as Element | null)?.closest?.("a[href]");
 	if (!anchor) return;
-	event.preventDefault();
 	const href = anchor.getAttribute("href") ?? "";
 	if (/^(https?|mailto|tel):/i.test(href)) {
+		event.preventDefault();
 		void openUrl(href).catch(() => {
 			/* opening externally is best-effort */
 		});
+	} else if (!href.startsWith("#")) {
+		event.preventDefault();
 	}
 }
 

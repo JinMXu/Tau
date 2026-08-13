@@ -63,7 +63,11 @@ import { Sidebar } from "./components/Sidebar";
 import { ChatArea } from "./components/ChatArea";
 import { SearchOverlay } from "./components/SearchOverlay";
 import { SettingsPanel } from "./components/SettingsPanel";
-import { ArchivedPreview, parsedMessagesToMarkdown } from "./components/ArchivedPreview";
+import { ArchivedPreview } from "./components/ArchivedPreview";
+import {
+	chatMessageToMarkdown,
+	parsedMessagesToMarkdown,
+} from "./components/message-utils";
 import {
 	ExtensionDialog,
 	type ExtensionRequest,
@@ -125,20 +129,6 @@ function formatBytes(n: number): string {
 	if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
 	if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
 	return `${n} B`;
-}
-
-function messageToMarkdown(m: ChatMessage): string {
-	const role = m.role === "user" ? "User" : m.role === "tool" ? "Tool" : "Pi";
-	const parts = m.blocks
-		.map((b) => {
-			if (b.kind === "text") return b.text;
-			if (b.kind === "thinking")
-				return `<details><summary>thinking</summary>\n\n${b.text}\n</details>`;
-			return `<details><summary>tool: ${b.name}</summary>\n\n\`\`\`json\n${b.args}\n\`\`\`\n</details>`;
-		})
-		.filter(Boolean);
-	if (!parts.length) return "";
-	return `**${role}**:\n${parts.join("\n\n")}`;
 }
 
 interface ConfirmState {
@@ -305,7 +295,7 @@ export default function App() {
 	const connectInFlightRef = useRef<Promise<boolean> | null>(null);
 	// Cooldown/failure tracking for the auto-connect effect so a broken pi
 	// binary doesn't produce a reconnect loop.
-	const autoConnectStateRef = useRef({ lastAttempt: 0, failures: 0 });
+	const autoConnectStateRef = useRef({ failures: 0 });
 
 	// ---- settings side effects ----
 	useEffect(() => {
@@ -315,6 +305,10 @@ export default function App() {
 			document.documentElement.dataset.theme = theme;
 			document.documentElement.dataset.colorScale = settings.colorScale;
 			document.documentElement.dataset.density = settings.density;
+			// Keep the document language in sync with the UI language
+			// (spell-check, screen readers, `<html lang>`).
+			document.documentElement.lang =
+				settings.language === "zh" ? "zh-CN" : "en";
 			document.documentElement.style.setProperty(
 				"--ousia-chat-font-size",
 				`${settings.fontSize}px`,
@@ -1184,10 +1178,13 @@ export default function App() {
 				setMessages([]);
 				await connect({ sessionFile: null, workspace: ws });
 			})();
-		} else if (!busy) {
+		} else if (busy) {
+			// A connect is already in flight; don't silently drop the pick.
+			toast(t.chat.busyToast);
+		} else {
 			void connect({ sessionFile: null, workspace: ws });
 		}
-	}, [connected, busy, connect, disconnect]);
+	}, [connected, busy, connect, disconnect, toast, t]);
 
 	const selectWorkspace = useCallback(
 		(ws: string) => {
@@ -1201,11 +1198,13 @@ export default function App() {
 					setMessages([]);
 					await connect({ sessionFile: null, workspace: ws });
 				})();
-			} else if (!busy) {
+			} else if (busy) {
+				toast(t.chat.busyToast);
+			} else {
 				void connect({ sessionFile: null, workspace: ws });
 			}
 		},
-		[connected, busy, connect, disconnect],
+		[connected, busy, connect, disconnect, toast, t],
 	);
 
 	// Workspaces shown in the composer picker: recent picks first, then any
@@ -1429,7 +1428,7 @@ export default function App() {
 			if (!path) return;
 			const markdown =
 				format === "markdown"
-					? messages.map(messageToMarkdown).filter(Boolean).join("\n\n")
+					? messages.map(chatMessageToMarkdown).filter(Boolean).join("\n\n")
 					: null;
 			try {
 				const result = await exportChat(path, markdown, format);
@@ -1640,7 +1639,7 @@ export default function App() {
 
 	const copyConversation = useCallback(async (): Promise<boolean> => {
 		const md = messages
-			.map(messageToMarkdown)
+			.map(chatMessageToMarkdown)
 			.filter(Boolean)
 			.join("\n\n");
 		if (!md) return false;
@@ -2041,11 +2040,6 @@ export default function App() {
 
 	// Auto-connect / auto-resume: whenever the app is idle and a workspace is
 	// known, (re)connect to the current/last session (or a fresh one).
-	// NOTE: the lastAttempt stamp must be written inside the timer callback,
-	// not in the effect body — StrictMode double-invokes effects (mount →
-	// cleanup → mount), and stamping in the body would make the second run
-	// bail out via the cooldown guard after the first run's timer was
-	// cleared, leaving no timer at all (never connecting).
 	// Failures back off exponentially (3s, 6s, 12s… capped at 30s) instead of
 	// giving up permanently.
 	useEffect(() => {
@@ -2056,7 +2050,6 @@ export default function App() {
 		const last = localStorage.getItem(STORAGE_KEYS.lastSession);
 		const target = sessionPathRef.current ?? last;
 		const timer = setTimeout(() => {
-			st.lastAttempt = Date.now();
 			void connect({ sessionFile: target });
 		}, 300 + backoff);
 		return () => clearTimeout(timer);
@@ -2117,6 +2110,11 @@ export default function App() {
 				if (e.shiftKey) {
 					// Ctrl+Shift+N: new window (own pi process + session).
 					void newWindow().catch((err) => setError(String(err)));
+				} else if (busy) {
+					// A connect is in flight; newTask would kill the process it
+					// just spawned and wedge the UI (the sidebar button is
+					// disabled while busy, the shortcut needs the same guard).
+					toast(t.chat.busyToast);
 				} else {
 					void newTask();
 				}
@@ -2136,7 +2134,7 @@ export default function App() {
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [newTask, toggleSidebar, focusComposer, archiveCurrent]);
+	}, [newTask, toggleSidebar, focusComposer, archiveCurrent, busy, toast, t]);
 
 	// ---- sidebar resize ----
 	const resizeRef = useRef<{ startX: number; startW: number } | null>(null);

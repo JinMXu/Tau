@@ -28,8 +28,23 @@ type MenuEntry =
 	| { kind: "item"; label: string; shortcut?: string; action: () => void }
 	| { kind: "sep" };
 
+/**
+ * Text-edit menu commands. `document.execCommand` is deprecated but still
+ * the only reliable way to cut/copy/paste against the focused selection in
+ * both WebView2 and WKWebView; for copy we additionally fall back to the
+ * Clipboard API when execCommand reports failure.
+ */
 function editCmd(cmd: string) {
-	document.execCommand(cmd);
+	let ok = false;
+	try {
+		ok = document.execCommand(cmd);
+	} catch {
+		ok = false;
+	}
+	if (!ok && cmd === "copy") {
+		const sel = window.getSelection()?.toString();
+		if (sel) void navigator.clipboard.writeText(sel).catch(() => {});
+	}
 }
 
 async function toggleFullscreen() {

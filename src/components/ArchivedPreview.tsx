@@ -1,27 +1,9 @@
 import { useEffect, useMemo } from "react";
 import type { PiParsedMessage } from "../pi";
 import type { MessageCatalog } from "../i18n";
+import { parsedMessagesToMarkdown } from "./message-utils";
 import { Markdown } from "./Markdown";
 import { DownloadIcon, XIcon } from "../icons";
-
-export function parsedMessagesToMarkdown(messages: PiParsedMessage[]): string {
-	const parts = messages
-		.map((m) => {
-			const role = m.role === "user" ? "User" : m.role === "tool" ? "Tool" : "Pi";
-			const body = m.blocks
-				.map((b) => {
-					if (b.kind === "text") return b.text;
-					if (b.kind === "thinking")
-						return `<details><summary>thinking</summary>\n\n${b.text}\n</details>`;
-					return `<details><summary>tool: ${b.name ?? "tool"}</summary>\n\n\`\`\`json\n${b.text}\n\`\`\`\n</details>`;
-				})
-				.filter(Boolean);
-			if (!body.length) return "";
-			return `**${role}**:\n${body.join("\n\n")}`;
-		})
-		.filter(Boolean);
-	return parts.join("\n\n---\n\n");
-}
 
 export function ArchivedPreview({
 	title,

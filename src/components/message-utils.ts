@@ -1,4 +1,5 @@
 import type { Block, ChatMessage } from "../chat-types";
+import type { PiParsedMessage } from "../pi";
 
 /**
  * Pure helpers for message rendering (tool summaries, diffs, in-session
@@ -191,4 +192,57 @@ export function splitOnQuery(
 		pos = idx + q.length;
 	}
 	return out;
+}
+
+// ---------------------------------------------------------------------------
+// Markdown rendering for copy/export. Single source of truth — App.tsx,
+// MessageList.tsx and ArchivedPreview.tsx used to each carry a slightly
+// divergent copy of this logic.
+// ---------------------------------------------------------------------------
+
+function blockToMarkdown(b: Block): string {
+	if (b.kind === "text") return b.text;
+	if (b.kind === "thinking")
+		return `<details><summary>thinking</summary>\n\n${b.text}\n</details>`;
+	return `<details><summary>tool: ${b.name}</summary>\n\n\`\`\`json\n${b.args}\n\`\`\`\n</details>`;
+}
+
+function roleLabel(role: string): string {
+	if (role === "user") return "User";
+	if (role === "tool") return "Tool";
+	return "Pi";
+}
+
+/** Render a single live chat message as Markdown (hover copy, exports). */
+export function chatMessageToMarkdown(m: ChatMessage): string {
+	const parts = m.blocks.map(blockToMarkdown).filter(Boolean);
+	if (!parts.length) return "";
+	return `**${roleLabel(m.role)}**:\n${parts.join("\n\n")}`;
+}
+
+/** Plain-text rendering of a single message (hover “copy plain text”). */
+export function chatMessageToPlainText(m: ChatMessage): string {
+	return m.blocks
+		.filter((b) => b.kind === "text")
+		.map((b) => b.text)
+		.join("\n\n");
+}
+
+/** Render parsed session messages (archived preview/export) as Markdown. */
+export function parsedMessagesToMarkdown(messages: PiParsedMessage[]): string {
+	const parts = messages
+		.map((m) => {
+			const body = m.blocks
+				.map((b): string => {
+					if (b.kind === "text") return b.text;
+					if (b.kind === "thinking")
+						return `<details><summary>thinking</summary>\n\n${b.text}\n</details>`;
+					return `<details><summary>tool: ${b.name ?? "tool"}</summary>\n\n\`\`\`json\n${b.text}\n\`\`\`\n</details>`;
+				})
+				.filter(Boolean);
+			if (!body.length) return "";
+			return `**${roleLabel(m.role)}**:\n${body.join("\n\n")}`;
+		})
+		.filter(Boolean);
+	return parts.join("\n\n---\n\n");
 }

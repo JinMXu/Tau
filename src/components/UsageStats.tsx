@@ -9,6 +9,22 @@ function formatTokens(n: number): string {
 	return String(n);
 }
 
+function pad2(n: number): string {
+	return String(n).padStart(2, "0");
+}
+
+/**
+ * Session timestamps are UTC ("2026-08-12T16:00:00.000Z"); the backend
+ * slices the date out as-is, so "today" in the chart would lag by the UTC
+ * offset (UTC+8 evenings land on "yesterday"). Convert to the local date
+ * so the aggregation matches the local-timezone axis.
+ */
+function localDayKey(utcDate: string): string {
+	const d = new Date(`${utcDate}T00:00:00Z`);
+	if (Number.isNaN(d.getTime())) return utcDate;
+	return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
 function projectLabel(path: string | null): string {
 	if (!path) return "—";
 	const normalized = path.replace(/[\\/]+$/, "");
@@ -66,7 +82,7 @@ export function UsageStats({ t }: { t: MessageCatalog }) {
 				cur.turns += 1;
 				map.set(key, cur);
 			};
-			bump(byDay, e.date);
+			bump(byDay, localDayKey(e.date));
 			bump(byModel, e.model ? `${e.provider}/${e.model}` : e.provider || "—");
 			bump(byProject, e.project ?? "—");
 		}

@@ -96,6 +96,7 @@ function ProviderRow({
 	status,
 	onSaved,
 	onError,
+	onAuthChanged,
 	t,
 }: {
 	provider: string;
@@ -103,6 +104,7 @@ function ProviderRow({
 	status: AuthProviderStatus | undefined;
 	onSaved: (msg: string) => void;
 	onError: (msg: string) => void;
+	onAuthChanged: () => void;
 	t: MessageCatalog;
 }) {
 	const [editing, setEditing] = useState(false);
@@ -117,6 +119,7 @@ function ProviderRow({
 			await authSetKey(provider, key.trim());
 			setKey("");
 			setEditing(false);
+			onAuthChanged();
 			onSaved(t.settings.keySaved);
 		} catch (e) {
 			onError(String(e));
@@ -130,6 +133,7 @@ function ProviderRow({
 		try {
 			await authRemove(provider);
 			setEditing(false);
+			onAuthChanged();
 			onSaved(t.settings.keyRemoved);
 		} catch (e) {
 			onError(String(e));
@@ -633,6 +637,7 @@ export function SettingsPanel({
 								status={auth.find((a) => a.provider === p.id)}
 								onSaved={notify}
 								onError={notifyError}
+								onAuthChanged={refreshAuth}
 								t={t}
 							/>
 						))}
@@ -648,7 +653,7 @@ export function SettingsPanel({
 						className="system-prompt-editor"
 						rows={8}
 						value={settings.systemPrompt}
-						placeholder="e.g. You are an expert Rust developer…"
+						placeholder={t.settings.systemPromptPlaceholder}
 						onChange={(e) =>
 							onChange({ ...settings, systemPrompt: e.target.value })
 						}
@@ -763,7 +768,7 @@ export function SettingsPanel({
 					<div className="custom-source-row">
 						<input
 							value={customSource}
-							placeholder="npm:my-package 或 git:github.com/user/repo"
+							placeholder={t.settings.customSourcePlaceholder}
 							onChange={(e) => setCustomSource(e.target.value)}
 							onKeyDown={(e) => {
 								if (e.key === "Enter" && customSource.trim()) {
@@ -785,7 +790,7 @@ export function SettingsPanel({
 					</div>
 					{installedSources.size > 0 && (
 						<>
-							<h4 className="settings-sub">Installed</h4>
+							<h4 className="settings-sub">{t.settings.installed}</h4>
 							<ul className="installed-source-list">
 								{packages.map((p) => (
 									<li key={p.source}>
