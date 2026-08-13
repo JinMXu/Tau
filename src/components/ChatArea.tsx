@@ -293,7 +293,7 @@ export function ChatArea({
 				<div className="chat-scroll welcome">
 					<div className="empty-chat">
 						<div className="empty-chat-watermark" aria-hidden>
-							π
+							<img src="/logo.png" alt="" draggable={false} />
 						</div>
 						<p className="empty-chat-greeting">{greeting(t)}</p>
 						{composerEl}

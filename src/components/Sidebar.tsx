@@ -138,7 +138,7 @@ export function Sidebar({
 		<aside className="sidebar">
 			<div className="sidebar-brand">
 				<div className="brand-logo">
-					<span className="brand-pi">π</span>
+					<img src="/logo.png" alt="Tau" draggable={false} />
 				</div>
 				<span className="brand-name">{t.app.name}</span>
 				{binary && (
