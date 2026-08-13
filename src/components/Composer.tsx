@@ -320,9 +320,13 @@ export function Composer({
 	const submit = useCallback(
 		(behavior?: SendBehavior) => {
 			const trimmed = text.trim();
+			// While the agent is streaming, Enter sends via the active
+			// send-during-run mode (steer/followUp); App queues it and
+			// delivers it when pi is ready (pi rejects a plain `prompt`
+			// mid-stream, so the message must never go out unqueued).
 			if (
 				(!trimmed && attachments.length === 0) ||
-				(!editingQueueId && (streaming || (!connected && !workspace)))
+				(!editingQueueId && !connected && !workspace)
 			)
 				return;
 			onSubmit(trimmed, attachments, behavior ?? "normal", editingQueueId);
@@ -331,7 +335,7 @@ export function Composer({
 			requestAnimationFrame(autoSize);
 			textareaRef.current?.focus();
 		},
-		[text, attachments, connected, streaming, onSubmit, autoSize, editingQueueId],
+		[text, attachments, connected, onSubmit, autoSize, editingQueueId],
 	);
 
 	const startQueueEdit = useCallback(
@@ -1184,7 +1188,7 @@ export function Composer({
 								</div>
 							)}
 						</div>
-						{streaming ? (
+						{streaming && (
 							<button
 								className="send-btn stop"
 								onClick={onAbort}
@@ -1197,16 +1201,17 @@ export function Composer({
 									<StopIcon size={16} />
 								)}
 							</button>
-						) : (
+						)}
+						{/* Always-available send button: while streaming the message
+							is queued (steer/followUp) instead of being dropped. */}
 						<button
 							className="send-btn"
 							disabled={busy || !hasDraft || (!connected && !workspace)}
 							onClick={() => submit("normal")}
 							title={t.chat.send}
 						>
-								<SendIcon size={16} />
-							</button>
-						)}
+							<SendIcon size={16} />
+						</button>
 					</div>
 				</div>
 			</div>

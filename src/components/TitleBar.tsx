@@ -51,6 +51,7 @@ const RESIZE_EDGES: Array<{ dir: ResizeDirection; style: React.CSSProperties }> 
 export function TitleBar({
 	t,
 	onOpenSettings,
+	onNewWindow,
 	sidebarCollapsed,
 	onToggleSidebar,
 	onPeekSidebar,
@@ -58,6 +59,7 @@ export function TitleBar({
 }: {
 	t: MessageCatalog;
 	onOpenSettings: () => void;
+	onNewWindow: () => void;
 	sidebarCollapsed: boolean;
 	onToggleSidebar: () => void;
 	onPeekSidebar: () => void;
@@ -100,6 +102,8 @@ export function TitleBar({
 			id: "app",
 			label: t.menu.app,
 			entries: [
+				{ kind: "item", label: t.menu.newWindow, shortcut: `${MOD_KEY}Shift+N`, action: onNewWindow },
+				{ kind: "sep" },
 				{ kind: "item", label: t.menu.about, action: onOpenSettings },
 			],
 		},

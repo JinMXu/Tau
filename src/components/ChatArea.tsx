@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, ChatMessage, QueuedChatMessage, SendBehavior, SessionStats } from "../chat-types";
 import type { AgentToolName } from "../settings";
 import type { PiCommand } from "../pi";
@@ -6,16 +6,22 @@ import type { MessageCatalog } from "../i18n";
 import type { GitBranchState, PiSessionInfo } from "../pi";
 import {
 	ArchiveIcon,
+	BoltIcon,
 	CheckIcon,
+	ChevronDownIcon,
+	ChevronUpIcon,
 	CopyIcon,
 	DownloadIcon,
 	EditIcon,
 	FolderOpenIcon,
 	MoreIcon,
+	SearchIcon,
 	TrashIcon,
+	XIcon,
 } from "../icons";
 import { Composer, type ModelEntry } from "./Composer";
 import { MessageList, TurnWaitIndicator } from "./MessageList";
+import { searchMessages } from "./message-utils";
 
 function greeting(t: MessageCatalog): string {
 	const h = new Date().getHours();
@@ -50,6 +56,7 @@ export function ChatArea({
 	onRename,
 	onArchive,
 	onDelete,
+	onCompactImages,
 	onReveal,
 	composerFocusRequest,
 	showTurnWait,
@@ -106,6 +113,7 @@ export function ChatArea({
 	onRename: () => void;
 	onArchive: () => void;
 	onDelete: () => void;
+	onCompactImages: () => void;
 	onReveal: () => void;
 	composerFocusRequest: number;
 	showTurnWait: boolean;
@@ -137,6 +145,56 @@ export function ChatArea({
 		"idle",
 	);
 	const menuRef = useRef<HTMLDivElement>(null);
+	// In-session search (Ctrl+F): hits over all message blocks, one active.
+	const [searchOpen, setSearchOpen] = useState(false);
+	const [searchQuery, setSearchQuery] = useState("");
+	const [activeHit, setActiveHit] = useState(0);
+	const searchInputRef = useRef<HTMLInputElement>(null);
+	const hits = useMemo(
+		() => searchMessages(messages, searchQuery),
+		[messages, searchQuery],
+	);
+	const activeMessageId = useMemo(() => {
+		if (!searchOpen || hits.length === 0) return null;
+		const hit = hits[Math.min(activeHit, hits.length - 1)];
+		return messages[hit.messageIndex]?.id ?? null;
+	}, [searchOpen, hits, activeHit, messages]);
+
+	const stepHit = (delta: number) => {
+		if (hits.length === 0) return;
+		setActiveHit((cur) => (cur + delta + hits.length) % hits.length);
+	};
+
+	const closeSearch = () => {
+		setSearchOpen(false);
+		setSearchQuery("");
+		setActiveHit(0);
+	};
+
+	// Ctrl+F opens/focuses the search bar; capture-phase Escape closes it
+	// before the global Escape-interrupt handler sees the key.
+	useEffect(() => {
+		const onKeyDown = (e: KeyboardEvent) => {
+			if (e.key === "Escape" && searchOpen) {
+				e.stopPropagation();
+				closeSearch();
+				return;
+			}
+			if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+				e.preventDefault();
+				setSearchOpen(true);
+			}
+		};
+		window.addEventListener("keydown", onKeyDown, true);
+		return () => window.removeEventListener("keydown", onKeyDown, true);
+	}, [searchOpen]);
+
+	// Focus the input whenever the bar opens.
+	useEffect(() => {
+		if (searchOpen) {
+			searchInputRef.current?.focus();
+		}
+	}, [searchOpen]);
 
 	useEffect(() => {
 		function onClick(e: MouseEvent) {
@@ -290,6 +348,15 @@ export function ChatArea({
 									<DownloadIcon size={14} />
 									<span>{t.chat.exportHtml}</span>
 								</button>
+								<button
+									onClick={() => {
+										onCompactImages();
+										setMenuOpen(false);
+									}}
+								>
+									<BoltIcon size={14} />
+									<span>{t.chat.compactImages}</span>
+								</button>
 								<button onClick={() => { onRename(); setMenuOpen(false); }}>
 									<EditIcon size={14} />
 									<span>{t.chat.rename}</span>
@@ -320,12 +387,64 @@ export function ChatArea({
 
 			{error && <div className="error-banner">{error}</div>}
 
+			{searchOpen && (
+				<div className="session-search-bar">
+					<SearchIcon size={14} />
+					<input
+						ref={searchInputRef}
+						value={searchQuery}
+						placeholder={t.chat.searchInSession}
+						onChange={(e) => {
+							setSearchQuery(e.target.value);
+							setActiveHit(0);
+						}}
+						onKeyDown={(e) => {
+							if (e.key === "Escape") {
+								e.stopPropagation();
+								closeSearch();
+							} else if (e.key === "Enter") {
+								e.preventDefault();
+								stepHit(e.shiftKey ? -1 : 1);
+							}
+						}}
+					/>
+					<span className="session-search-count">
+						{searchQuery
+							? hits.length
+								? `${Math.min(activeHit + 1, hits.length)}/${hits.length}`
+								: t.chat.noMatches
+							: ""}
+					</span>
+					<button
+						className="icon-btn"
+						title={t.chat.searchPrev}
+						disabled={hits.length === 0}
+						onClick={() => stepHit(-1)}
+					>
+						<ChevronUpIcon size={14} />
+					</button>
+					<button
+						className="icon-btn"
+						title={t.chat.searchNext}
+						disabled={hits.length === 0}
+						onClick={() => stepHit(1)}
+					>
+						<ChevronDownIcon size={14} />
+					</button>
+					<button className="icon-btn" title={t.app.close} onClick={closeSearch}>
+						<XIcon size={14} />
+					</button>
+				</div>
+			)}
+
 			<div className="chat-scroll">
 				<MessageList
 					messages={messages}
 					streaming={streaming}
 					onFork={onForkFromMessage}
 					t={t}
+					searchQuery={searchOpen ? searchQuery : undefined}
+					searchActiveMessageId={activeMessageId}
 				/>
 				{showTurnWait && !streaming && (
 					<div className="turn-wait-wrap">

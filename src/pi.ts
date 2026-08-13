@@ -183,6 +183,10 @@ export async function stop(): Promise<void> {
 	await invoke("pi_stop");
 }
 
+export async function newWindow(): Promise<void> {
+	await invoke("pi_new_window");
+}
+
 export async function status(): Promise<PiStatus> {
 	return invoke("pi_status");
 }
@@ -287,4 +291,10 @@ export async function piMoveSession(
 
 export async function usageStats(): Promise<PiUsageEntry[]> {
 	return invoke("pi_usage_stats");
+}
+
+export async function compactSessionImages(
+	path: string,
+): Promise<{ ok: boolean; removed: number; before: number; after: number }> {
+	return invoke("pi_compact_session_images", { path });
 }

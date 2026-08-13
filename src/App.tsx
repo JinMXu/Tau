@@ -13,6 +13,7 @@ import {
 	authSetKey,
 	authStatus,
 	binaryInfo,
+	compactSessionImages,
 	deleteSession as deleteSessionCmd,
 	exportChat,
 	exportHtml,
@@ -21,6 +22,7 @@ import {
 	gitCreateBranch,
 	listArchivedSessions,
 	listSessions,
+	newWindow,
 	openWorkspace,
 	piMoveSession,
 	purgeSession,
@@ -37,6 +39,7 @@ import {
 	type PiBinaryInfo,
 	type PiCommand,
 	type PiEvent,
+	type PiParsedMessage,
 	type PiSessionInfo,
 } from "./pi";
 import {
@@ -60,6 +63,7 @@ import { Sidebar } from "./components/Sidebar";
 import { ChatArea } from "./components/ChatArea";
 import { SearchOverlay } from "./components/SearchOverlay";
 import { SettingsPanel } from "./components/SettingsPanel";
+import { ArchivedPreview, parsedMessagesToMarkdown } from "./components/ArchivedPreview";
 import {
 	ExtensionDialog,
 	type ExtensionRequest,
@@ -84,6 +88,29 @@ const STORAGE_KEYS = {
 	pinned: "pi-gui.pinnedSessions.v1",
 };
 
+/**
+ * Per-command RPC response timeouts (ms). Provider/model/command discovery
+ * can take tens of seconds, compaction can take minutes, while lightweight
+ * state reads should fail fast instead of wedging the UI on a stuck pipe.
+ */
+const RESPONSE_TIMEOUTS: Record<string, number> = {
+	get_available_models: 90000,
+	get_available_thinking_levels: 90000,
+	get_commands: 90000,
+	compact: 300000,
+	get_messages: 30000,
+	switch_session: 30000,
+	fork: 30000,
+	clone: 30000,
+	new_session: 30000,
+	get_state: 15000,
+	get_session_stats: 15000,
+	set_model: 15000,
+	set_thinking_level: 15000,
+	set_session_name: 15000,
+	set_auto_retry: 15000,
+};
+
 function loadExpanded(): Set<string> {
 	try {
 		const raw = localStorage.getItem(STORAGE_KEYS.expanded);
@@ -92,6 +119,12 @@ function loadExpanded(): Set<string> {
 	} catch {
 		return new Set(["__default__"]);
 	}
+}
+
+function formatBytes(n: number): string {
+	if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+	if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
+	return `${n} B`;
 }
 
 function messageToMarkdown(m: ChatMessage): string {
@@ -123,6 +156,9 @@ interface RenameState {
 export default function App() {
 	const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
 	const t = useMemo(() => getMessages(settings.language), [settings.language]);
+	// Latest translations for event listeners registered once at mount.
+	const tRef = useRef(t);
+	tRef.current = t;
 
 	const [binary, setBinary] = useState<PiBinaryInfo | null>(null);
 	const [binError, setBinError] = useState<string | null>(null);
@@ -189,6 +225,12 @@ export default function App() {
 			return [];
 		}
 	});
+	// Read-only preview of an archived session (messages + export).
+	const [archivedPreview, setArchivedPreview] = useState<{
+		path: string;
+		title: string;
+		messages: PiParsedMessage[];
+	} | null>(null);
 	const [pinnedSessions, setPinnedSessions] = useState<string[]>(() => {
 		try {
 			const raw = localStorage.getItem(STORAGE_KEYS.pinned);
@@ -216,6 +258,11 @@ export default function App() {
 	const workingRef = useRef(false);
 	const streamingRef = useRef(false);
 	const settingsRef = useRef(settings);
+	// Monotonic counter bumped every time a new run starts (submit / queued
+	// delivery). The abort watchdog captures the epoch when it arms and only
+	// force-kills when the epoch is unchanged — so a run started after the
+	// abort can never be killed by the leftover watchdog.
+	const runEpochRef = useRef(0);
 
 	// ---- provider API-key gate (chat-time key dialog) ----
 	const [authProviders, setAuthProviders] = useState<AuthProviderStatus[]>([]);
@@ -419,11 +466,13 @@ export default function App() {
 	const handleResponse = useCallback(
 		async (command: Record<string, unknown>): Promise<PiEvent> => {
 			const id = `gui-${nextId++}`;
+			const timeoutMs =
+				RESPONSE_TIMEOUTS[String(command.type)] ?? 60000;
 			const event = await new Promise<PiEvent>((resolve, reject) => {
 				const timer = setTimeout(() => {
 					if (pendingRef.current.delete(id))
 						reject(new Error("timeout waiting for pi response"));
-				}, 60000); // provider/model discovery can take tens of seconds
+				}, timeoutMs);
 				pendingRef.current.set(id, ((e: PiEvent) => {
 					clearTimeout(timer);
 					resolve(e);
@@ -534,6 +583,7 @@ export default function App() {
 					streaming: false,
 				},
 			]);
+			runEpochRef.current += 1;
 			setWorking(true);
 			try {
 				if (sender === "steer" && workingRef.current) {
@@ -569,6 +619,7 @@ export default function App() {
 					streaming: false,
 				},
 			]);
+			runEpochRef.current += 1;
 			setWorking(true);
 			try {
 				if (workingRef.current) {
@@ -898,6 +949,10 @@ export default function App() {
 					setStreaming(false);
 					setWorking(false);
 					setPendingSession(null);
+					// The backend only emits this on real crashes (deliberate
+					// stops are flagged), so surface it; the auto-connect effect
+					// below will try to resume the session.
+					toast(tRef.current.app.piExited);
 				}),
 			);
 			try {
@@ -1006,6 +1061,7 @@ export default function App() {
 				setWorking(false);
 				try {
 					let ws = opts?.workspace ?? workspace;
+					const explicitWs = opts?.workspace ?? null;
 					if (!ws) {
 						ws = await openWorkspace();
 						if (!ws) return false;
@@ -1015,8 +1071,10 @@ export default function App() {
 					// When resuming/opening an existing session, its project dir is
 					// the source of truth for the workspace — otherwise the composer
 					// could show a different directory than the one pi actually
-					// runs in (and where the session file lands).
-					if (sessionFile) {
+					// runs in (and where the session file lands). An explicitly
+					// requested workspace wins (e.g. right after moving a session
+					// to a different project).
+					if (sessionFile && !explicitWs) {
 						const known = sessions.find((s) => s.path === sessionFile);
 						if (known?.project && known.project !== ws) {
 							ws = known.project;
@@ -1032,22 +1090,45 @@ export default function App() {
 					} else {
 						localStorage.removeItem(STORAGE_KEYS.lastSession);
 					}
-					await start(ws, sessionFile, {
+					const startOpts = {
 						forkOf: opts?.forkOf ?? null,
 						sessionName: opts?.sessionName ?? null,
 						systemPrompt: settings.systemPrompt || null,
-					tools: settings.customTools.length
+						tools: settings.customTools.length
 							? settings.customTools
 							: null,
-					});
+					};
+					// A session file can only be driven by ONE pi process (the
+					// backend rejects a second window opening the same JSONL).
+					// Fall back to a fresh session instead so a new window is
+					// still usable while the other window owns the session.
+					let effectiveSession = sessionFile;
+					try {
+						await start(ws, effectiveSession, startOpts);
+					} catch (e) {
+						if (
+							effectiveSession &&
+							String(e).includes("already open in another window")
+						) {
+							localStorage.removeItem(STORAGE_KEYS.lastSession);
+							sessionPathRef.current = null;
+							setSelectedSessionPath(null);
+							isNewSessionRef.current = true;
+							toast(tRef.current.app.sessionBusy);
+							effectiveSession = null;
+							await start(ws, null, startOpts);
+						} else {
+							throw e;
+						}
+					}
 					// The RPC pipe is live as soon as pi spawns — mark connected
 					// before loading history so the composer/model picker are
 					// usable immediately instead of waiting on a big file read.
 					setMessages([]);
 					setConnected(true);
 					autoConnectStateRef.current.failures = 0;
-					if (sessionFile) {
-						await loadHistory(sessionFile).catch(() => {
+					if (effectiveSession) {
+						await loadHistory(effectiveSession).catch(() => {
 							/* history is best-effort; the connection is already up */
 						});
 					}
@@ -1069,7 +1150,14 @@ export default function App() {
 				}
 			}
 		},
-		[workspace, loadHistory, settings.systemPrompt, settings.customTools, sessions],
+		[
+			workspace,
+			loadHistory,
+			settings.systemPrompt,
+			settings.customTools,
+			sessions,
+			toast,
+		],
 	);
 
 	const disconnect = useCallback(async () => {
@@ -1405,21 +1493,27 @@ export default function App() {
 			// Provider API-key gate: ask inline before sending when missing.
 			if (!(await ensureProviderKey())) return;
 
-			// While the agent is running, steer/follow-up messages are queued
-			// locally (editable, reorderable, send-now) and delivered one at a
-			// time — steering between tool calls, follow-ups after the turn.
-			if (working && (behavior === "steer" || behavior === "followUp")) {
-				const item: QueuedChatMessage = {
-					id: `queued-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-					text,
-					attachments,
-					mode: behavior,
-				};
-				const next = [...queuedRef.current, item];
-				queuedRef.current = next;
-				setQueuedMessages(next);
-				setQueuePaused(false);
-				return;
+			// While the agent is running, every message is queued locally
+			// (editable, reorderable, send-now) and delivered one at a time —
+			// steering between tool calls, follow-ups after the turn. A plain
+			// "normal" send during a run follows the composer's active
+			// send-during-run mode; pi rejects unqueued prompts mid-run, so a
+			// direct `prompt` must never go out while the agent is busy.
+			if (working) {
+				const mode = behavior === "normal" ? sendDuringRun : behavior;
+				if (mode === "steer" || mode === "followUp") {
+					const item: QueuedChatMessage = {
+						id: `queued-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+						text,
+						attachments,
+						mode,
+					};
+					const next = [...queuedRef.current, item];
+					queuedRef.current = next;
+					setQueuedMessages(next);
+					setQueuePaused(false);
+					return;
+				}
 			}
 
 			const images = attachmentsToImages(attachments);
@@ -1434,6 +1528,7 @@ export default function App() {
 					streaming: false,
 				},
 			]);
+			runEpochRef.current += 1;
 			setWorking(true);
 
 			// New task: show it in the sidebar immediately instead of waiting
@@ -1488,7 +1583,7 @@ export default function App() {
 				setPendingSession(null);
 			}
 		},
-		[connected, workspace, connect, refreshSessions, discoverNewSession, ensureProviderKey, attachmentsToImages, attachmentsToText, working],
+		[connected, workspace, connect, refreshSessions, discoverNewSession, ensureProviderKey, attachmentsToImages, attachmentsToText, working, sendDuringRun],
 	);
 
 	const abort = useCallback(async () => {
@@ -1511,9 +1606,16 @@ export default function App() {
 		// Watchdog: if pi hasn't settled shortly after the abort (hung network
 		// request, unresponsive provider, unkillable bash), force-kill the
 		// process and reconnect to the same session so the UI never stays
-		// stuck in "running" with a dead stop button.
+		// stuck in "running" with a dead stop button. The epoch guard makes
+		// sure a run the user started after aborting is never killed by the
+		// leftover watchdog.
+		const epoch = runEpochRef.current;
 		window.setTimeout(() => {
-			if (!workingRef.current && !streamingRef.current) return;
+			if (
+				runEpochRef.current !== epoch ||
+				(!workingRef.current && !streamingRef.current)
+			)
+				return;
 			void (async () => {
 				const resume = sessionPathRef.current;
 				try {
@@ -1569,8 +1671,11 @@ export default function App() {
 			confirmLabel: t.app.delete,
 			onConfirm: async () => {
 				try {
-					await archiveSessionCmd(path);
+					// Stop pi first: on Linux/macOS renaming a session file
+					// that pi still has open makes later appends land in the
+					// moved copy; on Windows the rename just fails.
 					await disconnect();
+					await archiveSessionCmd(path);
 					setMessages([]);
 					await refreshSessions();
 					// Reconnect to a fresh session so the composer stays usable
@@ -1593,10 +1698,12 @@ export default function App() {
 				confirmLabel: t.app.delete,
 				onConfirm: async () => {
 					try {
-						await archiveSessionCmd(path);
 						const wasCurrent = sessionPathRef.current === path;
 						if (wasCurrent) {
 							await disconnect();
+						}
+						await archiveSessionCmd(path);
+						if (wasCurrent) {
 							setMessages([]);
 						}
 						await refreshSessions();
@@ -1627,8 +1734,8 @@ export default function App() {
 			confirmLabel: t.app.delete,
 			onConfirm: async () => {
 				try {
-					await deleteSessionCmd(path);
 					await disconnect();
+					await deleteSessionCmd(path);
 					setMessages([]);
 					await refreshSessions();
 					if (workspace) void connect({ sessionFile: null });
@@ -1683,6 +1790,39 @@ export default function App() {
 		[refreshSessions, toast, t],
 	);
 
+	// Read-only preview + export for archived sessions.
+	const openArchivedPreview = useCallback(async (path: string, title: string) => {
+		try {
+			const parsed = await readSession(path);
+			setArchivedPreview({ path, title, messages: parsed });
+		} catch (e) {
+			setError(String(e));
+		}
+	}, []);
+
+	const exportArchivedPreview = useCallback(
+		async (format: "markdown" | "jsonl" | "html") => {
+			const preview = archivedPreview;
+			if (!preview) return;
+			try {
+				if (format === "html") {
+					await exportHtml(preview.path);
+				} else if (format === "jsonl") {
+					await exportChat(preview.path, null, "jsonl");
+				} else {
+					await exportChat(
+						preview.path,
+						parsedMessagesToMarkdown(preview.messages),
+						"markdown",
+					);
+				}
+			} catch (e) {
+				setError(String(e));
+			}
+		},
+		[archivedPreview],
+	);
+
 	const handleRevealProject = useCallback(async (path: string) => {
 		try {
 			await openPath(path);
@@ -1703,6 +1843,13 @@ export default function App() {
 				),
 				confirmLabel: t.app.delete,
 				onConfirm: async () => {
+					const current = sessionPathRef.current;
+					const includesCurrent =
+						current != null &&
+						projectSessions.some((s) => s.path === current);
+					if (includesCurrent) {
+						await disconnect();
+					}
 					for (const s of projectSessions) {
 						try {
 							await archiveSessionCmd(s.path);
@@ -1710,12 +1857,7 @@ export default function App() {
 							/* continue */
 						}
 					}
-					const current = sessionPathRef.current;
-					if (
-						current &&
-						projectSessions.some((s) => s.path === current)
-					) {
-						await disconnect();
+					if (includesCurrent) {
 						setMessages([]);
 					}
 					await refreshSessions();
@@ -1742,16 +1884,62 @@ export default function App() {
 		async (path: string) => {
 			const dir = await openWorkspace();
 			if (!dir) return;
+			const wasCurrent = sessionPathRef.current === path;
 			try {
+				// Rewriting a JSONL that the running pi process may append to
+				// concurrently would corrupt it — stop the session first.
+				if (wasCurrent) {
+					await disconnect();
+				}
 				await piMoveSession(path, dir);
 				await refreshSessions();
+				if (wasCurrent) {
+					setMessages([]);
+					// Explicit workspace: the session header now points at the
+					// new project, but the (stale) cached session entry would
+					// steer connect back to the old directory.
+					await connect({ sessionFile: path, workspace: dir });
+				}
 				toast(t.chat.moved);
 			} catch (e) {
 				setError(String(e));
 			}
 		},
-		[refreshSessions, toast, t],
+		[refreshSessions, toast, t, disconnect, connect],
 	);
+
+	const handleCompactImages = useCallback(async () => {
+		const path = sessionPathRef.current;
+		if (!path) return;
+		setConfirmState({
+			title: t.confirm.compactImagesTitle,
+			body: t.confirm.compactImagesBody,
+			confirmLabel: t.app.confirm,
+			onConfirm: async () => {
+				try {
+					// The backend refuses to touch a session the running pi
+					// process may append to, so stop it first and reconnect
+					// afterwards.
+					await disconnect();
+					const r = await compactSessionImages(path);
+					await refreshSessions();
+					await connect({ sessionFile: path });
+					if (r.removed > 0) {
+						const saved = Math.max(0, r.before - r.after);
+						toast(
+							t.chat.imagesCompacted
+								.replace("{n}", String(r.removed))
+								.replace("{size}", formatBytes(saved)),
+						);
+					} else {
+						toast(t.chat.imagesCompactedNone);
+					}
+				} catch (e) {
+					setError(String(e));
+				}
+			},
+		});
+	}, [t, disconnect, refreshSessions, connect, toast]);
 
 	const handleExtensionRespond = useCallback(
 		async (id: string, payload: Record<string, unknown>) => {
@@ -1893,7 +2081,8 @@ export default function App() {
 				renameState ||
 				apiKeyDialog ||
 				extensionRequest ||
-				searchOpen
+				searchOpen ||
+				archivedPreview
 			) {
 				return;
 			}
@@ -1909,6 +2098,7 @@ export default function App() {
 		apiKeyDialog,
 		extensionRequest,
 		searchOpen,
+		archivedPreview,
 		connected,
 		abort,
 	]);
@@ -1924,7 +2114,12 @@ export default function App() {
 				setSearchOpen((v) => !v);
 			} else if (key === "n") {
 				e.preventDefault();
-				void newTask();
+				if (e.shiftKey) {
+					// Ctrl+Shift+N: new window (own pi process + session).
+					void newWindow().catch((err) => setError(String(err)));
+				} else {
+					void newTask();
+				}
 			} else if (e.key === ",") {
 				e.preventDefault();
 				setSettingsOpen((v) => !v);
@@ -2043,6 +2238,7 @@ export default function App() {
 			<TitleBar
 				t={t}
 				onOpenSettings={() => setSettingsOpen(true)}
+				onNewWindow={() => void newWindow().catch((e) => setError(String(e)))}
 				sidebarCollapsed={sidebarCollapsed}
 				onToggleSidebar={toggleSidebar}
 				onPeekSidebar={openSidebarPeek}
@@ -2069,6 +2265,7 @@ export default function App() {
 						onRestore={handleRestore}
 						onPurge={handlePurge}
 						onRestoreAll={handleRestoreAll}
+						onViewArchived={openArchivedPreview}
 						onClose={() => setSettingsOpen(false)}
 						onOpenSessionDir={openSessionDir}
 					/>
@@ -2099,6 +2296,7 @@ export default function App() {
 						onRename={() => setRenameState({ title: t.chat.rename, initial: selectedSession?.title ?? "" })}
 						onArchive={archiveCurrent}
 						onDelete={deleteCurrent}
+						onCompactImages={handleCompactImages}
 						onReveal={revealCurrent}
 						composerFocusRequest={composerFocusRequest}
 						showTurnWait={showTurnWait}
@@ -2199,6 +2397,16 @@ export default function App() {
 					t={t}
 					onSave={handleApiKeySave}
 					onCancel={handleApiKeyCancel}
+				/>
+			)}
+
+			{archivedPreview && (
+				<ArchivedPreview
+					title={archivedPreview.title}
+					messages={archivedPreview.messages}
+					t={t}
+					onClose={() => setArchivedPreview(null)}
+					onExport={exportArchivedPreview}
 				/>
 			)}
 

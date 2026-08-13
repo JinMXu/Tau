@@ -19,6 +19,7 @@ import {
 	BoltIcon,
 	ChevronLeftIcon,
 	EditIcon,
+	EyeIcon,
 	GridIcon,
 	InfoIcon,
 	RestoreIcon,
@@ -197,6 +198,7 @@ export function SettingsPanel({
 	onRestore,
 	onPurge,
 	onRestoreAll,
+	onViewArchived,
 	onClose,
 	onOpenSessionDir,
 }: {
@@ -209,6 +211,7 @@ export function SettingsPanel({
 	onRestore: (path: string) => void;
 	onPurge: (path: string) => void;
 	onRestoreAll: () => void;
+	onViewArchived: (path: string, title: string) => void;
 	onClose: () => void;
 	onOpenSessionDir: () => void;
 }) {
@@ -884,6 +887,13 @@ export function SettingsPanel({
 										</span>
 									</div>
 									<div className="archived-actions">
+										<button
+											className="icon-btn"
+											title={t.sidebar.view}
+											onClick={() => onViewArchived(a.path, a.title)}
+										>
+											<EyeIcon size={14} />
+										</button>
 										<button
 											className="icon-btn"
 											title={t.sidebar.restore}

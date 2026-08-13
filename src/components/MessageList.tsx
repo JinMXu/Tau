@@ -16,6 +16,12 @@ import {
 	TerminalIcon,
 } from "../icons";
 import { Markdown } from "./Markdown";
+import {
+	diffBlocksFromArgs,
+	splitOnQuery,
+	toolSummary,
+	type DiffLine,
+} from "./message-utils";
 
 const toolIcon = (name: string, size = 14) => {
 	const key = name.toLowerCase();
@@ -31,23 +37,6 @@ const toolIcon = (name: string, size = 14) => {
 		return <BoltIcon size={size} />;
 	return <SparkleIcon size={size} />;
 };
-
-/** Keys worth surfacing as the one-line summary of a tool call. */
-const SUMMARY_KEYS = ["path", "file_path", "command", "pattern", "query", "url"];
-
-function toolSummary(args: string): string | null {
-	try {
-		const parsed = JSON.parse(args) as Record<string, unknown>;
-		for (const key of SUMMARY_KEYS) {
-			const value = parsed[key];
-			if (typeof value === "string" && value.trim()) return value.trim();
-		}
-		return null;
-	} catch {
-		/* args may be partial while streaming */
-		return null;
-	}
-}
 
 type ToolBlockT = Extract<Block, { kind: "tool" }>;
 
@@ -78,106 +67,6 @@ function ToolOutput({ text, error }: { text: string; error?: boolean }) {
 			)}
 		</div>
 	);
-}
-
-type DiffLine = { type: "ctx" | "del" | "add"; text: string };
-
-/** LCS line diff. Huge inputs degrade to whole-block old/new display. */
-function computeLineDiff(oldText: string, newText: string): DiffLine[] {
-	const a = oldText.replace(/\n$/, "").split("\n");
-	const b = newText.replace(/\n$/, "").split("\n");
-	const n = a.length;
-	const m = b.length;
-	if (n * m > 1_000_000) {
-		return [
-			...a.map((text): DiffLine => ({ type: "del", text })),
-			...b.map((text): DiffLine => ({ type: "add", text })),
-		];
-	}
-	const width = m + 1;
-	const dp = new Uint32Array((n + 1) * width);
-	for (let i = n - 1; i >= 0; i--) {
-		for (let j = m - 1; j >= 0; j--) {
-			dp[i * width + j] =
-				a[i] === b[j]
-					? dp[(i + 1) * width + j + 1] + 1
-					: Math.max(dp[(i + 1) * width + j], dp[i * width + j + 1]);
-		}
-	}
-	const out: DiffLine[] = [];
-	let i = 0;
-	let j = 0;
-	while (i < n && j < m) {
-		if (a[i] === b[j]) {
-			out.push({ type: "ctx", text: a[i] });
-			i++;
-			j++;
-		} else if (dp[(i + 1) * width + j] >= dp[i * width + j + 1]) {
-			out.push({ type: "del", text: a[i] });
-			i++;
-		} else {
-			out.push({ type: "add", text: b[j] });
-			j++;
-		}
-	}
-	while (i < n) out.push({ type: "del", text: a[i++] });
-	while (j < m) out.push({ type: "add", text: b[j++] });
-	return out;
-}
-
-/**
- * Diff blocks for edit/write-style tool args. Pi's `edit` tool takes an
- * `edits: [{oldText, newText}, …]` array (multiple hunks per call), so each
- * hunk becomes its own block. Returns null for non-file tools or while the
- * JSON is still streaming in.
- */
-function diffBlocksFromArgs(
-	args: string,
-): { label: string; lines: DiffLine[] }[] | null {
-	let parsed: Record<string, unknown>;
-	try {
-		parsed = JSON.parse(args) as Record<string, unknown>;
-	} catch {
-		return null; // args may be partial while streaming
-	}
-	const { edits, old_string, new_string, content, path, file_path, command } =
-		parsed;
-	const blocks: { label: string; lines: DiffLine[] }[] = [];
-	if (Array.isArray(edits) && edits.length > 0) {
-		const multi = edits.length > 1;
-		for (const item of edits) {
-			if (!item || typeof item !== "object") continue;
-			const rec = item as Record<string, unknown>;
-			const oldText = rec.oldText ?? rec.old_string;
-			const newText = rec.newText ?? rec.new_string;
-			if (typeof oldText === "string" && typeof newText === "string") {
-				blocks.push({
-					label: multi ? `edit ${blocks.length + 1}/${edits.length}` : "",
-					lines: computeLineDiff(oldText, newText),
-				});
-			}
-		}
-		return blocks.length ? blocks : null;
-	}
-	if (typeof old_string === "string" && typeof new_string === "string") {
-		return [{ label: "", lines: computeLineDiff(old_string, new_string) }];
-	}
-	if (
-		typeof content === "string" &&
-		typeof command !== "string" &&
-		(typeof path === "string" || typeof file_path === "string")
-	) {
-		return [
-			{
-				label: "",
-				lines: content
-					.replace(/\n$/, "")
-					.split("\n")
-					.map((text): DiffLine => ({ type: "add", text })),
-			},
-		];
-	}
-	return null;
 }
 
 function DiffView({
@@ -404,14 +293,19 @@ export function MessageList({
 	autoScroll,
 	onFork,
 	t,
+	searchQuery,
+	searchActiveMessageId,
 }: {
 	messages: ChatMessage[];
 	streaming: boolean;
 	autoScroll?: boolean;
 	onFork?: (entryId: string) => void;
 	t: MessageCatalog;
+	searchQuery?: string;
+	searchActiveMessageId?: number | null;
 }) {
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const msgElsRef = useRef(new Map<number, HTMLDivElement>());
 	const [copiedId, setCopiedId] = useState<string | null>(null);
 	// Start "stuck" so the view lands at the latest message when a session
 	// (or history) is loaded; only the user's own scrolling can unstick it.
@@ -522,12 +416,32 @@ export function MessageList({
 		[],
 	);
 
+	// Scroll the active search hit into view.
+	useEffect(() => {
+		if (searchActiveMessageId == null) return;
+		const el = msgElsRef.current.get(searchActiveMessageId);
+		if (el) {
+			el.scrollIntoView({ block: "center", behavior: "smooth" });
+		}
+	}, [searchActiveMessageId]);
+
 	return (
 		<div ref={scrollRef} className="messages">
 			{items.map(({ msg: m, attached, consumed }) => {
 				const time = m.role === "user" ? formatTime(m.timestamp) : null;
+				const isSearchTarget =
+					searchQuery != null &&
+					searchActiveMessageId != null &&
+					m.id === searchActiveMessageId;
 				return (
-					<div key={m.id} className={`message ${m.role}`}>
+					<div
+						key={m.id}
+						ref={(el) => {
+							if (el) msgElsRef.current.set(m.id, el);
+							else msgElsRef.current.delete(m.id);
+						}}
+						className={`message ${m.role}${isSearchTarget ? " message-search-target" : ""}`}
+					>
 						{m.role === "assistant" && (
 							<AssistantFooter message={m} />
 						)}
@@ -568,7 +482,24 @@ export function MessageList({
 						)}
 						{m.blocks.map((b, i) => {
 							if (consumed.has(i)) return null;
-							if (b.kind === "text") {
+						if (b.kind === "text") {
+								if (isSearchTarget && searchQuery) {
+									// Plain-text rendering with highlighted matches for
+									// the focused message (markdown stays on elsewhere).
+									return (
+										<div className="text-block highlighted-text" key={i}>
+											{splitOnQuery(b.text, searchQuery).map((p, j) =>
+												p.match ? (
+													<mark key={j} className="session-search-hit">
+														{p.text}
+													</mark>
+												) : (
+													<span key={j}>{p.text}</span>
+												),
+											)}
+										</div>
+									);
+								}
 								return (
 									<div className="text-block" key={i}>
 										<Markdown text={b.text} streaming={m.streaming} />
