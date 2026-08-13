@@ -19,6 +19,13 @@ pub struct PiState {
 	inner: Arc<Mutex<HashMap<String, PiProcess>>>,
 }
 
+/// Serializes the tests that mutate process-global env vars (PI_SESSION_DIR,
+/// PI_AGENT_DIR, PI_BIN): cargo runs tests in parallel and env is
+/// process-global, so a concurrent test could observe another test's
+/// temporary values. Test-only: the release build has no use for it.
+#[cfg(test)]
+pub(crate) static ENV_GUARD: Mutex<()> = Mutex::new(());
+
 impl PiState {
 	/// Clone of the process map handle (for window-destroy handlers that must
 	/// outlive the borrowed `State`).
@@ -577,6 +584,10 @@ pub(crate) fn kill_window_process_inner(
 	}
 }
 
+/// Monotonic sequence so window labels stay unique even when two windows
+/// are created within the same millisecond.
+static WINDOW_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Open another Tau window (each window runs its own pi process/session).
 #[tauri::command]
 fn pi_new_window(app: AppHandle) -> Result<(), String> {
@@ -584,7 +595,8 @@ fn pi_new_window(app: AppHandle) -> Result<(), String> {
 		.duration_since(std::time::UNIX_EPOCH)
 		.map(|d| d.as_millis())
 		.unwrap_or(0);
-	let label = format!("main-{stamp}");
+	let seq = WINDOW_SEQ.fetch_add(1, Ordering::Relaxed);
+	let label = format!("main-{stamp}-{seq}");
 	let win = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::default())
 		.title("Tau")
 		.inner_size(800.0, 600.0)
@@ -609,6 +621,10 @@ fn pi_new_window(app: AppHandle) -> Result<(), String> {
 	Ok(())
 }
 
+fn is_leap_year(y: i64) -> bool {
+	(y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
 fn parse_iso_ms(s: &str) -> Option<u64> {
 	// Accept "2026-08-10T06:31:02.384Z" style timestamps.
 	let s = s.trim();
@@ -621,16 +637,46 @@ fn parse_iso_ms(s: &str) -> Option<u64> {
 	if !(1..=12).contains(&mo) {
 		return None;
 	}
-	if !(1..=31).contains(&d) {
+	// Real per-month day counts (leap-aware) so "Feb 30" style dates fail.
+	let leap = is_leap_year(y);
+	let days_in_month = [
+		31,
+		if leap { 29 } else { 28 },
+		31,
+		30,
+		31,
+		30,
+		31,
+		31,
+		30,
+		31,
+		30,
+		31,
+	];
+	if !(1..=days_in_month[(mo - 1) as usize]).contains(&d) {
 		return None;
 	}
 	let mut tp = time.split(':');
 	let h: i64 = tp.next()?.parse().ok()?;
 	let mi: i64 = tp.next()?.parse().ok()?;
 	let sec: i64 = tp.next()?.split('.').next()?.parse().ok()?;
-	let days = y * 365 + y / 4 - y / 100 + y / 400
-		+ [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334][(mo - 1) as usize]
-		+ (d - 1);
+	if !(0..=23).contains(&h) || !(0..=59).contains(&mi) || !(0..=60).contains(&sec) {
+		return None;
+	}
+	// Days since the (proleptic Gregorian) year 0; the leap-day offset for
+	// dates after February is folded into the day-of-year value below.
+	let mut day_of_year =
+		[0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334][(mo - 1) as usize] + (d - 1);
+	if leap && mo > 2 {
+		day_of_year += 1;
+	}
+	// Days since the (proleptic Gregorian) year 0. The day count uses
+	// `y - 1`: `y*365 + y/4 - y/100 + y/400` also counts year y's own leap
+	// day, i.e. it resolves to Jan 1 of year y+1 — every parsed timestamp
+	// would come out ~365 days too large. The leap-day offset for dates
+	// after February in year y is folded into day_of_year above.
+	let y0 = y - 1;
+	let days = y0 * 365 + y0 / 4 - y0 / 100 + y0 / 400 + day_of_year;
 	let secs = days * 86400 + h * 3600 + mi * 60 + sec;
 	// Sub-second precision is irrelevant here; epoch in ms.
 	Some((secs as u64).saturating_mul(1000))
@@ -640,7 +686,7 @@ fn parse_iso_ms(s: &str) -> Option<u64> {
 /// Lines larger than this (typically huge base64 image messages) are skipped;
 /// without this a single pathological line could balloon memory use while
 /// listing/searching sessions.
-const MAX_JSONL_LINE: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_JSONL_LINE: usize = 16 * 1024 * 1024;
 
 /// Like `BufRead::lines`, but skips lines larger than `max` bytes so a
 /// pathological session file can't allocate unbounded memory.
@@ -1042,20 +1088,30 @@ fn pi_start(
 ) -> Result<(), String> {
 	let info = probe_pi().ok_or("pi binary not found")?;
 	let label = window.label().to_string();
-	let mut map = state.inner.lock().unwrap();
-	// One pi process per session file: reject a second window opening the
-	// same JSONL (concurrent appends would corrupt it). Compare canonicalized
-	// paths so alternate spellings (symlinks, `..`, Windows `\\?\` prefixes)
-	// can't bypass the guard.
-	if let Some(sf) = session_file.as_deref() {
-		let full = canonical_or(Path::new(sf));
-		if map.values().any(|p| {
-			p.session_file
-				.as_deref()
-				.is_some_and(|s| canonical_or(s) == full)
-		}) {
-			return Err("session is already open in another window".into());
+	// Conflict check + detach the window's previous process (if any) while
+	// holding the lock — but only the detach; the actual kill happens after
+	// the lock is released (kill() waits for the child to exit, which would
+	// otherwise block every other window's RPC commands).
+	let old: Option<PiProcess> = {
+		let mut map = state.inner.lock().unwrap();
+		// One pi process per session file: reject a second window opening the
+		// same JSONL (concurrent appends would corrupt it). Compare canonicalized
+		// paths so alternate spellings (symlinks, `..`, Windows `\\?\` prefixes)
+		// can't bypass the guard.
+		if let Some(sf) = session_file.as_deref() {
+			let full = canonical_or(Path::new(sf));
+			if map.values().any(|p| {
+				p.session_file
+					.as_deref()
+					.is_some_and(|s| canonical_or(s) == full)
+			}) {
+				return Err("session is already open in another window".into());
+			}
 		}
+		map.remove(&label)
+	};
+	if let Some(mut old) = old {
+		old.kill();
 	}
 	crate::runtime_log::log_info(
 		&window.app_handle(),
@@ -1066,6 +1122,7 @@ fn pi_start(
 			tools.as_deref().map(|t| t.join(",")).unwrap_or_else(|| "default".into()),
 		),
 	);
+	let mut map = state.inner.lock().unwrap();
 	let entry = map.entry(label.clone()).or_default();
 	entry.spawn(
 		&info,
@@ -1373,20 +1430,68 @@ fn compact_session_images_inner(p: &Path) -> Result<serde_json::Value, String> {
 	let mut removed = 0usize;
 	{
 		let file = File::open(p).map_err(|e| format!("failed to read session: {e}"))?;
-		let reader = BufReader::new(file);
+		let mut reader = BufReader::new(file);
 		let mut writer = std::io::BufWriter::new(
 			File::create(&tmp_path).map_err(|e| format!("failed to create temp file: {e}"))?,
 		);
-		for line in reader.lines() {
-			let line = line.map_err(|e| format!("failed to read session: {e}"))?;
-			match serde_json::from_str::<serde_json::Value>(&line) {
+		let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+		loop {
+			buf.clear();
+			let mut limited = (&mut reader).take((MAX_JSONL_LINE + 1) as u64);
+			let n = limited
+				.read_until(b'\n', &mut buf)
+				.map_err(|e| format!("failed to read session: {e}"))?;
+			if n == 0 {
+				break;
+			}
+			if n > MAX_JSONL_LINE {
+				// Oversized line (typically a huge base64 image message): copy
+				// it through verbatim without parsing so the session is never
+				// corrupted and memory stays bounded, then drain the rest of
+				// the line.
+				writer
+					.write_all(&buf)
+					.map_err(|e| format!("failed to write session: {e}"))?;
+				loop {
+					buf.clear();
+					let mut sink = (&mut reader).take(64 * 1024);
+					let m = sink
+						.read_until(b'\n', &mut buf)
+						.map_err(|e| format!("failed to read session: {e}"))?;
+					if m == 0 || buf.last() == Some(&b'\n') {
+						break;
+					}
+				}
+				continue;
+			}
+			// Strip the trailing line separator before parsing; the parsed
+			// line is written back with a single "\n".
+			let mut line = buf.as_slice();
+			if line.last() == Some(&b'\n') {
+				line = &line[..line.len() - 1];
+			}
+			if line.last() == Some(&b'\r') {
+				line = &line[..line.len() - 1];
+			}
+			match serde_json::from_slice::<serde_json::Value>(line) {
 				Ok(mut v) => {
 					removed += strip_image_data(&mut v);
-					writeln!(writer, "{}", v)
+					writer
+						.write_all(
+							serde_json::to_string(&v)
+								.map_err(|e| format!("failed to serialize session: {e}"))?
+								.as_bytes(),
+						)
+						.map_err(|e| format!("failed to write session: {e}"))?;
+					writer
+						.write_all(b"\n")
 						.map_err(|e| format!("failed to write session: {e}"))?;
 				}
 				Err(_) => {
-					writeln!(writer, "{line}")
+					// Unparseable line: keep it byte-for-byte (with its
+					// original line ending).
+					writer
+						.write_all(&buf)
 						.map_err(|e| format!("failed to write session: {e}"))?;
 				}
 			}
@@ -1957,6 +2062,26 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_iso_timestamps_with_leap_days() {
+		// 2024-02-29 (leap year) vs 2023-02-28: exactly one year apart.
+		let leap = parse_iso_ms("2024-02-29T00:00:00.000Z").unwrap();
+		let prev = parse_iso_ms("2023-02-28T00:00:00.000Z").unwrap();
+		assert_eq!(leap - prev, 366 * 86400 * 1000);
+		// A non-leap Feb 29 must be rejected.
+		assert!(parse_iso_ms("2023-02-29T00:00:00.000Z").is_none());
+		// Out-of-range dates and clock values must be rejected.
+		assert!(parse_iso_ms("2024-04-31T00:00:00.000Z").is_none());
+		assert!(parse_iso_ms("2024-13-01T00:00:00.000Z").is_none());
+		assert!(parse_iso_ms("2024-01-01T24:00:00.000Z").is_none());
+		assert!(parse_iso_ms("2024-01-01T00:60:00.000Z").is_none());
+		// Sub-second precision is ignored (both resolve to the same ms).
+		assert_eq!(
+			parse_iso_ms("2024-01-01T00:00:00.123Z"),
+			parse_iso_ms("2024-01-01T00:00:00.999Z")
+		);
+	}
+
+	#[test]
 	fn parses_tool_calls_and_search_snippets() {
 		let path = write_temp_session("scan-tools", &[
 			r#"{"type":"session","version":3,"id":"abc","timestamp":"2026-08-10T06:31:02.384Z","cwd":"D:\\projects\\demo"}"#,
@@ -1978,6 +2103,11 @@ mod tests {
 	/// (PI_SESSION_DIR is process-global, so all scenarios run in one test).
 	#[test]
 	fn session_commands_enforce_boundaries() {
+		// Env is process-global and cargo runs tests in parallel — hold the
+		// shared guard for the whole env-mutating section.
+		let _guard = ENV_GUARD.lock().unwrap();
+		let old_session_dir = std::env::var_os("PI_SESSION_DIR");
+		let old_pi_bin = std::env::var_os("PI_BIN");
 		let dir = std::env::temp_dir().join(format!("pi-gui-sess-test-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
 		std::fs::create_dir_all(&dir).unwrap();
@@ -2037,7 +2167,16 @@ mod tests {
 
 		let _ = std::fs::remove_file(&outside);
 		let _ = std::fs::remove_dir_all(&dir);
-		std::env::remove_var("PI_SESSION_DIR");
+		// Restore the caller's environment (best effort — a failing test
+		// leaves the guard dropped but the env may keep the temp values).
+		match old_session_dir {
+			Some(v) => std::env::set_var("PI_SESSION_DIR", v),
+			None => std::env::remove_var("PI_SESSION_DIR"),
+		}
+		match old_pi_bin {
+			Some(v) => std::env::set_var("PI_BIN", v),
+			None => std::env::remove_var("PI_BIN"),
+		}
 	}
 
 	#[test]

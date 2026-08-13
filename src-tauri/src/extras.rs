@@ -1,5 +1,6 @@
 use std::{
 	fs,
+	io::{BufRead, BufReader, BufWriter, Read, Write},
 	path::{Path, PathBuf},
 	process::{Command, Stdio},
 };
@@ -466,30 +467,82 @@ pub async fn pi_move_session(
 	let canonical = fs::canonicalize(&new_project)
 		.map_err(|e| format!("invalid target directory: {e}"))?;
 	// Rewriting a large session file (with big base64 image lines) takes a
-	// moment; keep it off the UI thread.
+	// moment; keep it off the UI thread. Lines are streamed with a size cap:
+	// oversized lines are copied through verbatim so memory stays bounded
+	// and the file is never corrupted.
 	run_blocking(move || {
-		let raw = fs::read_to_string(&path)
+		let file = fs::File::open(&path)
 			.map_err(|e| format!("failed to read session: {e}"))?;
-		let mut out_lines: Vec<String> = Vec::new();
+		let mut reader = BufReader::new(file);
+		let tmp = path.with_extension("jsonl.tmp");
+		let mut writer = BufWriter::new(
+			fs::File::create(&tmp).map_err(|e| format!("failed to write session: {e}"))?,
+		);
 		let mut changed = false;
-		for line in raw.lines() {
-			let Ok(mut v) = serde_json::from_str::<serde_json::Value>(line) else {
-				out_lines.push(line.to_string());
-				continue;
-			};
-			if v.get("type").and_then(|x| x.as_str()) == Some("session") {
-				v["cwd"] =
-					serde_json::Value::String(canonical.to_string_lossy().into_owned());
-				changed = true;
+		let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+		loop {
+			buf.clear();
+			let mut limited = (&mut reader).take((pi::MAX_JSONL_LINE + 1) as u64);
+			let n = limited
+				.read_until(b'\n', &mut buf)
+				.map_err(|e| format!("failed to read session: {e}"))?;
+			if n == 0 {
+				break;
 			}
-			out_lines.push(v.to_string());
+			if n > pi::MAX_JSONL_LINE {
+				// Oversized line: keep it byte-for-byte, then drain the rest
+				// of the line.
+				writer
+					.write_all(&buf)
+					.map_err(|e| format!("failed to write session: {e}"))?;
+				loop {
+					buf.clear();
+					let mut sink = (&mut reader).take(64 * 1024);
+					let m = sink
+						.read_until(b'\n', &mut buf)
+						.map_err(|e| format!("failed to read session: {e}"))?;
+					if m == 0 || buf.last() == Some(&b'\n') {
+						break;
+					}
+				}
+				continue;
+			}
+			let mut line = buf.as_slice();
+			if line.last() == Some(&b'\n') {
+				line = &line[..line.len() - 1];
+			}
+			if line.last() == Some(&b'\r') {
+				line = &line[..line.len() - 1];
+			}
+			match serde_json::from_slice::<serde_json::Value>(line) {
+				Ok(mut v) => {
+					if v.get("type").and_then(|x| x.as_str()) == Some("session") {
+						v["cwd"] =
+							serde_json::Value::String(canonical.to_string_lossy().into_owned());
+						changed = true;
+					}
+					writer
+						.write_all(
+							serde_json::to_string(&v)
+								.map_err(|e| format!("failed to serialize session: {e}"))?
+								.as_bytes(),
+						)
+						.map_err(|e| format!("failed to write session: {e}"))?;
+					writer
+						.write_all(b"\n")
+						.map_err(|e| format!("failed to write session: {e}"))?;
+				}
+				Err(_) => {
+					writer
+						.write_all(&buf)
+						.map_err(|e| format!("failed to write session: {e}"))?;
+				}
+			}
 		}
 		if !changed {
 			return Err("session header not found in file".into());
 		}
-		let tmp = path.with_extension("jsonl.tmp");
-		fs::write(&tmp, out_lines.join("\n") + "\n")
-			.map_err(|e| format!("failed to write session: {e}"))?;
+		writer.flush().map_err(|e| format!("failed to write session: {e}"))?;
 		fs::rename(&tmp, &path).map_err(|e| format!("failed to persist session: {e}"))?;
 		Ok(())
 	})
@@ -544,6 +597,10 @@ mod tests {
 
 	#[test]
 	fn auth_roundtrip_uses_agent_dir() {
+		// Env is process-global and cargo runs tests in parallel — hold the
+		// shared guard for the whole env-mutating section.
+		let _guard = crate::pi::ENV_GUARD.lock().unwrap();
+		let old_agent_dir = std::env::var_os("PI_AGENT_DIR");
 		// Point the agent dir at a temp folder so the real auth.json is untouched.
 		let dir =
 			std::env::temp_dir().join(format!("pi-gui-auth-test-{}", std::process::id()));
@@ -567,7 +624,11 @@ mod tests {
 		assert_eq!(statuses[0].provider, "openai");
 
 		std::fs::remove_dir_all(&dir).ok();
-		std::env::remove_var("PI_AGENT_DIR");
+		// Restore the caller's environment (best effort).
+		match old_agent_dir {
+			Some(v) => std::env::set_var("PI_AGENT_DIR", v),
+			None => std::env::remove_var("PI_AGENT_DIR"),
+		}
 	}
 
 	#[test]
