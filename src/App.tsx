@@ -30,6 +30,7 @@ import {
 	piMoveSession,
 	purgeSession,
 	readSession,
+	readTree,
 	restoreSession,
 	revealSession,
 	send,
@@ -2409,14 +2410,27 @@ export default function App() {
 	// ---- /tree: fetch the session tree and open the navigator ----
 	const openTree = useCallback(async () => {
 		if (!connected) return;
+		const path = sessionPathRef.current;
 		try {
+			// Primary path: the pi RPC owns the authoritative leaf pointer.
 			const r = await handleResponse({ type: "get_tree" });
 			setTreeData(r.data as PiTreeData);
-			setTreeOpen(true);
-		} catch (e) {
-			setError(String(e));
+		} catch {
+			// Fallback: build the tree straight from the session file so a
+			// busy or slow pi process can never block the tree viewer.
+			if (!path) {
+				setError(t.tree.unavailable);
+				return;
+			}
+			try {
+				setTreeData((await readTree(path)) as PiTreeData);
+			} catch (e2) {
+				setError(String(e2));
+				return;
+			}
 		}
-	}, [connected, handleResponse]);
+		setTreeOpen(true);
+	}, [connected, handleResponse, t]);
 
 	// ---- /session: fetch details for the info dialog ----
 	const openSessionInfo = useCallback(async () => {

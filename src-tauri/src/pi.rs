@@ -2186,6 +2186,101 @@ async fn pi_share_session(session_path: String) -> Result<String, String> {
 	.await
 }
 
+/// Fallback tree source: build a slim session tree straight from the JSONL
+/// file, bypassing the pi process entirely. Used when the RPC `get_tree` is
+/// slow or unavailable (busy/old pi). Returns the same shape as the slimmed
+/// get_tree response: `{ tree: [...], leafId }`. The leaf is approximated by
+/// the last entry in the file (the RPC path remains authoritative for it).
+/// Build a slim session tree straight from a session JSONL file.
+fn read_tree_from_file(p: &Path) -> Result<serde_json::Value, String> {
+		let file = File::open(p).map_err(|e| format!("cannot read session: {e}"))?;
+		let reader = BufReader::new(file);
+		let mut by_id: HashMap<String, Value> = HashMap::new();
+		let mut children: HashMap<String, Vec<String>> = HashMap::new();
+		let mut labels: HashMap<String, String> = HashMap::new();
+		let mut roots: Vec<String> = Vec::new();
+		let mut last_id: Option<String> = None;
+		for line in LimitedLines::new(reader, MAX_JSONL_LINE).flatten() {
+			if line.trim().is_empty() {
+				continue;
+			}
+			let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+				continue;
+			};
+			let Some(kind) = v.get("type").and_then(|x| x.as_str()) else {
+				continue;
+			};
+			if kind == "session" {
+				continue;
+			}
+			let Some(id) = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()) else {
+				continue;
+			};
+			if kind == "label" {
+				// Label entries are not tree nodes and never the leaf.
+				if let Some(target) = v.get("targetId").and_then(|x| x.as_str()) {
+					if let Some(label) = v.get("label").and_then(|x| x.as_str()) {
+						labels.insert(target.to_string(), label.to_string());
+					}
+				}
+				continue;
+			}
+			last_id = Some(id.clone());
+
+			// Same slim shape the get_tree forwarder produces.
+			let slim = slim_tree_node(&serde_json::json!({ "entry": v, "children": [] }));
+			if let Some(entry) = slim.get("entry").cloned() {
+				by_id.insert(id.clone(), entry);
+			}
+			match v.get("parentId").and_then(|x| x.as_str()) {
+				Some(parent) if !parent.is_empty() => {
+					children.entry(parent.to_string()).or_default().push(id);
+				}
+				_ => roots.push(id),
+			}
+		}
+		fn build_node(
+			id: &str,
+			by_id: &HashMap<String, Value>,
+			children: &HashMap<String, Vec<String>>,
+			labels: &HashMap<String, String>,
+		) -> Value {
+			let mut node = serde_json::Map::new();
+			if let Some(e) = by_id.get(id) {
+				node.insert("entry".to_string(), e.clone());
+			}
+			let kids = children
+				.get(id)
+				.map(|v| {
+					Value::Array(
+						v.iter()
+							.map(|c| build_node(c, by_id, children, labels))
+							.collect(),
+					)
+				})
+				.unwrap_or(Value::Array(Vec::new()));
+			node.insert("children".to_string(), kids);
+			if let Some(l) = labels.get(id) {
+				node.insert("label".to_string(), serde_json::json!(l));
+			}
+			Value::Object(node)
+		}
+		let tree = Value::Array(
+			roots
+				.iter()
+				.map(|r| build_node(r, &by_id, &children, &labels))
+				.collect(),
+		);
+		Ok(serde_json::json!({ "tree": tree, "leafId": last_id }))
+	
+}
+
+#[tauri::command]
+async fn pi_read_tree(path: String) -> Result<serde_json::Value, String> {
+	let p = require_session_path(Path::new(&path))?;
+	run_blocking(move || read_tree_from_file(&p)).await
+}
+
 // ===================================================================
 // Project trust (/trust): read/write ~/.pi/agent/trust.json with the same
 // shape pi uses — a map of canonical absolute directory → true|false — and
@@ -2675,6 +2770,7 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			pi_project_files,
 			pi_import_session,
 			pi_share_session,
+			pi_read_tree,
 			pi_external_edit,
 			pi_trust_get,
 			pi_trust_set,
@@ -2726,6 +2822,35 @@ mod tests {
 			writeln!(file, "{line}").unwrap();
 		}
 		path
+	}
+
+	#[test]
+	fn builds_tree_from_file() {
+		let dir = std::env::temp_dir().join(format!("tau-tree-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		let path = dir.join("tree.jsonl");
+		{
+			use std::io::Write;
+			let mut f = File::create(&path).unwrap();
+			writeln!(f, "{}", r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-08-12T00:00:00.000Z","cwd":"C:/tmp"}"#).unwrap();
+			writeln!(f, "{}", r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-12T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#).unwrap();
+			writeln!(f, "{}", r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-12T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"reply"},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"ls"}}]}}"#).unwrap();
+			writeln!(f, "{}", r#"{"type":"message","id":"a2","parentId":"u1","timestamp":"2026-08-12T00:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"other branch"}]}}"#).unwrap();
+			writeln!(f, "{}", r#"{"type":"label","id":"l1","parentId":"a1","timestamp":"2026-08-12T00:00:04.000Z","targetId":"a1","label":"checkpoint"}"#).unwrap();
+		}
+		let out = read_tree_from_file(&path).unwrap();
+		let tree = out["tree"].as_array().unwrap();
+		assert_eq!(tree.len(), 1, "single root");
+		assert_eq!(tree[0]["entry"]["id"], "u1");
+		assert_eq!(tree[0]["children"].as_array().unwrap().len(), 2, "two branches");
+		assert_eq!(tree[0]["children"][0]["entry"]["id"], "a1");
+		assert_eq!(tree[0]["children"][0]["label"], "checkpoint");
+		// Tool-call args dropped; content collapsed to a plain text preview.
+		assert!(tree[0]["children"][0]["entry"]["message"]["content"].is_string());
+		assert_eq!(tree[0]["children"][0]["entry"]["message"]["content"], "reply");
+		assert_eq!(out["leafId"], "a2", "leaf approximated by last entry");
+		let _ = std::fs::remove_dir_all(&dir);
 	}
 
 	#[test]
@@ -3059,3 +3184,101 @@ mod tests {
 
 
 
+
+#[cfg(test)]
+mod e2e_tests {
+	use super::*;
+	use std::io::Write;
+
+	/// End-to-end: spawn the real pi binary in RPC mode against a temp
+	/// session, request the tree, run it through the slim layer and assert
+	/// the response arrives quickly and stays small. Mirrors the exact
+	/// forwarding path the GUI uses (minus the webview emit).
+	#[test]
+	fn e2e_get_tree_slims_responses() {
+		let _g = ENV_GUARD.lock().unwrap();
+		// A small but realistic session with tool output and thinking.
+		let dir = std::env::temp_dir().join(format!("tau-e2e-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		let session = dir.join("session.jsonl");
+		{
+			let mut f = File::create(&session).unwrap();
+			let cwd = std::env::temp_dir().to_string_lossy().replace('\\', "/");
+			writeln!(f, "{}", format!(r#"{{"type":"session","version":3,"id":"s1","timestamp":"2026-08-12T00:00:00.000Z","cwd":"{cwd}"}}"#)).unwrap();
+			writeln!(f, "{}", r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-12T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Hello pi"}]}}"#).unwrap();
+			writeln!(f, "{}", r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-12T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me think"},{"type":"text","text":"Hi!"},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"ls -la"}}]}}"#).unwrap();
+			writeln!(f, "{}", r#"{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-08-12T00:00:03.000Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"bash","content":[{"type":"text","text":"total 48\ndrwxr-xr-x ..."}]}}"#).unwrap();
+		}
+		let Some(info) = probe_pi() else {
+			eprintln!("pi binary not found in PATH — skipping e2e test");
+			return;
+		};
+		let mut cmd = pi_command(&info);
+		cmd.arg("--mode")
+			.arg("rpc")
+			.arg("--session")
+			.arg(&session)
+			.arg("--no-context-files")
+			.stdin(Stdio::piped())
+			.stdout(Stdio::piped())
+			.stderr(Stdio::piped());
+		#[cfg(windows)]
+		no_console_window(&mut cmd);
+		let mut child = match cmd.spawn() {
+			Ok(c) => c,
+			Err(e) => {
+				eprintln!("failed to spawn pi: {e} — skipping");
+				return;
+			}
+		};
+		let mut stdin = child.stdin.take().unwrap();
+		stdin
+			.write_all(br#"{"type":"get_tree","id":"e2e-1"}"#)
+			.and_then(|_| stdin.write_all(b"\n"))
+			.unwrap();
+		let stdout = child.stdout.take().unwrap();
+		let reader = BufReader::new(stdout);
+		let start = Instant::now();
+		let mut got_tree = false;
+		for line in LimitedLines::new(reader, MAX_EVENT_LINE) {
+			let Ok(line) = line else { break };
+			if line.trim().is_empty() {
+				continue;
+			}
+			let payload: Value = serde_json::from_str(&line).unwrap_or_else(|_| Value::String(line));
+			if payload.get("type").and_then(|x| x.as_str()) != Some("response") {
+				continue;
+			}
+			let id = payload.get("id").and_then(|x| x.as_str()).unwrap_or("");
+			if id != "e2e-1" {
+				continue;
+			}
+			assert_eq!(payload.get("command").and_then(|x| x.as_str()), Some("get_tree"));
+			assert_eq!(payload.get("success").and_then(|x| x.as_bool()), Some(true));
+			let slim = slim_get_tree_payload(&payload);
+			let slim_len = slim.to_string().len();
+			let raw_len = payload.to_string().len();
+			assert!(slim_len < raw_len, "slimmed response must be smaller");
+			assert!(slim_len < 2000, "slimmed response should be tiny, got {slim_len}");
+			let tree = &slim["data"]["tree"];
+			assert!(tree.is_array() && !tree.as_array().unwrap().is_empty());
+			assert!(
+				slim["data"]["leafId"].is_string(),
+				"leafId must be present"
+			);
+			got_tree = true;
+			break;
+		}
+		assert!(got_tree, "no get_tree response arrived");
+		assert!(
+			start.elapsed() < Duration::from_secs(20),
+			"get_tree response took {:?}",
+			start.elapsed()
+		);
+		drop(stdin);
+		let _ = child.kill();
+		let _ = child.wait();
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+}

@@ -332,6 +332,11 @@ export async function shareSession(sessionPath: string): Promise<string> {
 	return invoke("pi_share_session", { sessionPath });
 }
 
+/** Build a slim session tree straight from the JSONL (get_tree fallback). */
+export async function readTree(sessionPath: string): Promise<unknown> {
+	return invoke("pi_read_tree", { path: sessionPath });
+}
+
 /** Open the draft in the system editor; returns the edited text. */
 export async function externalEdit(text: string): Promise<string> {
 	return invoke("pi_external_edit", { text });

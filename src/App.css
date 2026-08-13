@@ -4899,6 +4899,26 @@ textarea {
 	justify-content: flex-end;
 }
 
+.llama-settings-row input {
+	background: var(--input-bg);
+	border: 1px solid var(--card-border);
+	border-radius: var(--r-md);
+	padding: var(--sp-1) var(--sp-2);
+	font-size: var(--fs-sm);
+	color: var(--app-fg);
+	outline: none;
+	font-family: var(--font-mono);
+	transition: border-color var(--dur) var(--ease);
+}
+
+.llama-settings-row input::placeholder {
+	color: var(--app-muted);
+}
+
+.llama-settings-row input:focus {
+	border-color: var(--link);
+}
+
 .llama-settings-row .llama-url-input {
 	flex: 1 1 150px;
 	min-width: 130px;
