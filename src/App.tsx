@@ -123,7 +123,7 @@ const RESPONSE_TIMEOUTS: Record<string, number> = {
 	fork: 30000,
 	clone: 30000,
 	new_session: 30000,
-	get_tree: 15000,
+	get_tree: 90000,
 	get_state: 15000,
 	get_session_stats: 15000,
 	set_model: 15000,

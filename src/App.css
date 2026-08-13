@@ -2143,6 +2143,27 @@ textarea {
 	border-bottom: 1px solid var(--app-border);
 }
 
+/* Rows whose control column holds multiple/wide widgets (excluded tools,
+   llama config, trust): align to top and let the control wrap + shrink so
+   the label column never gets crushed and content never overflows. */
+.settings-row.wrap {
+	align-items: flex-start;
+}
+
+.settings-row.wrap .settings-label {
+	flex: 0 1 230px;
+	padding-top: 3px;
+}
+
+.settings-row.wrap .settings-control {
+	flex: 1 1 auto;
+	min-width: 0;
+	max-width: calc(100% - 250px);
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	row-gap: 6px;
+}
+
 .settings-label {
 	font-size: var(--fs-sm);
 	display: flex;
@@ -4840,7 +4861,7 @@ textarea {
 	display: flex;
 	flex-wrap: wrap;
 	gap: 6px;
-	flex: 1;
+	justify-content: flex-end;
 }
 
 .excluded-tool-chip {
@@ -4874,17 +4895,17 @@ textarea {
 	display: flex;
 	gap: 6px;
 	align-items: center;
-	flex: 1;
-	min-width: 0;
+	flex-wrap: wrap;
+	justify-content: flex-end;
 }
 
 .llama-settings-row .llama-url-input {
-	flex: 1;
-	min-width: 120px;
+	flex: 1 1 150px;
+	min-width: 130px;
 }
 
 .llama-settings-row .llama-key-input {
-	flex: 1;
+	flex: 1 1 110px;
 	min-width: 100px;
 }
 
@@ -4900,9 +4921,9 @@ textarea {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	flex: 1;
 	min-width: 0;
 	flex-wrap: wrap;
+	justify-content: flex-end;
 }
 
 .trust-project {

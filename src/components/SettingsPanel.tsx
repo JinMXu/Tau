@@ -128,13 +128,16 @@ function Row({
 	label,
 	hint,
 	children,
+	wrap,
 }: {
 	label: string;
 	hint?: string;
 	children: React.ReactNode;
+	/** Allow the control column to wrap onto multiple lines and shrink. */
+	wrap?: boolean;
 }) {
 	return (
-		<div className="settings-row">
+		<div className={`settings-row${wrap ? " wrap" : ""}`}>
 			<div className="settings-label">
 				{label}
 				{hint && <p className="settings-hint">{hint}</p>}
@@ -825,7 +828,7 @@ export function SettingsPanel({
 							</button>
 						</div>
 					</Row>
-					<Row label={t.settings.excludedTools} hint={t.settings.excludedToolsHint}>
+					<Row label={t.settings.excludedTools} hint={t.settings.excludedToolsHint} wrap>
 						<div className="excluded-tools">
 							{ALL_AGENT_TOOLS.map((tool) => {
 								const excluded = settings.excludedTools.includes(tool);
@@ -857,7 +860,7 @@ export function SettingsPanel({
 							})}
 						</div>
 					</Row>
-					<Row label={t.settings.llama} hint={t.settings.llamaHint}>
+					<Row label={t.settings.llama} hint={t.settings.llamaHint} wrap>
 						<div className="llama-settings-row">
 							<input
 								className="llama-url-input mono"
@@ -884,7 +887,7 @@ export function SettingsPanel({
 							</button>
 						</div>
 					</Row>
-					<Row label={t.settings.trust} hint={t.settings.trustHint}>
+					<Row label={t.settings.trust} hint={t.settings.trustHint} wrap>
 						<div className="trust-row">
 							<span className="trust-project mono" title={workspace ?? undefined}>
 								{workspace

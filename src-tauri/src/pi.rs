@@ -538,6 +538,12 @@ impl PiProcess {
 				}
 				let payload: Value =
 					serde_json::from_str(&line).unwrap_or_else(|_| Value::String(line));
+				// get_tree responses carry the FULL session tree (every message,
+				// tool output and thinking block) — multi-MB lines that are slow
+				// to ship over the webview IPC and can blow the event-line cap.
+				// Slim the payload down to what the tree viewer actually needs
+				// before emitting it.
+				let payload = slim_get_tree_payload(&payload);
 				let _ = win_stdout.emit("pi://event", &payload);
 			}
 			let mut guard = lock_state(&state);
@@ -2428,6 +2434,112 @@ async fn pi_llama_unload(
 	.await
 }
 
+/// Keep only the fields the tree viewer needs, dropping tool outputs,
+/// thinking blocks, image data and usage records. Text content is kept as a
+/// short preview so node labels still make sense.
+fn slim_tree_node(node: &Value) -> Value {
+	let mut out = serde_json::Map::new();
+	if let Some(entry) = node.get("entry") {
+		let mut e = serde_json::Map::new();
+		for key in [
+			"type", "id", "parentId", "timestamp", "provider", "modelId",
+			"thinkingLevel", "name", "customType", "fromId",
+		] {
+			if let Some(x) = entry.get(key) {
+				e.insert(key.to_string(), x.clone());
+			}
+		}
+		if let Some(summary) = entry.get("summary").and_then(|x| x.as_str()) {
+			e.insert(
+				"summary".to_string(),
+				serde_json::json!(summary.chars().take(400).collect::<String>()),
+			);
+		}
+		if let Some(m) = entry.get("message") {
+			let mut mm = serde_json::Map::new();
+			for key in ["role", "toolName", "model", "provider", "customType"] {
+				if let Some(x) = m.get(key) {
+					mm.insert(key.to_string(), x.clone());
+				}
+			}
+			if let Some(content) = m.get("content") {
+				let preview = tree_text_preview(content, 400);
+				if !preview.is_empty() {
+					mm.insert("content".to_string(), serde_json::json!(preview));
+				}
+			}
+			e.insert("message".to_string(), Value::Object(mm));
+		}
+		out.insert("entry".to_string(), Value::Object(e));
+	}
+	if let Some(children) = node.get("children").and_then(|x| x.as_array()) {
+		out.insert(
+			"children".to_string(),
+			Value::Array(children.iter().map(slim_tree_node).collect()),
+		);
+	}
+	for key in ["label", "labelTimestamp"] {
+		if let Some(x) = node.get(key) {
+			out.insert(key.to_string(), x.clone());
+		}
+	}
+	Value::Object(out)
+}
+
+/// Concatenate text/thinking blocks up to `max` chars (what the tree labels
+/// show); drops tool-call arguments, image data and everything else.
+fn tree_text_preview(content: &Value, max: usize) -> String {
+	let mut s = String::new();
+	if let Some(arr) = content.as_array() {
+		for b in arr {
+			let text = match b.get("type").and_then(|x| x.as_str()) {
+				Some("text") => b.get("text").and_then(|x| x.as_str()),
+				Some("thinking") => b.get("thinking").and_then(|x| x.as_str()),
+				_ => None,
+			};
+			if let Some(t) = text {
+				s.push_str(t);
+				if s.chars().count() >= max {
+					break;
+				}
+			}
+		}
+	} else if let Some(t) = content.as_str() {
+		s.push_str(t);
+	}
+	s.chars().take(max).collect()
+}
+
+/// Rewrite a `get_tree` response payload: keep the envelope (id/type/command/
+/// success/error) plus a slimmed `data.tree` and `data.leafId`.
+fn slim_get_tree_payload(payload: &Value) -> Value {
+	let is_tree_response = payload.get("type").and_then(|x| x.as_str()) == Some("response")
+		&& payload.get("command").and_then(|x| x.as_str()) == Some("get_tree");
+	if !is_tree_response {
+		return payload.clone();
+	}
+	let mut out = serde_json::Map::new();
+	for key in ["id", "type", "command", "success", "error"] {
+		if let Some(x) = payload.get(key) {
+			out.insert(key.to_string(), x.clone());
+		}
+	}
+	if let Some(data) = payload.get("data") {
+		let mut d = serde_json::Map::new();
+		if let Some(tree) = data.get("tree").and_then(|x| x.as_array()) {
+			d.insert(
+				"tree".to_string(),
+				Value::Array(tree.iter().map(slim_tree_node).collect()),
+			);
+		}
+		if let Some(leaf) = data.get("leafId") {
+			d.insert("leafId".to_string(), leaf.clone());
+		}
+		out.insert("data".to_string(), Value::Object(d));
+	}
+	Value::Object(out)
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PiUsageEntry {
@@ -2614,6 +2726,66 @@ mod tests {
 			writeln!(file, "{line}").unwrap();
 		}
 		path
+	}
+
+	#[test]
+	fn slims_get_tree_responses() {
+		let raw = serde_json::json!({
+			"id": "gui-1",
+			"type": "response",
+			"command": "get_tree",
+			"success": true,
+			"data": {
+				"leafId": "a1",
+				"tree": [{
+					"entry": {
+						"type": "message",
+						"id": "a1",
+						"parentId": null,
+						"timestamp": "2026-08-10T06:31:15.165Z",
+						"message": {
+							"role": "assistant",
+							"model": "m1",
+							"content": [
+								{"type": "thinking", "thinking": "internal reasoning..."},
+								{"type": "text", "text": "Hello world"},
+								{"type": "toolCall", "id": "t1", "name": "bash", "arguments": {"command": "ls"}}
+							],
+							"usage": {"input": 1, "output": 1}
+						}
+					},
+					"children": [{
+						"entry": {
+							"type": "message",
+							"id": "r1",
+							"parentId": "a1",
+							"message": {
+								"role": "toolResult",
+								"toolName": "bash",
+								"content": [{"type": "text", "text": "huge output..."}]
+							}
+						},
+						"children": []
+					}],
+					"label": "checkpoint"
+				}]
+			}
+		});
+		let slim = slim_get_tree_payload(&raw);
+		// Envelope preserved.
+		assert_eq!(slim["command"], "get_tree");
+		assert_eq!(slim["data"]["leafId"], "a1");
+		// Tree structure + label kept.
+		let node = &slim["data"]["tree"][0];
+		assert_eq!(node["entry"]["id"], "a1");
+		assert_eq!(node["label"], "checkpoint");
+		assert_eq!(node["children"][0]["entry"]["message"]["toolName"], "bash");
+		// Content collapsed to a text preview; heavy fields dropped.
+		assert_eq!(node["entry"]["message"]["content"], "internal reasoning...Hello world");
+		assert!(node["entry"]["message"].get("usage").is_none());
+		// The content is now a plain string — no block array, no toolCall/thinking.
+		assert!(node["entry"]["message"]["content"].is_string());
+		assert!(slim.to_string().len() < 500);
 	}
 
 	#[test]
