@@ -2717,6 +2717,16 @@ textarea {
 	bottom: auto;
 }
 
+/* …but the composer hugs the bottom of the window, so a downward menu can
+ * run past the window edge (hidden behind the taskbar). The `up` modifier
+ * (applied by the Composer when there isn't enough room below the chip)
+ * flips the menu above the chip instead. */
+.branch-menu.up,
+.workspace-menu.up {
+	top: auto;
+	bottom: calc(100% + 6px);
+}
+
 /* thinking-level picker: same visual language as the model menu */
 .thinking-menu {
 	position: absolute;

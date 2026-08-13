@@ -1,6 +1,7 @@
 import {
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -238,8 +239,10 @@ export function Composer({
 	const [branchCreating, setBranchCreating] = useState(false);
 	const [newBranchName, setNewBranchName] = useState("");
 	const [branchQuery, setBranchQuery] = useState("");
+	const [branchMenuUp, setBranchMenuUp] = useState(false);
 	const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
 	const [workspaceQuery, setWorkspaceQuery] = useState("");
+	const [workspaceMenuUp, setWorkspaceMenuUp] = useState(false);
 	const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
 	const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
 	const [dragQueueId, setDragQueueId] = useState<string | null>(null);
@@ -495,6 +498,50 @@ export function Composer({
 		});
 	}, []);
 
+	// The workspace/branch menus are anchored to the context row above the
+	// composer, which hugs the bottom of the window — a downward-opening menu
+	// would run past the window edge and get clipped (ending up behind the
+	// taskbar). When there isn't enough room below the chip, flip the menu to
+	// open upward instead.
+	const fitMenuDirection = useCallback(
+		(
+			open: boolean,
+			wrapRef: React.RefObject<HTMLDivElement | null>,
+			selector: string,
+			setOpenUp: (up: boolean) => void,
+		) => {
+			if (!open) return;
+			const wrap = wrapRef.current;
+			const menu = wrap?.querySelector(selector) as HTMLElement | null;
+			if (!wrap || !menu) return;
+			const rect = wrap.getBoundingClientRect();
+			const spaceBelow = window.innerHeight - rect.bottom;
+			const spaceAbove = rect.top;
+			const height = menu.offsetHeight;
+			if (height <= spaceBelow) {
+				setOpenUp(false);
+				return;
+			}
+			// Prefer the direction with enough room; when neither fits, pick
+			// whichever has more space (the list scrolls either way).
+			setOpenUp(spaceAbove >= height || spaceAbove > spaceBelow);
+		},
+		[],
+	);
+
+	useLayoutEffect(() => {
+		fitMenuDirection(
+			workspaceMenuOpen,
+			workspaceMenuRef,
+			".workspace-menu",
+			setWorkspaceMenuUp,
+		);
+	}, [workspaceMenuOpen, workspaceQuery, fitMenuDirection]);
+
+	useLayoutEffect(() => {
+		fitMenuDirection(branchMenuOpen, branchMenuRef, ".branch-menu", setBranchMenuUp);
+	}, [branchMenuOpen, branchQuery, branchCreating, fitMenuDirection]);
+
 	// Level ids come from Pi ("off" | "minimal" | "low" | ...); show a
 	// localized name when we know the id, otherwise fall back to the raw id.
 	const thinkingLabel = (level: string): string =>
@@ -690,7 +737,7 @@ export function Composer({
 							<ChevronDownIcon size={12} />
 						</button>
 						{workspaceMenuOpen && (
-							<div className="workspace-menu">
+							<div className={`workspace-menu${workspaceMenuUp ? " up" : ""}`}>
 								<div className="menu-search">
 									<SearchIcon size={13} />
 									<input
@@ -771,7 +818,7 @@ export function Composer({
 								<ChevronDownIcon size={12} />
 							</button>
 							{branchMenuOpen && (
-								<div className="branch-menu drop-down">
+								<div className={`branch-menu drop-down${branchMenuUp ? " up" : ""}`}>
 									<div className="menu-search">
 										<SearchIcon size={13} />
 										<input
