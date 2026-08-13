@@ -170,7 +170,7 @@ Tau 通过以下 JSON-RPC 命令与 Pi 通信：
 - 流式 Markdown + 折叠工具卡片
 - 会话标题、模型徽标、相对时间
 
-Logo 设计概念：**τ = 2π** —— 半圆补全为完整的圆，象征 Tau 把 Pi 的体验"画完整"。（设计提示词见 [`docs/logo-prompts.md`](docs/logo-prompts.md)）
+Logo 设计概念：**τ = 2π** —— 半圆补全为完整的圆，象征 Tau 把 Pi 的体验“画完整”。
 
 ---
 
