@@ -1,4 +1,4 @@
-import { memo, useMemo, useSyncExternalStore } from "react";
+import { memo, useDeferredValue, useMemo, useSyncExternalStore } from "react";
 import type { MouseEvent } from "react";
 import { Streamdown } from "streamdown";
 import type { ThemeInput } from "streamdown";
@@ -63,6 +63,12 @@ export const Markdown = memo(function Markdown({
 	streaming?: boolean;
 }) {
 	const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot);
+	// Defer the text so Streamdown's expensive re-parse + syntax-highlight
+	// doesn't run on every single animation frame during streaming.  React
+	// will render the previous (cheaper) content first and schedule the
+	// updated parse as a transition, dropping intermediate renders when
+	// deltas arrive faster than the parse can keep up.
+	const deferredText = useDeferredValue(text);
 	const codePlugin = useMemo(() => {
 		// Pass the active theme as both entries so token colors work without
 		// Tailwind's `dark:` variant (see the CSS shims in App.css).
@@ -76,10 +82,10 @@ export const Markdown = memo(function Markdown({
 	// switching out of streaming mode at message_end. For huge replies that
 	// parse spike is exactly what tips the webview over the edge — render
 	// them as plain pre-formatted text instead (still selectable/scrolled).
-	if (text.length > MAX_MARKDOWN_CHARS) {
+	if (deferredText.length > MAX_MARKDOWN_CHARS) {
 		return (
 			<div className="markdown-host">
-				<pre className="markdown-plain">{text}</pre>
+				<pre className="markdown-plain">{deferredText}</pre>
 			</div>
 		);
 	}
@@ -96,7 +102,7 @@ export const Markdown = memo(function Markdown({
 				lineNumbers={false}
 				className="ousia-chat-markdown"
 			>
-				{text}
+				{deferredText}
 			</Streamdown>
 		</div>
 	);

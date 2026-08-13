@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import type { Block, ChatMessage } from "../chat-types";
 import type { MessageCatalog } from "../i18n";
@@ -45,7 +45,34 @@ type ToolBlockT = Extract<Block, { kind: "tool" }>;
 /** Lines of tool output shown inline before the rest is tucked behind a toggle. */
 const OUTPUT_PREVIEW_LINES = 8;
 
-function ToolOutput({
+/**
+ * Read-only / low-signal tools whose result content nobody reads (cd, read,
+ * grep, ls, find…). Their output is hidden behind a click instead of
+ * occupying the stream with content that only contributes visual noise.
+ */
+function isQuietTool(name: string): boolean {
+	const key = name.toLowerCase();
+	return (
+		key === "cd" ||
+		key.startsWith("read") ||
+		key.startsWith("grep") ||
+		key.startsWith("ls") ||
+		key.startsWith("find") ||
+		key === "pwd" ||
+		key.startsWith("glob") ||
+		key.startsWith("search") ||
+		key.startsWith("cat") ||
+		key.startsWith("head") ||
+		key.startsWith("tail") ||
+		key.startsWith("wc") ||
+		key.startsWith("tree") ||
+		key.startsWith("which") ||
+		key.startsWith("where") ||
+		key.startsWith("type")
+	);
+}
+
+const ToolOutput = memo(function ToolOutput({
 	text,
 	error,
 	t,
@@ -55,15 +82,15 @@ function ToolOutput({
 	t: MessageCatalog;
 }) {
 	const [expanded, setExpanded] = useState(false);
-	const body = text.replace(/\n+$/, "");
-	const lineCount = body ? body.split("\n").length : 0;
-	const truncated = lineCount > OUTPUT_PREVIEW_LINES;
-	// Only put the preview slice into the DOM while collapsed — rendering a
-	// multi-megabyte tool dump (even clipped by CSS) can freeze or crash the
-	// webview when a task finishes.
+	const { lines, body, truncated } = useMemo(() => {
+		const body = text.replace(/\n+$/, "");
+		const lines = body ? body.split("\n") : [];
+		return { lines, body, truncated: lines.length > OUTPUT_PREVIEW_LINES };
+	}, [text]);
+	const lineCount = lines.length;
 	const visible =
 		truncated && !expanded
-			? body.split("\n").slice(0, OUTPUT_PREVIEW_LINES).join("\n")
+			? lines.slice(0, OUTPUT_PREVIEW_LINES).join("\n")
 			: body;
 	return (
 		<div className={`tool-output${error ? " error" : ""}`}>
@@ -86,9 +113,9 @@ function ToolOutput({
 			)}
 		</div>
 	);
-}
+});
 
-function DiffView({
+const DiffView = memo(function DiffView({
 	lines,
 	label,
 	t,
@@ -125,9 +152,9 @@ function DiffView({
 			)}
 		</div>
 	);
-}
+});
 
-function ToolCard({
+const ToolCard = memo(function ToolCard({
 	block,
 	result,
 	running,
@@ -141,60 +168,83 @@ function ToolCard({
 	t: MessageCatalog;
 }) {
 	const [showArgs, setShowArgs] = useState(false);
-	const prettyName = block.name
-		.split("_")
-		.map((s) => s[0]?.toUpperCase() + s.slice(1))
-		.join(" ");
+	const [showResult, setShowResult] = useState(false);
+	const quiet = useMemo(() => isQuietTool(block.name), [block.name]);
+	const prettyName = useMemo(
+		() =>
+			block.name
+				.split("_")
+				.map((s) => s[0]?.toUpperCase() + s.slice(1))
+				.join(" "),
+		[block.name],
+	);
 	// For tool results the body is the tool's output, not call arguments, so
 	// skip the argument summary and the "open file" quick action.
-	let filePath: string | null = null;
-	let summary: string | null = null;
-	if (!block.result) {
+	const { filePath, summary } = useMemo(() => {
+		if (block.result) return { filePath: null, summary: null };
+		let fp: string | null = null;
 		try {
 			const parsed = JSON.parse(block.args) as { path?: unknown };
 			if (typeof parsed.path === "string" && parsed.path.trim()) {
-				filePath = parsed.path.trim();
+				fp = parsed.path.trim();
 			}
 		} catch {
 			/* args may be partial while streaming */
 		}
-		summary = toolSummary(block.args);
-	}
+		return { filePath: fp, summary: toolSummary(block.args) };
+	}, [block.args, block.result]);
+	const resultLineCount = useMemo(() => {
+		if (!result || !quiet) return 0;
+		return result.args ? result.args.split("\n").length : 0;
+	}, [result, quiet]);
 	const error = block.error || result?.error;
-	const toggleArgs = block.result
-		? undefined
+	// Quiet tools keep their output collapsed behind the header; only
+	// meaningful tools (bash, edit/write…) show the preview inline.
+	const resultCollapsed = quiet && !showResult;
+	const toggleBody = block.result
+		? quiet
+			? () => setShowResult((v) => !v)
+			: undefined
 		: () => setShowArgs((v) => !v);
+	const bodyOpen = block.result ? showResult : showArgs;
 	// Edit/write-style calls surface their changes as inline line diffs.
+	// While the call is streaming its args are incomplete JSON that would be
+	// discarded at toolcall_end anyway — skip the expensive diff extraction
+	// entirely until the call finishes.
 	const diffBlocks = useMemo(
-		() => (block.result ? null : diffBlocksFromArgs(block.args)),
-		[block.result, block.args],
+		() =>
+			block.result || running ? null : diffBlocksFromArgs(block.args),
+		[block.result, block.args, running],
 	);
-	let diffAdd = 0;
-	let diffDel = 0;
-	if (diffBlocks) {
-		for (const b of diffBlocks) {
-			for (const l of b.lines) {
-				if (l.type === "add") diffAdd++;
-				else if (l.type === "del") diffDel++;
+	const { diffAdd, diffDel } = useMemo(() => {
+		let add = 0;
+		let del = 0;
+		if (diffBlocks) {
+			for (const b of diffBlocks) {
+				for (const l of b.lines) {
+					if (l.type === "add") add++;
+					else if (l.type === "del") del++;
+				}
 			}
 		}
-	}
+		return { diffAdd: add, diffDel: del };
+	}, [diffBlocks]);
 	return (
 		<div
-			className={`tool-card${block.result ? " result" : ""}${error ? " error" : ""}${showArgs ? " args-open" : ""}`}
+			className={`tool-card${block.result ? " result" : ""}${quiet && block.result ? " quiet" : ""}${error ? " error" : ""}${bodyOpen ? " args-open" : ""}`}
 		>
 			<div
 				className="tool-head"
-				role={toggleArgs ? "button" : undefined}
-				tabIndex={toggleArgs ? 0 : undefined}
-				aria-expanded={toggleArgs ? showArgs : undefined}
-				onClick={toggleArgs}
+				role={toggleBody ? "button" : undefined}
+				tabIndex={toggleBody ? 0 : undefined}
+				aria-expanded={toggleBody ? bodyOpen : undefined}
+				onClick={toggleBody}
 				onKeyDown={
-					toggleArgs
+					toggleBody
 						? (e) => {
 								if (e.key === "Enter" || e.key === " ") {
 									e.preventDefault();
-									toggleArgs();
+									toggleBody();
 								}
 							}
 						: undefined
@@ -207,7 +257,16 @@ function ToolCard({
 				<span className="tool-name">{prettyName || "tool"}</span>
 				{block.result && (
 					<span className="tool-result-label">
-						{block.error ? t.chat.error : t.chat.result}
+						{error
+							? t.chat.error
+							: quiet
+								? resultLineCount > 0
+									? t.chat.outputLines.replace(
+											"{count}",
+											String(resultLineCount),
+										)
+									: t.chat.noOutput
+								: t.chat.result}
 					</span>
 				)}
 				{summary && <span className="tool-summary">{summary}</span>}
@@ -217,10 +276,10 @@ function ToolCard({
 						{diffAdd > 0 && <span className="add">+{diffAdd}</span>}
 					</span>
 				)}
-				{toggleArgs && (
+				{toggleBody && (
 					<ChevronDownIcon
 						size={12}
-						className={`tool-chevron${showArgs ? " open" : ""}`}
+						className={`tool-chevron${bodyOpen ? " open" : ""}`}
 					/>
 				)}
 			</div>
@@ -249,12 +308,14 @@ function ToolCard({
 					))}
 				</div>
 			)}
-			{result && <ToolOutput text={result.args} error={result.error} t={t} />}
+			{result && !resultCollapsed && (
+				<ToolOutput text={result.args} error={result.error} t={t} />
+			)}
 		</div>
 	);
-}
+});
 
-function ThinkingBlock({
+const ThinkingBlock = memo(function ThinkingBlock({
 	text,
 	streaming,
 	t,
@@ -273,7 +334,7 @@ function ThinkingBlock({
 			<div className="thinking-body">{text}</div>
 		</details>
 	);
-}
+});
 
 function AssistantFooter({ message, t }: { message: ChatMessage; t: MessageCatalog }) {
 	return (
@@ -343,16 +404,30 @@ export function MessageList({
 	}, [messages, streaming, autoScroll, follow]);
 
 	// Also follow growth that never re-renders: async content (images, fonts),
-	// the turn-wait indicator, window resizes.
+	// the turn-wait indicator, window resizes.  Both observers are coalesced
+	// into a single rAF so that a burst of mutations (e.g. streaming text
+	// deltas re-rendering many nodes) produces at most one follow() per frame
+	// instead of dozens of forced reflows.
 	useEffect(() => {
 		const el = scrollRef.current;
 		const scroller = el?.parentElement;
 		if (!el || !scroller) return;
-		const resizeObserver = new ResizeObserver(follow);
+		let rafId: number | null = null;
+		const throttledFollow = () => {
+			if (rafId !== null) return;
+			rafId = requestAnimationFrame(() => {
+				rafId = null;
+				follow();
+			});
+		};
+		const resizeObserver = new ResizeObserver(throttledFollow);
 		resizeObserver.observe(el);
 		resizeObserver.observe(scroller);
-		const mutationObserver = new MutationObserver(follow);
-		mutationObserver.observe(scroller, { childList: true, subtree: true });
+		// childList only (no subtree) so the observer fires when direct
+		// children are added/removed (e.g. the turn-wait indicator) but NOT
+		// on every text-node mutation deep inside the streaming markdown.
+		const mutationObserver = new MutationObserver(throttledFollow);
+		mutationObserver.observe(scroller, { childList: true });
 		// User intent: scrolling away unsticks, scrolling back to the bottom
 		// re-sticks.
 		const onScroll = () => {
@@ -362,6 +437,7 @@ export function MessageList({
 		};
 		scroller.addEventListener("scroll", onScroll, { passive: true });
 		return () => {
+			if (rafId !== null) cancelAnimationFrame(rafId);
 			resizeObserver.disconnect();
 			mutationObserver.disconnect();
 			scroller.removeEventListener("scroll", onScroll);
@@ -496,6 +572,39 @@ export function MessageList({
 						{m.blocks.map((b, i) => {
 							if (consumed.has(i)) return null;
 						if (b.kind === "text") {
+								if (m.role === "tool") {
+									// Tool result text streaming in. Nobody reads
+									// this mid-stream — the assistant's running
+									// tool card already shows the state. Keep the
+									// message empty (only the cursor) until the
+									// authoritative ToolOutput replaces it, so the
+									// DOM doesn't grow and reflow every frame.
+									// Exception: in-session search highlights the
+									// content the user is actively looking for.
+									if (isSearchTarget && searchQuery) {
+										return (
+											<div
+												className="text-block highlighted-text"
+												key={i}
+											>
+												{splitOnQuery(b.text, searchQuery).map(
+													(p, j) =>
+														p.match ? (
+															<mark
+																key={j}
+																className="session-search-hit"
+															>
+																{p.text}
+															</mark>
+														) : (
+															<span key={j}>{p.text}</span>
+														),
+												)}
+											</div>
+										);
+									}
+									return null;
+								}
 								if (isSearchTarget && searchQuery) {
 									// Plain-text rendering with highlighted matches for
 									// the focused message (markdown stays on elsewhere).
