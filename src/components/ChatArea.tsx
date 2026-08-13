@@ -35,6 +35,7 @@ export function ChatArea({
 	session,
 	messages,
 	streaming,
+	working,
 	connected,
 	busy,
 	error,
@@ -87,6 +88,7 @@ export function ChatArea({
 	session: PiSessionInfo | null;
 	messages: ChatMessage[];
 	streaming: boolean;
+	working: boolean;
 	connected: boolean;
 	busy: boolean;
 	error: string | null;
@@ -217,6 +219,7 @@ export function ChatArea({
 		<Composer
 			connected={connected}
 			streaming={streaming}
+			working={working}
 			busy={busy}
 			models={models}
 			model={model}

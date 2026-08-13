@@ -2384,6 +2384,7 @@ export default function App() {
 						session={selectedSession}
 						messages={messages}
 						streaming={streaming}
+						working={working}
 						connected={connected}
 						busy={busy}
 						error={error}

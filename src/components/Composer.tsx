@@ -151,6 +151,7 @@ function ContextUsageRing({
 export function Composer({
 	connected,
 	streaming,
+	working,
 	busy,
 	models,
 	model,
@@ -189,6 +190,7 @@ export function Composer({
 }: {
 	connected: boolean;
 	streaming: boolean;
+	working: boolean;
 	busy: boolean;
 	models: ModelEntry[];
 	model: string;
@@ -548,6 +550,12 @@ export function Composer({
 		(t.chat.thinkingLevels as Record<string, string>)[level] ?? level;
 
 	const hasDraft = Boolean(text.trim()) || attachments.length > 0;
+
+	// "Running" = a run is in flight (working spans the whole run, from
+	// submit until agent_settled) even between messages, when streaming is
+	// briefly false. Streaming alone would make the stop button / busy
+	// placeholder flicker on every message boundary (text → tool → result).
+	const running = working || streaming;
 
 	// ---- slash commands ----
 	// The menu is active while the draft is exactly a `/` prefix (no spaces),
@@ -968,7 +976,7 @@ export function Composer({
 					placeholder={
 						!workspace
 							? t.chat.noWorkspace
-							: streaming
+							: running
 								? t.chat.placeholderBusy
 								: t.chat.placeholder
 					}
@@ -1018,7 +1026,7 @@ export function Composer({
 						if (e.key === "Enter" && !e.shiftKey) {
 							if (isComposing || e.nativeEvent.isComposing) return;
 							e.preventDefault();
-							submit(editingQueueId ? "normal" : (streaming ? sendDuringRun : "normal"));
+							submit(editingQueueId ? "normal" : (running ? sendDuringRun : "normal"));
 						}
 					}}
 					onCompositionStart={() => setIsComposing(true)}
@@ -1089,7 +1097,7 @@ export function Composer({
 							</div>
 						)}
 
-						{streaming && hasDraft && (
+						{running && hasDraft && (
 							<div className="send-mode">
 								<button
 									className={`mode-btn ${sendDuringRun === "steer" ? "active" : ""}`}
@@ -1235,7 +1243,7 @@ export function Composer({
 								</div>
 							)}
 						</div>
-						{streaming && (
+						{running && (
 							<button
 								className="send-btn stop"
 								onClick={onAbort}
@@ -1249,16 +1257,20 @@ export function Composer({
 								)}
 							</button>
 						)}
-						{/* Always-available send button: while streaming the message
-							is queued (steer/followUp) instead of being dropped. */}
-						<button
-							className="send-btn"
-							disabled={busy || !hasDraft || (!connected && !workspace)}
-							onClick={() => submit("normal")}
-							title={t.chat.send}
-						>
-							<SendIcon size={16} />
-						</button>
+						{/* The send button stays visible while running only when there
+							is something to send — the message is queued
+							(steer/followUp) instead of being dropped. With no draft,
+							the stop button alone takes the slot. */}
+						{(!running || hasDraft) && (
+							<button
+								className="send-btn"
+								disabled={busy || !hasDraft || (!connected && !workspace)}
+								onClick={() => submit("normal")}
+								title={t.chat.send}
+							>
+								<SendIcon size={16} />
+							</button>
+						)}
 					</div>
 				</div>
 			</div>
