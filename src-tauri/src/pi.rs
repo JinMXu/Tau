@@ -203,23 +203,42 @@ fn resolve_in_path(bin: &str) -> Option<PathBuf> {
 	}
 	let path = std::env::var_os("PATH")?;
 	for dir in std::env::split_paths(&path) {
-		let candidate = dir.join(bin);
-		if candidate.is_file() {
-			return Some(candidate);
-		}
 		#[cfg(windows)]
-		if candidate.extension().is_none() {
-			let pathext = std::env::var("PATHEXT")
-				.unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-			for ext in pathext.split(';') {
-				let ext = ext.trim();
-				if ext.is_empty() {
-					continue;
+		{
+			// On Windows, an extensionless npm shim (`pi` shell script) next
+			// to `pi.cmd` shadows the real launcher: CreateProcess can't run
+			// a shell script, so a bare `Command::new("pi")` would hit the
+			// script first and fail. Prefer the PATHEXT extensions (.COM;
+			// .EXE;.BAT;.CMD) — same order as cmd.exe — and only fall back to
+			// the bare name when nothing else matches.
+			let candidate = dir.join(bin);
+			if candidate.extension().is_some() {
+				if candidate.is_file() {
+					return Some(candidate);
 				}
-				let with_ext = dir.join(format!("{bin}{ext}"));
-				if with_ext.is_file() {
-					return Some(with_ext);
+			} else {
+				let pathext = std::env::var("PATHEXT")
+					.unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+				for ext in pathext.split(';') {
+					let ext = ext.trim();
+					if ext.is_empty() {
+						continue;
+					}
+					let with_ext = dir.join(format!("{bin}{ext}"));
+					if with_ext.is_file() {
+						return Some(with_ext);
+					}
 				}
+				if candidate.is_file() {
+					return Some(candidate);
+				}
+			}
+		}
+		#[cfg(not(windows))]
+		{
+			let candidate = dir.join(bin);
+			if candidate.is_file() {
+				return Some(candidate);
 			}
 		}
 	}
@@ -260,6 +279,7 @@ fn probe_candidate(bin: &str) -> Option<PiBinaryInfo> {
 				if resolved
 					.file_name()
 					.and_then(|n| n.to_str())
+					.map(|n| n.to_ascii_lowercase())
 					.is_some_and(|n| n.ends_with(".cmd") || n.ends_with(".bat")) =>
 			{
 				match resolve_shim_target(&resolved) {
@@ -330,7 +350,43 @@ fn probe_pi_uncached() -> Option<PiBinaryInfo> {
 	if cfg!(windows) {
 		candidates.extend(["pi.exe", "pi.cmd", "pi.bat"]);
 	}
-	candidates.iter().find_map(|bin| probe_candidate(bin))
+	if let Some(info) = candidates.iter().find_map(|bin| probe_candidate(bin)) {
+		return Some(info);
+	}
+	// PATH search came up empty (e.g. the GUI inherited a stale explorer
+	// environment that predates the pi install). Fall back to well-known
+	// install locations before giving up.
+	probe_known_locations()
+}
+
+/// Look for pi in places it is typically installed even when PATH doesn't
+/// cover them: the npm global bin dir, and any PATH directory that holds
+/// node.exe (npm's prefix is usually the node install dir, and pi is a
+/// sibling of node there).
+fn probe_known_locations() -> Option<PiBinaryInfo> {
+	let mut dirs: Vec<PathBuf> = Vec::new();
+	#[cfg(windows)]
+	if let Some(appdata) = std::env::var_os("APPDATA") {
+		dirs.push(PathBuf::from(appdata).join("npm"));
+	}
+	if let Some(path) = std::env::var_os("PATH") {
+		for dir in std::env::split_paths(&path) {
+			if dir.join("node.exe").is_file() && !dirs.contains(&dir) {
+				dirs.push(dir);
+			}
+		}
+	}
+	for dir in dirs {
+		for name in ["pi.cmd", "pi.bat", "pi.exe", "pi"] {
+			let candidate = dir.join(name);
+			if candidate.is_file() {
+				if let Some(info) = probe_candidate(&candidate.to_string_lossy()) {
+					return Some(info);
+				}
+			}
+		}
+	}
+	None
 }
 
 /// Base `Command` for launching pi. Never goes through cmd.exe argument
@@ -2180,6 +2236,40 @@ mod tests {
 	}
 
 	#[test]
+	fn resolve_in_path_prefers_pathext_over_extensionless() {
+		// npm installs BOTH an extensionless `pi` shell script and `pi.cmd`
+		// next to each other. CreateProcess cannot run a shell script, so the
+		// resolver must prefer the PATHEXT match — otherwise a bare
+		// `Command::new("pi")` hits the script and the probe fails (the
+		// original report behind this test).
+		let _guard = ENV_GUARD.lock().unwrap();
+		let old_path = std::env::var_os("PATH");
+		let dir =
+			std::env::temp_dir().join(format!("pi-gui-path-test-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		std::fs::write(dir.join("pi"), "#!/bin/sh\necho hi\n").unwrap();
+		std::fs::write(dir.join("pi.cmd"), "@echo off\r\necho hi\r\n").unwrap();
+		std::env::set_var("PATH", &dir);
+
+		let resolved = resolve_in_path("pi").expect("pi should resolve via PATHEXT");
+		assert!(resolved.starts_with(&dir));
+		assert_eq!(
+			resolved
+				.file_name()
+				.and_then(|n| n.to_str())
+				.map(|n| n.to_ascii_lowercase()),
+			Some("pi.cmd".to_string())
+		);
+
+		let _ = std::fs::remove_dir_all(&dir);
+		match old_path {
+			Some(v) => std::env::set_var("PATH", v),
+			None => std::env::remove_var("PATH"),
+		}
+	}
+
+	#[test]
 	fn limited_lines_skips_oversized_lines() {
 		let path = std::env::temp_dir().join(format!("pi-gui-lines-test-{}", std::process::id()));
 		let mut file = File::create(&path).unwrap();
@@ -2196,6 +2286,7 @@ mod tests {
 		let _ = std::fs::remove_file(&path);
 	}
 }
+
 
 
 
