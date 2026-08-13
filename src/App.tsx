@@ -4,9 +4,11 @@ import {
 	useMemo,
 	useRef,
 	useState,
+	startTransition,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openPath } from "@tauri-apps/plugin-opener";
 import {
 	archiveSession as archiveSessionCmd,
@@ -20,6 +22,7 @@ import {
 	gitBranchState,
 	gitCheckoutBranch,
 	gitCreateBranch,
+	importSession,
 	listArchivedSessions,
 	listSessions,
 	newWindow,
@@ -30,6 +33,7 @@ import {
 	restoreSession,
 	revealSession,
 	send,
+	shareSession,
 	start,
 	status,
 	stop,
@@ -72,6 +76,12 @@ import {
 	ExtensionDialog,
 	type ExtensionRequest,
 } from "./components/ExtensionDialog";
+import { TreePanel, type PiTreeData } from "./components/TreePanel";
+import { SessionInfoDialog } from "./components/SessionInfoDialog";
+import { HotkeysDialog } from "./components/HotkeysDialog";
+import { ScopedModelsDialog } from "./components/ScopedModelsDialog";
+import { CompactDialog } from "./components/CompactDialog";
+import { ShareDialog } from "./components/ShareDialog";
 import type { ModelEntry } from "./components/Composer";
 import "./App.css";
 import { TitleBar } from "./components/TitleBar";
@@ -102,11 +112,13 @@ const RESPONSE_TIMEOUTS: Record<string, number> = {
 	get_available_thinking_levels: 90000,
 	get_commands: 90000,
 	compact: 300000,
+	bash: 600000,
 	get_messages: 30000,
 	switch_session: 30000,
 	fork: 30000,
 	clone: 30000,
 	new_session: 30000,
+	get_tree: 15000,
 	get_state: 15000,
 	get_session_stats: 15000,
 	set_model: 15000,
@@ -238,6 +250,35 @@ export default function App() {
 	const [renameState, setRenameState] = useState<RenameState | null>(null);
 	const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
 
+	// ---- extension UI: widgets / status / window title / editor prefill ----
+	const [extensionWidgets, setExtensionWidgets] = useState<
+		Record<string, { lines: string[]; placement: "aboveEditor" | "belowEditor" }>
+	>({});
+	const [extensionStatus, setExtensionStatus] = useState<
+		Record<string, string>
+	>({});
+	const [externalDraft, setExternalDraft] = useState<string | null>(null);
+
+	// ---- session tree (/tree equivalent) ----
+	const [treeOpen, setTreeOpen] = useState(false);
+	const [treeData, setTreeData] = useState<PiTreeData | null>(null);
+	// ---- /session details ----
+	const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
+	const [sessionInfoData, setSessionInfoData] = useState<{
+		state: Record<string, unknown>;
+		stats: SessionStats | null;
+	} | null>(null);
+	// ---- /hotkeys ----
+	const [hotkeysOpen, setHotkeysOpen] = useState(false);
+	// ---- /scoped-models ----
+	const [scopedModelsOpen, setScopedModelsOpen] = useState(false);
+	// ---- /compact with custom instructions ----
+	const [compactOpen, setCompactOpen] = useState(false);
+	// ---- /share result ----
+	const [shareUrl, setShareUrl] = useState<string | null>(null);
+	// ---- direct bash command (!cmd / !!cmd) streaming ----
+	const activeBashRef = useRef<{ id: string; messageId: number } | null>(null);
+
 	// ---- follow-up / steering queue (managed locally, delivered one at a time) ----
 	const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
 	const [queuePaused, setQueuePaused] = useState(false);
@@ -287,6 +328,32 @@ export default function App() {
 		);
 	}, [settings.autoRetryOnFailure, connected]);
 
+	// Hot-apply queue delivery modes + auto-compaction without reconnecting.
+	useEffect(() => {
+		if (!connected) return;
+		send({ type: "set_steering_mode", mode: settings.steeringMode }).catch(
+			() => {
+				/* older pi */
+			},
+		);
+	}, [settings.steeringMode, connected]);
+	useEffect(() => {
+		if (!connected) return;
+		send({ type: "set_follow_up_mode", mode: settings.followUpMode }).catch(
+			() => {
+				/* older pi */
+			},
+		);
+	}, [settings.followUpMode, connected]);
+	useEffect(() => {
+		if (!connected) return;
+		send({ type: "set_auto_compaction", enabled: settings.autoCompaction }).catch(
+			() => {
+				/* older pi */
+			},
+		);
+	}, [settings.autoCompaction, connected]);
+
 	const pendingRef = useRef(new Map<string, (v: unknown) => void>());
 	const sessionPathRef = useRef<string | null>(null);
 	const isNewSessionRef = useRef(false);
@@ -317,7 +384,11 @@ export default function App() {
 			const d = pendingDeltaRef.current;
 			pendingDeltaRef.current = null;
 			if (!d) return;
-			setMessages((prev) => {
+			// Mark as a transition so React can yield to the browser mid-render
+			// (keeping input / scroll responsive) and drop stale renders when
+			// deltas arrive faster than the parse can keep up.
+			startTransition(() => {
+				setMessages((prev) => {
 				const idx = prev.length - 1;
 				if (idx < 0) return prev;
 				const role = prev[idx].role;
@@ -357,6 +428,7 @@ export default function App() {
 				const next = [...prev];
 				next[idx] = { ...prev[idx], blocks };
 				return next;
+			});
 			});
 		});
 	}, []);
@@ -528,8 +600,13 @@ export default function App() {
 	}, []);
 
 	const handleResponse = useCallback(
-		async (command: Record<string, unknown>): Promise<PiEvent> => {
-			const id = `gui-${nextId++}`;
+		async (
+			command: Record<string, unknown>,
+			opts?: { id?: string },
+		): Promise<PiEvent> => {
+			// A caller-provided id lets `bash` stream events be correlated with
+			// the originating command (bash_execution_update carries the id).
+			const id = opts?.id ?? `gui-${nextId++}`;
 			const timeoutMs =
 				RESPONSE_TIMEOUTS[String(command.type)] ?? 60000;
 			const event = await new Promise<PiEvent>((resolve, reject) => {
@@ -738,7 +815,7 @@ export default function App() {
 					toast(String(event.message ?? ""));
 					return;
 				}
-				if (method === "select" || method === "confirm" || method === "input") {
+				if (method === "select" || method === "confirm" || method === "input" || method === "editor") {
 					setExtensionRequest({
 						id: String(event.id),
 						method,
@@ -746,6 +823,76 @@ export default function App() {
 						message: event.message as string | undefined,
 						options: (event.options as string[] | undefined) ?? [],
 						placeholder: event.placeholder as string | undefined,
+						prefill: event.prefill as string | undefined,
+					});
+					return;
+				}
+				// Fire-and-forget UI methods.
+				if (method === "setStatus") {
+					const key = String(event.statusKey ?? "");
+					const text = event.statusText as string | undefined;
+					if (!key) return;
+					setExtensionStatus((prev) => {
+						const next = { ...prev };
+						if (text) next[key] = text;
+						else delete next[key];
+						return next;
+					});
+					return;
+				}
+				if (method === "setWidget") {
+					const key = String(event.widgetKey ?? "");
+					if (!key) return;
+					const lines = event.widgetLines as string[] | undefined;
+					const placement =
+						event.widgetPlacement === "belowEditor" ? "belowEditor" : "aboveEditor";
+					setExtensionWidgets((prev) => {
+						const next = { ...prev };
+						if (lines && lines.length) next[key] = { lines, placement };
+						else delete next[key];
+						return next;
+					});
+					return;
+				}
+				if (method === "setTitle") {
+					const title = String(event.title ?? "");
+					document.title = title || "Tau";
+					getCurrentWindow()
+						.setTitle(title || "Tau")
+						.catch(() => {
+							/* ignore */
+						});
+					return;
+				}
+				if (method === "set_editor_text") {
+					setExternalDraft(String(event.text ?? ""));
+					return;
+				}
+				return;
+			}
+			if (event.type === "bash_execution_update") {
+				// Stream direct `bash` command output into the open bash card.
+				const id = event.id;
+				const delta = (event.delta as string | undefined) ?? "";
+				if (id && activeBashRef.current?.id === id) {
+					const messageId = activeBashRef.current.messageId;
+					setMessages((prev) => {
+						const idx = prev.findIndex((m) => m.id === messageId);
+						if (idx < 0) return prev;
+						const next = [...prev];
+						const m = next[idx];
+						next[idx] = {
+							...m,
+							blocks: [
+								{
+									kind: "tool",
+									name: "bash",
+									args: (m.blocks[0]?.kind === "tool" ? m.blocks[0].args : "") + delta,
+									result: true,
+								},
+							],
+						};
+						return next;
 					});
 				}
 				return;
@@ -1170,6 +1317,10 @@ export default function App() {
 						tools: settings.customTools.length
 							? settings.customTools
 							: null,
+						// Scoped model patterns for Ctrl+P cycling (/scoped-models).
+						models: settings.scopedModels.length
+							? settings.scopedModels.join(",")
+							: null,
 					};
 					// A session file can only be driven by ONE pi process (the
 					// backend rejects a second window opening the same JSONL).
@@ -1228,6 +1379,7 @@ export default function App() {
 			loadHistory,
 			settings.systemPrompt,
 			settings.customTools,
+			settings.scopedModels,
 			sessions,
 			toast,
 		],
@@ -1414,6 +1566,23 @@ export default function App() {
 				/* older pi */
 			}
 			try {
+				// Queue delivery modes + auto-compaction (TUI /settings).
+				await send({
+					type: "set_steering_mode",
+					mode: settingsRef.current.steeringMode,
+				});
+				await send({
+					type: "set_follow_up_mode",
+					mode: settingsRef.current.followUpMode,
+				});
+				await send({
+					type: "set_auto_compaction",
+					enabled: settingsRef.current.autoCompaction,
+				});
+			} catch {
+				/* older pi */
+			}
+			try {
 				// Slash commands (extension commands, prompt templates, skills).
 				const cmdResp = await handleResponse({ type: "get_commands" });
 				if (!cancelled) {
@@ -1459,6 +1628,34 @@ export default function App() {
 		},
 		[],
 	);
+
+	// Cycle to the next available model (TUI Ctrl+P). The RPC command only
+	// cycles forward; the response carries the new model (or null when there
+	// is only one model in scope).
+	const cycleModel = useCallback(async () => {
+		if (!connected) return;
+		try {
+			const r = await handleResponse({ type: "cycle_model" });
+			const data = r.data as { model?: ModelEntry | null } | undefined;
+			if (data?.model) {
+				setModel(`${data.model.provider}/${data.model.id}`);
+			}
+		} catch (e) {
+			setError(String(e));
+		}
+	}, [connected, handleResponse]);
+
+	// Cycle to the next thinking level (TUI Shift+Tab).
+	const cycleThinkingLevel = useCallback(async () => {
+		if (!connected) return;
+		try {
+			const r = await handleResponse({ type: "cycle_thinking_level" });
+			const data = r.data as { level?: string } | null | undefined;
+			if (data?.level) setThinkingLevel(data.level);
+		} catch (e) {
+			setError(String(e));
+		}
+	}, [connected, handleResponse]);
 
 	// Ask the user for the selected provider's API key when it's missing,
 	// right in the chat. Returns true when sending may proceed.
@@ -1538,6 +1735,96 @@ export default function App() {
 		}
 	}, [t, toast]);
 
+	// Direct shell command (TUI `!cmd` / `!!cmd`): executed via the RPC
+	// `bash` command; output streams into a chat card and (for `!`) is
+	// included in the next prompt's context. `!!` hides it from context.
+	const runBash = useCallback(
+		async (command: string, excludeFromContext: boolean) => {
+			setError(null);
+			const id = `gui-bash-${nextId++}`;
+			const messageId = nextId++;
+			setMessages((prev) => [
+				...prev,
+				{
+					id: messageId,
+					role: "tool",
+					blocks: [
+						{
+							kind: "tool",
+							name: "bash",
+							args: `$ ${command}\n`,
+							result: true,
+						},
+					],
+					streaming: true,
+				},
+			]);
+			activeBashRef.current = { id, messageId };
+			runEpochRef.current += 1;
+			setWorking(true);
+			try {
+				const r = await handleResponse(
+					{
+						type: "bash",
+						command,
+						excludeFromContext,
+					},
+					{ id },
+				);
+				const data = r.data as
+					| {
+							output?: string;
+							exitCode?: number;
+							truncated?: boolean;
+							cancelled?: boolean;
+						}
+					| undefined;
+				const output = data?.output ?? "";
+				const exitCode = data?.exitCode;
+				const suffix =
+					data?.truncated
+						? "\n… (output truncated)"
+						: exitCode !== undefined && exitCode !== 0
+							? `\n[exit ${exitCode}]`
+							: "";
+				setMessages((prev) =>
+					prev.map((m) =>
+						m.id === messageId
+							? {
+									...m,
+									streaming: false,
+									blocks: [
+										{
+											kind: "tool",
+											name: "bash",
+											args: `$ ${command}\n\n${output}${suffix}`,
+											result: true,
+											error: exitCode !== 0 ? true : undefined,
+										},
+									],
+								}
+							: m,
+					),
+				);
+			} catch (e) {
+				setMessages((prev) =>
+					prev.map((m) =>
+						m.id === messageId
+							? { ...m, streaming: false, error: String(e) }
+							: m,
+					),
+				);
+				setError(String(e));
+			} finally {
+				if (activeBashRef.current?.messageId === messageId) {
+					activeBashRef.current = null;
+				}
+				setWorking(false);
+			}
+		},
+		[handleResponse],
+	);
+
 	const submit = useCallback(
 		async (
 			text: string,
@@ -1568,6 +1855,21 @@ export default function App() {
 			}
 			setError(null);
 
+			const images = attachmentsToImages(attachments);
+			const fullText = text + attachmentsToText(attachments);
+
+			// Direct shell commands: `!cmd` runs and sends the output to the
+			// model on the next prompt; `!!cmd` runs without sending it. These
+			// don't need a provider API key, so they skip the key gate below.
+			if (fullText.startsWith("!") && fullText.length > 1) {
+				const excludeFromContext = fullText.startsWith("!!");
+				const command = fullText.replace(/^!+/, "").trim();
+				if (command) {
+					await runBash(command, excludeFromContext);
+					return;
+				}
+			}
+
 			// Provider API-key gate: ask inline before sending when missing.
 			if (!(await ensureProviderKey())) return;
 
@@ -1593,9 +1895,6 @@ export default function App() {
 					return;
 				}
 			}
-
-			const images = attachmentsToImages(attachments);
-			const fullText = text + attachmentsToText(attachments);
 
 			setMessages((prev) => [
 				...prev,
@@ -1661,7 +1960,7 @@ export default function App() {
 				setPendingSession(null);
 			}
 		},
-		[connected, workspace, connect, refreshSessions, discoverNewSession, ensureProviderKey, attachmentsToImages, attachmentsToText, working, sendDuringRun],
+		[connected, workspace, connect, refreshSessions, discoverNewSession, ensureProviderKey, attachmentsToImages, attachmentsToText, working, sendDuringRun, runBash],
 	);
 
 	const abort = useCallback(async () => {
@@ -1707,9 +2006,12 @@ export default function App() {
 		}, 5000);
 	}, [disconnect, connect, toast, t]);
 
-	const compact = useCallback(async () => {
+	const compact = useCallback(async (customInstructions?: string) => {
 		try {
-			await send({ type: "compact" });
+			await send({
+				type: "compact",
+				...(customInstructions ? { customInstructions } : {}),
+			});
 			toast(t.chat.compacting);
 		} catch (e) {
 			setError(String(e));
@@ -2087,6 +2389,61 @@ export default function App() {
 		[handleResponse, refreshSessions, loadHistory, toast, t],
 	);
 
+	// ---- /tree: fetch the session tree and open the navigator ----
+	const openTree = useCallback(async () => {
+		if (!connected) return;
+		try {
+			const r = await handleResponse({ type: "get_tree" });
+			setTreeData(r.data as PiTreeData);
+			setTreeOpen(true);
+		} catch (e) {
+			setError(String(e));
+		}
+	}, [connected, handleResponse]);
+
+	// ---- /session: fetch details for the info dialog ----
+	const openSessionInfo = useCallback(async () => {
+		if (!connected) return;
+		try {
+			const [stateResp, statsResp] = await Promise.all([
+				handleResponse({ type: "get_state" }),
+				handleResponse({ type: "get_session_stats" }).catch(() => null),
+			]);
+			setSessionInfoData({
+				state: (stateResp.data as Record<string, unknown>) ?? {},
+				stats: (statsResp?.data as SessionStats) ?? null,
+			});
+			setSessionInfoOpen(true);
+		} catch (e) {
+			setError(String(e));
+		}
+	}, [connected, handleResponse]);
+
+	// ---- /share: upload the session as a private GitHub gist ----
+	const share = useCallback(async () => {
+		const path = sessionPathRef.current;
+		if (!path) return;
+		try {
+			const url = await shareSession(path);
+			setShareUrl(url);
+		} catch (e) {
+			setError(String(e));
+		}
+	}, []);
+
+	// ---- /import: import a JSONL session file ----
+	const importSessionCmd = useCallback(async () => {
+		try {
+			const path = await importSession();
+			if (!path) return;
+			await refreshSessions();
+			toast(t.chat.imported);
+			await connect({ sessionFile: path });
+		} catch (e) {
+			setError(String(e));
+		}
+	}, [refreshSessions, connect, toast, t]);
+
 	const handleSearchSelect = useCallback(
 		async (path: string) => {
 			const s = sessions.find((x) => x.path === path);
@@ -2185,7 +2542,13 @@ export default function App() {
 				apiKeyDialog ||
 				extensionRequest ||
 				searchOpen ||
-				archivedPreview
+				archivedPreview ||
+				treeOpen ||
+				sessionInfoOpen ||
+				hotkeysOpen ||
+				scopedModelsOpen ||
+				compactOpen ||
+				shareUrl
 			) {
 				return;
 			}
@@ -2202,6 +2565,12 @@ export default function App() {
 		extensionRequest,
 		searchOpen,
 		archivedPreview,
+		treeOpen,
+		sessionInfoOpen,
+		hotkeysOpen,
+		scopedModelsOpen,
+		compactOpen,
+		shareUrl,
 		connected,
 		abort,
 	]);
@@ -2240,11 +2609,15 @@ export default function App() {
 			} else if (e.shiftKey && key === "a") {
 				e.preventDefault();
 				void archiveCurrent();
+			} else if (key === "p" && !e.shiftKey) {
+				// Ctrl+P: cycle to the next model (TUI ctrl+p).
+				e.preventDefault();
+				void cycleModel();
 			}
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [newTask, toggleSidebar, focusComposer, archiveCurrent, busy, toast, t]);
+	}, [newTask, toggleSidebar, focusComposer, archiveCurrent, busy, toast, t, cycleModel]);
 
 	// ---- sidebar resize ----
 	const resizeRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -2351,6 +2724,9 @@ export default function App() {
 				onToggleSidebar={toggleSidebar}
 				onPeekSidebar={openSidebarPeek}
 				onPeekSidebarLeave={closeSidebarPeekSoon}
+				extensionStatus={Object.values(extensionStatus)}
+				onOpenSessionInfo={openSessionInfo}
+				onOpenTree={openTree}
 			/>
 			<div className="shell">
 				{!sidebarCollapsed && !settingsOpen && (
@@ -2377,6 +2753,7 @@ export default function App() {
 						onCompactArchived={handleCompactArchived}
 						onClose={() => setSettingsOpen(false)}
 						onOpenSessionDir={openSessionDir}
+						onOpenScopedModels={() => setScopedModelsOpen(true)}
 					/>
 				) : (
 					<ChatArea
@@ -2399,7 +2776,7 @@ export default function App() {
 						onSubmit={submit}
 						onAbort={abort}
 						aborting={aborting}
-						onCompact={compact}
+						onCompact={() => setCompactOpen(true)}
 						onCopy={copyConversation}
 						onExport={exportSession}
 						onExportHtml={exportSessionHtml}
@@ -2408,6 +2785,11 @@ export default function App() {
 						onDelete={deleteCurrent}
 						onCompactImages={handleCompactImages}
 						onReveal={revealCurrent}
+						onTree={openTree}
+						onSessionInfo={openSessionInfo}
+						onShare={share}
+						onImport={importSessionCmd}
+						onHotkeys={() => setHotkeysOpen(true)}
 						composerFocusRequest={composerFocusRequest}
 						showTurnWait={showTurnWait}
 						gitState={gitState}
@@ -2434,6 +2816,10 @@ export default function App() {
 						showContextUsage={settings.showContextUsage}
 						modelsLoading={modelsLoading}
 						commands={commands}
+						extensionWidgets={extensionWidgets}
+						externalDraft={externalDraft}
+						onExternalDraftConsumed={() => setExternalDraft(null)}
+						onCycleThinking={cycleThinkingLevel}
 					/>
 				)}
 			</div>
@@ -2519,6 +2905,56 @@ export default function App() {
 					onExport={exportArchivedPreview}
 				/>
 			)}
+
+			<TreePanel
+				open={treeOpen}
+				data={treeData}
+				t={t}
+				onClose={() => setTreeOpen(false)}
+				onFork={async (entryId) => {
+					setTreeOpen(false);
+					await handleForkFromMessage(entryId);
+				}}
+			/>
+
+			<SessionInfoDialog
+				open={sessionInfoOpen}
+				data={sessionInfoData}
+				t={t}
+				onClose={() => setSessionInfoOpen(false)}
+			/>
+
+			<HotkeysDialog
+				open={hotkeysOpen}
+				t={t}
+				onClose={() => setHotkeysOpen(false)}
+			/>
+
+			<ScopedModelsDialog
+				open={scopedModelsOpen}
+				models={settings.scopedModels}
+				t={t}
+				onClose={() => setScopedModelsOpen(false)}
+				onSave={(patterns) =>
+					setSettings((prev) => ({ ...prev, scopedModels: patterns }))
+				}
+			/>
+
+			<CompactDialog
+				open={compactOpen}
+				t={t}
+				onClose={() => setCompactOpen(false)}
+				onConfirm={(instructions) => {
+					setCompactOpen(false);
+					void compact(instructions || undefined);
+				}}
+			/>
+
+			<ShareDialog
+				url={shareUrl}
+				t={t}
+				onClose={() => setShareUrl(null)}
+			/>
 
 			<div className="toasts">
 				{toasts.map((x) => (

@@ -47,6 +47,14 @@ export interface AppSettings {
 	chatLineSpacing: ChatLineSpacing;
 	/** Default send behavior while the agent is running. */
 	sendDuringRunMode: "steer" | "queue";
+	/** Steering delivery mode (TUI `set_steering_mode`). */
+	steeringMode: "all" | "one-at-a-time";
+	/** Follow-up delivery mode (TUI `set_follow_up_mode`). */
+	followUpMode: "all" | "one-at-a-time";
+	/** Ask pi to compact the context automatically at the threshold. */
+	autoCompaction: boolean;
+	/** Model patterns for Ctrl+P cycling (TUI `/scoped-models`, `--models`). */
+	scopedModels: string[];
 	/** Show the context-window usage badge in the chat header. */
 	showContextUsage: boolean;
 	/** Ask pi to auto-retry transient failures (overload, rate limit, 5xx). */
@@ -67,11 +75,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	chatContentWidth: "standard",
 	chatLineSpacing: "standard",
 	sendDuringRunMode: "steer",
+	steeringMode: "all",
+	followUpMode: "one-at-a-time",
+	autoCompaction: true,
+	scopedModels: [],
 	showContextUsage: true,
 	autoRetryOnFailure: true,
 };
 
-export const SETTINGS_KEY = "pi-gui.settings.v4";
+export const SETTINGS_KEY = "pi-gui.settings.v5";
 
 const ALL_TOOL_SET = new Set<string>(ALL_AGENT_TOOLS);
 
@@ -120,6 +132,23 @@ export function loadSettings(): AppSettings {
 				parsed.sendDuringRunMode === "queue"
 					? "queue"
 					: DEFAULT_SETTINGS.sendDuringRunMode,
+			steeringMode:
+				parsed.steeringMode === "all" || parsed.steeringMode === "one-at-a-time"
+					? parsed.steeringMode
+					: DEFAULT_SETTINGS.steeringMode,
+			followUpMode:
+				parsed.followUpMode === "all" || parsed.followUpMode === "one-at-a-time"
+					? parsed.followUpMode
+					: DEFAULT_SETTINGS.followUpMode,
+			autoCompaction:
+				typeof parsed.autoCompaction === "boolean"
+					? parsed.autoCompaction
+					: DEFAULT_SETTINGS.autoCompaction,
+			scopedModels: Array.isArray(parsed.scopedModels)
+				? parsed.scopedModels.filter(
+						(m): m is string => typeof m === "string" && m.trim().length > 0,
+					)
+				: DEFAULT_SETTINGS.scopedModels,
 			showContextUsage:
 				typeof parsed.showContextUsage === "boolean"
 					? parsed.showContextUsage

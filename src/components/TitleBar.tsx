@@ -71,6 +71,9 @@ export function TitleBar({
 	onToggleSidebar,
 	onPeekSidebar,
 	onPeekSidebarLeave,
+	extensionStatus = [],
+	onOpenSessionInfo,
+	onOpenTree,
 }: {
 	t: MessageCatalog;
 	onOpenSettings: () => void;
@@ -79,6 +82,9 @@ export function TitleBar({
 	onToggleSidebar: () => void;
 	onPeekSidebar: () => void;
 	onPeekSidebarLeave: () => void;
+	extensionStatus?: string[];
+	onOpenSessionInfo?: () => void;
+	onOpenTree?: () => void;
 }) {
 	const [openMenu, setOpenMenu] = useState<string | null>(null);
 	const [maximized, setMaximized] = useState(false);
@@ -140,6 +146,12 @@ export function TitleBar({
 			label: t.menu.view,
 			entries: [
 				{ kind: "item", label: t.menu.fullscreen, action: () => void toggleFullscreen() },
+				...(onOpenSessionInfo
+					? [{ kind: "item" as const, label: t.chat.sessionInfo, action: onOpenSessionInfo }]
+					: []),
+				...(onOpenTree
+					? [{ kind: "item" as const, label: t.chat.tree, action: onOpenTree }]
+					: []),
 			],
 		},
 	];
@@ -215,7 +227,17 @@ export function TitleBar({
 						if (e.button === 0) void appWindow.startDragging();
 					}}
 					onDoubleClick={() => void appWindow.toggleMaximize()}
-				/>
+				>
+					{extensionStatus.length > 0 && (
+						<div className="titlebar-status">
+							{extensionStatus.map((s, i) => (
+								<span key={i} className="titlebar-status-item" title={s}>
+									{s}
+								</span>
+							))}
+						</div>
+					)}
+				</div>
 				<div className="titlebar-controls">
 					<button
 						className="win-btn"

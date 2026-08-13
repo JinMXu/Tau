@@ -8,7 +8,7 @@ import {
 	type AppSettings,
 } from "../settings";
 
-const KEY = "pi-gui.settings.v4";
+const KEY = "pi-gui.settings.v5";
 
 describe("settings persistence", () => {
 	beforeEach(() => {

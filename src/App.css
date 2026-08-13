@@ -1522,6 +1522,21 @@ textarea {
 	-webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
 }
 
+/* Quiet tools (read/grep/ls/cd…) keep their result collapsed; the header is
+ * intentionally quieter so the stream stays focused on real work. */
+.tool-card.result.quiet .tool-head {
+	opacity: 0.75;
+	cursor: pointer;
+}
+
+.tool-card.result.quiet .tool-result-label {
+	cursor: pointer;
+}
+
+.tool-card.result.quiet:hover .tool-head {
+	opacity: 1;
+}
+
 .tool-output.error {
 	border-left-color: color-mix(in srgb, var(--status-err) 45%, var(--border-2));
 }
@@ -4385,4 +4400,452 @@ textarea {
 
 .highlighted-text {
 	white-space: pre-wrap;
+}
+
+/* ---- @ file reference menu ---- */
+.at-menu {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: calc(100% + 8px);
+	background: var(--menu-bg);
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-lg);
+	box-shadow: var(--shadow-2);
+	z-index: 60;
+	overflow: hidden;
+	text-align: left;
+}
+
+.at-menu .slash-item .mono {
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	color: var(--text-2);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.at-menu .slash-item.active .mono {
+	color: var(--link);
+}
+
+/* ---- extension widgets (setWidget) ---- */
+.ext-widget {
+	background: var(--panel-bg);
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-md);
+	padding: 6px 12px;
+	margin: 0 auto 8px;
+	max-width: var(--chat-max-width, 760px);
+	font-size: var(--fs-xs);
+	color: var(--text-2);
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.ext-widget.below {
+	margin: 8px auto 0;
+}
+
+/* ---- extension status (setStatus) in titlebar ---- */
+.titlebar-status {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	max-width: 46vw;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.titlebar-status-item {
+	font-size: 11px;
+	color: var(--text-3);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* ---- session tree dialog ---- */
+.tree-dialog,
+.session-info-dialog,
+.hotkeys-dialog,
+.scoped-models-dialog {
+	width: min(680px, calc(100vw - 80px));
+	max-height: min(72vh, 620px);
+	display: flex;
+	flex-direction: column;
+}
+
+.tree-dialog-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin-bottom: 8px;
+}
+
+.tree-dialog-header h3 {
+	margin: 0;
+}
+
+.tree-toolbar {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.tree-search {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex: 1;
+	background: var(--input-bg);
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-sm);
+	padding: 0 8px;
+	color: var(--text-3);
+}
+
+.tree-search input {
+	flex: 1;
+	background: transparent;
+	border: none;
+	outline: none;
+	padding: 6px 0;
+	font-size: var(--fs-sm);
+	color: var(--text-1);
+}
+
+.tree-filter {
+	background: var(--input-bg);
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-sm);
+	color: var(--text-1);
+	font-size: var(--fs-xs);
+	padding: 0 6px;
+	outline: none;
+}
+
+.tree-list {
+	flex: 1;
+	overflow-y: auto;
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-sm);
+	background: var(--input-bg);
+	min-height: 180px;
+	max-height: 46vh;
+	padding: 4px 0;
+}
+
+.tree-empty {
+	padding: 18px;
+	text-align: center;
+	color: var(--text-3);
+	font-size: var(--fs-sm);
+}
+
+.tree-node {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 10px;
+	cursor: pointer;
+	font-size: var(--fs-xs);
+	color: var(--text-2);
+	border-radius: 4px;
+	user-select: none;
+}
+
+.tree-node:hover {
+	background: var(--hover);
+}
+
+.tree-node.selected {
+	background: var(--accent-soft, var(--hover));
+	color: var(--text-1);
+}
+
+.tree-node.leaf {
+	color: var(--text-1);
+}
+
+.tree-chevron {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	flex-shrink: 0;
+	color: var(--text-3);
+}
+
+.tree-role-icon {
+	display: inline-flex;
+	align-items: center;
+	width: 14px;
+	flex-shrink: 0;
+	color: var(--text-3);
+}
+
+.tree-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	display: inline-block;
+}
+
+.tree-dot.user {
+	background: var(--link);
+}
+
+.tree-dot.assistant {
+	background: var(--text-3);
+}
+
+.tree-node-label {
+	flex: 1;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.tree-node-tag {
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 8px;
+	background: var(--accent-soft, var(--hover));
+	color: var(--link);
+	flex-shrink: 0;
+}
+
+.tree-leaf-mark {
+	color: var(--link);
+	font-size: 10px;
+	flex-shrink: 0;
+}
+
+.tree-actions {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin-top: 10px;
+	min-height: 34px;
+}
+
+.tree-actions-hint {
+	flex: 1;
+	font-size: var(--fs-xs);
+	color: var(--text-2);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.tree-actions-hint.muted {
+	color: var(--text-3);
+}
+
+.tree-actions-buttons {
+	display: flex;
+	gap: 8px;
+	flex-shrink: 0;
+}
+
+.tree-actions-buttons .btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+/* ---- session info dialog ---- */
+.session-info-body {
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.session-info-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 4px 0;
+	font-size: var(--fs-sm);
+}
+
+.session-info-label {
+	color: var(--text-3);
+	flex-shrink: 0;
+	width: 110px;
+	text-align: right;
+}
+
+.session-info-value {
+	flex: 1;
+	color: var(--text-1);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.session-info-value.mono {
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+}
+
+.session-info-copy {
+	flex-shrink: 0;
+	opacity: 0;
+	transition: opacity var(--dur) var(--ease);
+}
+
+.session-info-row:hover .session-info-copy {
+	opacity: 1;
+}
+
+.session-info-sep {
+	height: 1px;
+	background: var(--menu-border);
+	margin: 6px 0;
+}
+
+.mono {
+	font-family: var(--font-mono);
+}
+
+/* ---- hotkeys dialog ---- */
+.hotkeys-body {
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.hotkeys-group-title {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--text-3);
+	margin-bottom: 6px;
+}
+
+.hotkeys-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 3px 0;
+	font-size: var(--fs-sm);
+	color: var(--text-2);
+}
+
+.hotkeys-keys {
+	display: flex;
+	gap: 4px;
+	flex-shrink: 0;
+}
+
+.hotkeys-keys kbd {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	background: var(--input-bg);
+	border: 1px solid var(--menu-border);
+	border-bottom-width: 2px;
+	border-radius: 5px;
+	padding: 1px 6px;
+	color: var(--text-1);
+}
+
+/* ---- scoped models dialog ---- */
+.scoped-models-input {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.scoped-models-input input {
+	flex: 1;
+}
+
+.scoped-models-input .btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.scoped-models-list {
+	max-height: 220px;
+	overflow-y: auto;
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-sm);
+	background: var(--input-bg);
+	padding: 4px;
+	margin-bottom: 12px;
+}
+
+.scoped-models-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 5px 8px;
+	border-radius: var(--r-sm);
+	font-size: var(--fs-xs);
+	color: var(--text-1);
+}
+
+.scoped-models-item:hover {
+	background: var(--hover);
+}
+
+.scoped-models-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex: 1;
+	min-width: 0;
+}
+
+.scoped-models-count {
+	flex: 1;
+	font-size: var(--fs-xs);
+	color: var(--text-2);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* ---- compact dialog textarea ---- */
+.compact-textarea {
+	width: 100%;
+	background: var(--input-bg);
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-sm);
+	color: var(--text-1);
+	font-size: var(--fs-sm);
+	font-family: inherit;
+	padding: 8px 10px;
+	resize: vertical;
+	outline: none;
+	box-sizing: border-box;
+}
+
+.compact-textarea:focus {
+	border-color: var(--link);
+}
+
+/* ---- share dialog ---- */
+.share-url {
+	background: var(--input-bg);
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-sm);
+	padding: 8px 10px;
+	font-size: var(--fs-xs);
+	color: var(--link);
+	word-break: break-all;
+	margin-bottom: 12px;
+	max-height: 120px;
+	overflow-y: auto;
 }

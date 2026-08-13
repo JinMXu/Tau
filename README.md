@@ -12,8 +12,11 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **流式 Markdown** — 助手回复实时渲染，支持 GFM 表格、引用、列表，rehype-highlight 代码高亮 + 一键复制。
 - **思考块与工具卡片** — 助手思考过程可折叠展示；工具调用按类型显示对应图标（终端/文件夹/文件/搜索/闪电），参数可展开。
 - **附件** — Composer 支持拖拽、粘贴、选择添加附件；图片以 base64 dataURL 发送，文本文件内容内联注入，大文件仅记录路径。
-- **模型与思考级别** — 运行时切换 Provider/Model（按 Provider 分组的搜索菜单），选择思考级别。
-- **Steer / Follow-up** — 会话运行中发送消息时可选择「立即介入 steered」或「排队等待 follow-up」；排队消息显示在 Composer 上方，支持立即发送、编辑、删除、拖拽排序，打断后可暂停/继续自动发送。
+- **模型与思考级别** — 运行时切换 Provider/Model（按 Provider 分组的搜索菜单），选择思考级别；Ctrl+P 循环切换模型（可配置范围），Shift+Tab 循环思考级别。
+- **会话树（/tree）** — 以树形结构查看当前会话全部分支与条目（搜索、折叠、标签、过滤模式），可从任意用户消息分支成新会话或复制其文本。
+- **Steer / Follow-up** — 会话运行中发送消息时可选择「立即介入 steered」或「排队等待 follow-up」；排队消息显示在 Composer 上方，支持立即发送、编辑、删除、拖拽排序，打断后可暂停/继续自动发送；投递粒度（全部/逐轮一条）可在设置中调整。
+- **`@` 文件引用 + `!` 终端命令** — 输入 `@` 模糊搜索项目文件并补全路径（Tab 补全）；`!cmd` 直接执行 shell 命令（输出随下一条消息发给模型），`!!cmd` 执行但不上文，输出实时流式显示在聊天卡片中。
+- **提示词历史** — 输入框 ↑/↓ 浏览历史发送记录。
 - **会话导出** — 会话菜单支持导出为 Markdown、原始 JSONL 或带样式的 HTML 文件（原生保存对话框，HTML 由 pi CLI 生成）。
 - **自定义 Agent 工具** — Composer 扳手按钮可勾选允许 Pi 使用的工具（read/write/edit/bash/grep/find/ls），下次连接会话时通过 `--tools` 生效。
 - **聊天内 API Key 提示** — 发送消息时若所选 Provider 未配置 Key，直接在聊天内弹窗填写，无需跳转设置页。
@@ -21,7 +24,9 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **Escape 中断** — 全局 Esc 键中断当前回合（输入框或对话框打开时不触发）。
 - **归档多选恢复** — 归档管理页支持勾选多条会话批量恢复。
 - **原生菜单本地化** — 应用/编辑/视图菜单随界面语言切换即时重建（中文/英文）。
-- **Compact** — 一键压缩对话上下文。
+- **Compact** — 一键压缩对话上下文，支持附带自定义指令（/compact [prompt]）；自动压缩可在设置中开关。
+- **会话详情（/session）** — 查看会话文件、ID、名称、模型、思考级别、投递模式与 Token/费用统计，可复制各项。
+- **分享 / 导入（/share · /import）** — 将会话导出为 HTML 并以私有 GitHub Gist 分享（需已登录的 gh CLI）；从外部 JSONL 文件导入会话并自动归档到对应项目目录。
 - **复制 / 重命名 / 显示位置** — 会话菜单支持复制为 Markdown、重命名、在文件管理器中显示。
 - **归档 / 删除 / 恢复** — 软删除移入归档区，可随时恢复；彻底删除移入回收站，仍可手动 purge。
 - **全文搜索** — ⌘K 唤起搜索浮层，跨所有会话标题和消息内容搜索，带片段预览，点击跳转。
@@ -45,7 +50,8 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **设置** — 主题（浅色/深色/跟随系统）、6 种色调（Mist/Paper/Sand/Gray/Forest/Ocean）、字号、消息密度、聊天字体（系统/霞鹜文楷/朱雀仿宋）、内容宽度（标准/宽/超宽）、行距、语言、默认发送模式（steer/follow-up）、上下文用量开关、失败自动重试开关、默认思考级别、pi 版本信息、会话目录、归档管理。
 - **项目行操作** — 侧边栏项目行 hover 显示操作：在文件夹中显示、删除项目（归档该项目下全部会话，可恢复）。
 - **快捷键** — ⌘K 搜索、⌘N 新任务、Shift+⌘N 新窗口、⌘, 设置、⌘B 折叠侧边栏、⌘L 聚焦输入框、⌘F 会话内搜索、Shift+⌘A 归档当前会话（macOS 用 ⌘，Windows/Linux 对应 Ctrl；界面提示按平台自动切换）。
-- **扩展 UI 对话框** — 处理 Pi 的 `extension_ui_request` 事件（select / confirm / input / notify），回传 `extension_ui_response`。
+- **扩展 UI 对话框** — 处理 Pi 的 `extension_ui_request` 事件（select / confirm / input / editor / notify），回传 `extension_ui_response`；`setWidget` 挂件显示在输入框上下方，`setStatus` 状态显示在标题栏，`setTitle` 同步窗口标题，`set_editor_text` 预填输入框。
+- **快捷键面板（/hotkeys）** — 会话菜单或标题栏视图菜单查看完整快捷键与斜杠命令参考。
 - **持久化** — 主题、色调、字号、密度、语言、思考级别、展开的项目分组、侧边栏宽度均存于 localStorage，重启恢复。
 - **双语界面** — 中文 / English 一键切换。
 
@@ -111,9 +117,12 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）：push/PR 时自动运行 `t
 Tau 通过以下 JSON-RPC 命令与 Pi 通信：
 
 `prompt` · `steer` · `follow_up` · `abort` · `new_session` · `compact` ·
-`set_model` · `set_thinking_level` · `get_available_models` · `get_state` ·
-`get_available_thinking_levels` · `set_session_name` · `switch_session` ·
-`fork` · `clone` · `get_messages` · `get_session_stats` · `extension_ui_response`
+`set_model` · `cycle_model` · `set_thinking_level` · `cycle_thinking_level` ·
+`get_available_models` · `get_state` · `get_available_thinking_levels` · `set_session_name` ·
+`switch_session` · `fork` · `clone` · `get_messages` · `get_session_stats` ·
+`get_commands` · `set_auto_retry` · `set_auto_compaction` · `set_steering_mode` ·
+`set_follow_up_mode` · `bash` · `get_tree` · `get_entries` · `get_fork_messages` ·
+`get_last_assistant_text` · `extension_ui_response`
 
 图像附件格式：`{ type: "image", mimeType, data: <base64> }`
 

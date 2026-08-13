@@ -435,6 +435,7 @@ impl PiProcess {
 		session_name: Option<&str>,
 		system_prompt: Option<&str>,
 		tools: Option<&[String]>,
+		models: Option<&str>,
 		state: Arc<Mutex<HashMap<String, PiProcess>>>,
 		label: String,
 		window: &WebviewWindow,
@@ -446,6 +447,13 @@ impl PiProcess {
 			.arg("rpc")
 			.arg("--session-dir")
 			.arg(default_session_dir());
+		// Scoped model patterns for Ctrl+P cycling (/scoped-models equivalent).
+		if let Some(models) = models {
+			let models = models.trim();
+			if !models.is_empty() {
+				cmd.arg("--models").arg(models);
+			}
+		}
 		if let Some(path) = fork_of {
 			cmd.arg("--fork").arg(path);
 		} else if let Some(path) = session_file {
@@ -1176,6 +1184,7 @@ fn pi_start(
 	session_name: Option<String>,
 	system_prompt: Option<String>,
 	tools: Option<Vec<String>>,
+	models: Option<String>,
 ) -> Result<(), String> {
 	let info = probe_pi().ok_or("pi binary not found")?;
 	let label = window.label().to_string();
@@ -1223,6 +1232,7 @@ fn pi_start(
 		session_name.as_deref(),
 		system_prompt.as_deref(),
 		tools.as_deref(),
+		models.as_deref(),
 		state.inner.clone(),
 		label,
 		&window,
@@ -1252,7 +1262,9 @@ const ALLOWED_RPC_TYPES: &[&str] = &[
 	"new_session",
 	"compact",
 	"set_model",
+	"cycle_model",
 	"set_thinking_level",
+	"cycle_thinking_level",
 	"get_available_models",
 	"get_state",
 	"get_available_thinking_levels",
@@ -1264,6 +1276,14 @@ const ALLOWED_RPC_TYPES: &[&str] = &[
 	"get_session_stats",
 	"get_commands",
 	"set_auto_retry",
+	"set_auto_compaction",
+	"set_steering_mode",
+	"set_follow_up_mode",
+	"bash",
+	"get_tree",
+	"get_entries",
+	"get_fork_messages",
+	"get_last_assistant_text",
 	"extension_ui_response",
 ];
 
@@ -1884,6 +1904,260 @@ async fn pi_export_html(
 	.await
 }
 
+/// List files under a project for `@` file-reference completion. Skips heavy
+/// generated directories (node_modules, .git, target, dist, …) and caps the
+/// walk so the picker stays fast even in huge repos. Returns relative paths
+/// with forward slashes; directories end with "/".
+const SKIP_DIRS: &[&str] = &[
+	"node_modules",
+	".git",
+	".hg",
+	".svn",
+	"target",
+	"dist",
+	"build",
+	"out",
+	".next",
+	".nuxt",
+	".cache",
+	".venv",
+	"venv",
+	"__pycache__",
+	".idea",
+	".DS_Store",
+	".turbo",
+	".esbuild",
+	"coverage",
+	".parcel-cache",
+	".yarn",
+	".pnpm-store",
+	".mypy_cache",
+	".pytest_cache",
+	".ruff_cache",
+	".terraform",
+	".gradle",
+	"vendor",
+];
+const MAX_PROJECT_FILES: usize = 8000;
+
+#[tauri::command]
+async fn pi_project_files(project: String) -> Result<Vec<String>, String> {
+	run_blocking(move || {
+		let root = PathBuf::from(&project);
+		if !root.is_dir() {
+			return Err(format!("not a directory: {project}"));
+		}
+		let mut out = Vec::new();
+		let mut stack = vec![(root.clone(), String::new())];
+		while let Some((dir, prefix)) = stack.pop() {
+			let Ok(entries) = std::fs::read_dir(&dir) else {
+				continue;
+			};
+			for entry in entries.flatten() {
+				if out.len() >= MAX_PROJECT_FILES {
+					break;
+				}
+				let name = entry.file_name().to_string_lossy().into_owned();
+				if SKIP_DIRS.contains(&name.as_str()) {
+					continue;
+				}
+				let rel = if prefix.is_empty() {
+					name.clone()
+				} else {
+					format!("{prefix}/{name}")
+				};
+				let Ok(ft) = entry.file_type() else { continue };
+				if ft.is_dir() {
+					out.push(format!("{rel}/"));
+					stack.push((entry.path(), rel));
+				} else if ft.is_file() {
+					out.push(rel);
+				}
+			}
+		}
+		// Files before directories, then lexicographic.
+		out.sort_by(|a, b| {
+			let ad = a.ends_with('/');
+			let bd = b.ends_with('/');
+			if ad != bd {
+				ad.cmp(&bd) // dirs last
+			} else {
+				a.cmp(b)
+			}
+		});
+		Ok(out)
+	})
+	.await
+}
+
+/// Sanitize a working directory into pi's per-project session folder name:
+/// `--<cwd with [/\\:] -> ->--` (matches pi's session-manager layout).
+fn session_project_dir_name(cwd: &str) -> String {
+	let trimmed = cwd.trim_start_matches(['/', '\\']);
+	format!(
+		"--{}--",
+		trimmed.replace(['/', '\\', ':'], "-")
+	)
+}
+
+/// Import a session from an external JSONL file: pick it with a native file
+/// dialog, then copy it into the sessions directory under the project folder
+/// matching its header `cwd` (created on demand). Returns the new session
+/// path so the frontend can open it.
+#[tauri::command]
+fn pi_import_session(app: AppHandle) -> Result<Option<String>, String> {
+	use tauri_plugin_dialog::DialogExt;
+
+	let picked = app
+		.dialog()
+		.file()
+		.add_filter("Pi session (JSONL)", &["jsonl", "json"])
+		.blocking_pick_file();
+	let Some(picked) = picked else {
+		return Ok(None);
+	};
+	let src = match picked {
+		tauri_plugin_dialog::FilePath::Path(p) => p,
+		tauri_plugin_dialog::FilePath::Url(_) => return Err("unsupported file location".into()),
+	};
+	// Read the header to learn the cwd (project) and id/timestamp for naming.
+	let mut cwd: Option<String> = None;
+	let mut session_id: Option<String> = None;
+	let mut timestamp: Option<String> = None;
+	{
+		let Ok(file) = File::open(&src) else {
+			return Err(format!("cannot read file: {}", src.display()));
+		};
+		let reader = BufReader::new(file);
+		for line in LimitedLines::new(reader, MAX_JSONL_LINE).flatten() {
+			if line.trim().is_empty() {
+				continue;
+			}
+			if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+				if v.get("type").and_then(|x| x.as_str()) == Some("session") {
+					cwd = v.get("cwd").and_then(|x| x.as_str()).map(|s| s.to_string());
+					session_id = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
+					timestamp = v.get("timestamp").and_then(|x| x.as_str()).map(|s| s.to_string());
+				}
+				if cwd.is_some() {
+					break;
+				}
+			}
+		}
+	}
+	let project = cwd.unwrap_or_else(|| "unknown".to_string());
+	let dir_name = session_project_dir_name(&project);
+	let target_dir = default_session_dir().join(dir_name);
+	std::fs::create_dir_all(&target_dir)
+		.map_err(|e| format!("failed to create session dir: {e}"))?;
+	// `<ISO timestamp with : . -> ->_<8-hex id>.jsonl` — same shape pi uses.
+	let ts = timestamp
+		.unwrap_or_default()
+		.replace([':', '.'], "-")
+		.trim_end_matches('Z')
+		.to_string();
+	let ts = if ts.is_empty() {
+		let now = std::time::SystemTime::now()
+			.duration_since(std::time::UNIX_EPOCH)
+			.map(|d| d.as_millis())
+			.unwrap_or(0);
+		format!("session-{now}")
+	} else {
+		ts
+	};
+	let id8 = session_id
+		.unwrap_or_default()
+		.chars()
+		.filter(|c| c.is_ascii_hexdigit())
+		.take(8)
+		.collect::<String>();
+	let id8 = if id8.is_empty() {
+		format!("{:08x}", std::process::id())
+	} else {
+		id8
+	};
+	let file_name = format!("{ts}_{id8}.jsonl");
+	let target = target_dir.join(&file_name);
+	if target.exists() {
+		return Err(format!("a session with this name already exists: {file_name}"));
+	}
+	std::fs::copy(&src, &target).map_err(|e| format!("failed to import session: {e}"))?;
+	Ok(Some(target.to_string_lossy().into_owned()))
+}
+
+/// Share the current session as a private GitHub gist (the TUI's `/share`):
+/// requires the `gh` CLI to be installed and logged in. Exports the session
+/// to HTML via `pi --export`, uploads it with `gh gist create --private`,
+/// and returns the gist URL.
+#[tauri::command]
+async fn pi_share_session(session_path: String) -> Result<String, String> {
+	let path = require_session_path(Path::new(&session_path))?;
+	run_blocking(move || {
+		// 1. gh installed + logged in?
+		let auth = no_console_window(
+			Command::new("gh").args(["auth", "status"]).stdout(Stdio::null()).stderr(Stdio::null()),
+		)
+		.output();
+		match auth {
+			Err(_) => return Err("GitHub CLI (gh) 未安装，请先安装 https://cli.github.com/".into()),
+			Ok(out) if !out.status.success() => {
+				return Err("GitHub CLI 未登录，请先运行 `gh auth login`".into())
+			}
+			Ok(_) => {}
+		}
+		// 2. Export to a temp HTML file.
+		let tmp = std::env::temp_dir().join(format!("tau-share-{}.html", std::process::id()));
+		let _ = std::fs::remove_file(&tmp);
+		let info = probe_pi().ok_or("pi binary not found")?;
+		let mut export = pi_command(&info);
+		export.arg("--export").arg(&path).arg(&tmp).arg("--offline");
+		#[cfg(windows)]
+		{
+			use std::os::windows::process::CommandExt;
+			const CREATE_NO_WINDOW: u32 = 0x08000000;
+			export.creation_flags(CREATE_NO_WINDOW);
+		}
+		let out = export.output().map_err(|e| format!("failed to run pi --export: {e}"))?;
+		if !out.status.success() {
+			return Err(format!(
+				"export failed: {}",
+				String::from_utf8_lossy(&out.stderr).trim()
+			));
+		}
+		// 3. Create the private gist and read its html_url.
+		let gist = no_console_window(
+			Command::new("gh")
+				.args(["gist", "create", "--private"])
+				.arg(&tmp)
+				.stdout(Stdio::piped())
+				.stderr(Stdio::piped()),
+		)
+			.output()
+			.map_err(|e| format!("failed to run gh gist create: {e}"))?;
+		let _ = std::fs::remove_file(&tmp);
+		if !gist.status.success() {
+			return Err(format!(
+				"gist creation failed: {}",
+				String::from_utf8_lossy(&gist.stderr).trim()
+			));
+		}
+		// gh prints the gist URL on stdout; also try to extract html_url from
+		// the JSON payload (gh prints it when --json isn't given; be tolerant).
+		let text = String::from_utf8_lossy(&gist.stdout).trim().to_string();
+		let url = if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+			v.get("html_url")
+				.or_else(|| v.get("url"))
+				.and_then(|x| x.as_str())
+				.map(|s| s.to_string())
+		} else {
+			// Fall back to the first URL-looking token on stdout.
+			text.split_whitespace().find(|t| t.starts_with("http")).map(|s| s.to_string())
+		};
+		url.ok_or_else(|| "无法解析 gist URL".into())
+	})
+	.await
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PiUsageEntry {
@@ -2016,6 +2290,9 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			pi_status,
 			pi_export_chat,
 			pi_export_html,
+			pi_project_files,
+			pi_import_session,
+			pi_share_session,
 			pi_usage_stats,
 			pi_compact_session_images,
 			pi_list_sessions,

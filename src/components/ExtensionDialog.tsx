@@ -3,11 +3,12 @@ import type { MessageCatalog } from "../i18n";
 
 export interface ExtensionRequest {
 	id: string;
-	method: "select" | "confirm" | "input";
+	method: "select" | "confirm" | "input" | "editor";
 	title?: string;
 	message?: string;
 	options?: string[];
 	placeholder?: string;
+	prefill?: string;
 }
 
 export function ExtensionDialog({
@@ -21,11 +22,15 @@ export function ExtensionDialog({
 }) {
 	const [value, setValue] = useState("");
 	const inputRef = useRef<HTMLInputElement>(null);
+	const editorRef = useRef<HTMLTextAreaElement>(null);
 
 	useEffect(() => {
 		if (request) {
-			setValue("");
-			setTimeout(() => inputRef.current?.focus(), 30);
+			setValue(request.prefill ?? "");
+			setTimeout(() => {
+				if (request.method === "editor") editorRef.current?.focus();
+				else inputRef.current?.focus();
+			}, 30);
 		}
 	}, [request]);
 
@@ -68,6 +73,23 @@ export function ExtensionDialog({
 						}}
 					/>
 				)}
+				{request.method === "editor" && (
+					<textarea
+						ref={editorRef}
+						className="compact-textarea"
+						rows={8}
+						value={value}
+						placeholder={request.placeholder}
+						onChange={(e) => setValue(e.target.value)}
+						onKeyDown={(e) => {
+							if (e.key === "Escape") respond({ cancelled: true });
+							if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+								e.preventDefault();
+								respond({ value });
+							}
+						}}
+					/>
+				)}
 				<div className="extension-dialog-actions">
 					<button
 						className="btn secondary"
@@ -81,10 +103,17 @@ export function ExtensionDialog({
 					>
 						{t.extension.cancel}
 					</button>
-					{request.method === "confirm" && (
+					{(request.method === "confirm" ||
+						request.method === "editor") && (
 						<button
 							className="btn primary"
-							onClick={() => respond({ confirmed: true })}
+							onClick={() =>
+								respond(
+									request.method === "confirm"
+										? { confirmed: true }
+										: { value },
+								)
+							}
 						>
 							{t.extension.ok}
 						</button>

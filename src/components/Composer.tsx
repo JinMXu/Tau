@@ -11,11 +11,13 @@ import {
 } from "react";
 import type { Attachment, SendBehavior } from "../chat-types";
 import { projectNameFromPath, type MessageCatalog } from "../i18n";
-import type { GitBranchState } from "../pi";
+import type { GitBranchState, PiCommand } from "../pi";
+import { projectFiles } from "../pi";
 import {
 	CheckIcon,
 	ChevronDownIcon,
 	EditIcon,
+	FileIcon,
 	FolderIcon,
 	FolderOpenIcon,
 	GripVerticalIcon,
@@ -35,7 +37,6 @@ import {
 import type { AgentToolName } from "../settings";
 import { ALL_AGENT_TOOLS } from "../settings";
 import type { QueuedChatMessage, SessionStats } from "../chat-types";
-import type { PiCommand } from "../pi";
 export interface ModelEntry {
 	provider: string;
 	id: string;
@@ -186,6 +187,10 @@ export function Composer({
 	commands,
 	showContextUsage,
 	stats,
+	workspacePath,
+	externalDraft,
+	onExternalDraftConsumed,
+	onCycleThinking,
 	t,
 }: {
 	connected: boolean;
@@ -230,6 +235,10 @@ export function Composer({
 	commands: PiCommand[];
 	showContextUsage: boolean;
 	stats: SessionStats | null;
+	workspacePath: string | null;
+	externalDraft: string | null;
+	onExternalDraftConsumed: () => void;
+	onCycleThinking: () => void;
 	t: MessageCatalog;
 }) {
 	const [text, setText] = useState("");
@@ -250,6 +259,23 @@ export function Composer({
 	const [dragQueueId, setDragQueueId] = useState<string | null>(null);
 	const [slashIndex, setSlashIndex] = useState(0);
 	const [slashDismissed, setSlashDismissed] = useState(false);
+	// ---- `@` file reference + prompt history ----
+	const [projectFileCache, setProjectFileCache] = useState<string[]>([]);
+	const [atIndex, setAtIndex] = useState(0);
+	const caretRef = useRef(0);
+	// Bumped whenever the caret moves (click/select/keyup) so the `@` menu
+	// re-evaluates against the new caret position.
+	const [caretTick, setCaretTick] = useState(0);
+	const [history, setHistory] = useState<string[]>(() => {
+		try {
+			const raw = localStorage.getItem("pi-gui.promptHistory.v1");
+			return raw ? (JSON.parse(raw) as string[]) : [];
+		} catch {
+			return [];
+		}
+	});
+	const historyRef = useRef(history);
+	const historyIndexRef = useRef(-1);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -263,6 +289,46 @@ export function Composer({
 			textareaRef.current?.focus();
 		}
 	}, [composerFocusRequest, connected]);
+
+	// Extension `set_editor_text`: prefill the draft and focus the composer.
+	useEffect(() => {
+		if (externalDraft == null) return;
+		setText(externalDraft);
+		onExternalDraftConsumed();
+		textareaRef.current?.focus();
+	}, [externalDraft, onExternalDraftConsumed]);
+
+	// Keep the prompt history ref in sync; persist on change.
+	useEffect(() => {
+		historyRef.current = history;
+		try {
+			localStorage.setItem(
+				"pi-gui.promptHistory.v1",
+				JSON.stringify(history.slice(0, 100)),
+			);
+		} catch {
+			/* ignore */
+		}
+	}, [history]);
+
+	// Cache the project file list for `@` completion (once per workspace).
+	useEffect(() => {
+		let cancelled = false;
+		if (!workspacePath) {
+			setProjectFileCache([]);
+			return;
+		}
+		void projectFiles(workspacePath)
+			.then((files) => {
+				if (!cancelled) setProjectFileCache(files);
+			})
+			.catch(() => {
+				if (!cancelled) setProjectFileCache([]);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [workspacePath]);
 
 	useEffect(() => {
 		function onClick(e: MouseEvent) {
@@ -335,6 +401,11 @@ export function Composer({
 			)
 				return;
 			onSubmit(trimmed, attachments, behavior ?? "normal", editingQueueId);
+			// Prompt history: remember what was actually sent.
+			if (trimmed) {
+				setHistory((prev) => [trimmed, ...prev.filter((h) => h !== trimmed)].slice(0, 100));
+			}
+			historyIndexRef.current = -1;
 			setText("");
 			setAttachments([]);
 			requestAnimationFrame(autoSize);
@@ -626,6 +697,87 @@ export function Composer({
 		[t],
 	);
 
+	// ---- `@` file reference menu ----
+	// The menu is active while the text immediately before the caret matches
+	// `@query` at a word boundary. Query chars are limited to path characters.
+	const atMatch = useMemo(() => {
+		const before = text.slice(0, caretRef.current);
+		const m = before.match(/(?:^|[\s(])(@[^\s@]*)$/);
+		if (!m) return null;
+		const token = m[1];
+		const query = token.slice(1).toLowerCase();
+		return { token, query };
+		// caretRef is a ref; caretTick forces re-evaluation on caret moves.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [text, caretTick]);
+	const atOpen = atMatch !== null && projectFileCache.length > 0;
+	const atFiltered = useMemo(() => {
+		if (!atMatch) return [];
+		const q = atMatch.query;
+		if (!q) return projectFileCache.slice(0, 60);
+		// Match against the full path AND the trailing name part.
+		const scored = projectFileCache
+			.filter((f) => f.toLowerCase().includes(q))
+			.map((f) => {
+				const lower = f.toLowerCase();
+				const idx = lower.lastIndexOf(q);
+				// Prefer matches near the file name, then shorter paths.
+				return { f, score: idx + f.length / 1000 };
+			})
+			.sort((a, b) => a.score - b.score)
+			.slice(0, 60)
+			.map((x) => x.f);
+		return scored;
+	}, [atMatch, projectFileCache]);
+	const activeAt =
+		atFiltered[Math.min(atIndex, atFiltered.length - 1)] ?? null;
+
+	useEffect(() => {
+		setAtIndex(0);
+	}, [atMatch?.query]);
+
+	const insertAtReference = useCallback((path: string) => {
+		if (!atMatch) return;
+		const before = text.slice(0, caretRef.current);
+		const after = text.slice(caretRef.current);
+		const start = before.lastIndexOf(atMatch.token);
+		const replacement = path.endsWith("/") ? path : path;
+		setText(before.slice(0, start) + replacement + after);
+		setAtIndex(0);
+		requestAnimationFrame(() => {
+			const el = textareaRef.current;
+			if (!el) return;
+			el.focus();
+			const pos = start + replacement.length;
+			el.setSelectionRange(pos, pos);
+			caretRef.current = pos;
+		});
+	}, [text, atMatch]);
+
+	// ---- prompt history navigation ----
+	const historyPrev = useCallback(() => {
+		const list = historyRef.current;
+		if (list.length === 0) return;
+		const next =
+			historyIndexRef.current < 0
+				? 0
+				: Math.min(historyIndexRef.current + 1, list.length - 1);
+		historyIndexRef.current = next;
+		setText(list[next] ?? "");
+		setAttachments([]);
+		requestAnimationFrame(() => {
+			const el = textareaRef.current;
+			if (el) el.setSelectionRange(el.value.length, el.value.length);
+		});
+	}, []);
+	const historyNext = useCallback(() => {
+		if (historyIndexRef.current < 0) return;
+		const next = historyIndexRef.current - 1;
+		historyIndexRef.current = next;
+		setText(next < 0 ? "" : (historyRef.current[next] ?? ""));
+		setAttachments([]);
+	}, []);
+
 	// Highlight layer for the textarea: known `/command` words get a subtle
 	// tinted background rendered *under* the transparent textarea, so typed
 	// text itself stays untouched.
@@ -915,6 +1067,32 @@ export function Composer({
 					)}
 			</div>
 			<div className="composer">
+				{atOpen && (
+					<div className="at-menu">
+						<div className="slash-menu-title">{t.chat.referenceFile}</div>
+						{atFiltered.length === 0 ? (
+							<div className="slash-menu-empty">{t.chat.slashNoCommands}</div>
+						) : (
+							<div className="slash-menu-list">
+								{atFiltered.map((f, i) => (
+									<button
+										key={f}
+										className={`slash-item ${i === atIndex ? "active" : ""}`}
+										onMouseEnter={() => setAtIndex(i)}
+										onClick={() => insertAtReference(f)}
+									>
+										{f.endsWith("/") ? (
+											<FolderIcon size={13} />
+										) : (
+											<FileIcon size={13} />
+										)}
+										<span className="slash-name mono">{f}</span>
+									</button>
+								))}
+							</div>
+						)}
+					</div>
+				)}
 				{slashOpen && (
 					<div className="slash-menu">
 						<div className="slash-menu-title">{t.chat.slashCommands}</div>
@@ -980,12 +1158,59 @@ export function Composer({
 								? t.chat.placeholderBusy
 								: t.chat.placeholder
 					}
-					onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
-						setText(e.target.value)
-					}
+					onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
+						caretRef.current = e.target.selectionStart;
+						setText(e.target.value);
+					}}
+					onSelect={(e) => {
+						caretRef.current = (e.target as HTMLTextAreaElement).selectionStart;
+						setCaretTick((n) => n + 1);
+					}}
+					onClick={(e) => {
+						caretRef.current = (e.target as HTMLTextAreaElement).selectionStart;
+						setCaretTick((n) => n + 1);
+					}}
+					onKeyUp={(e) => {
+						caretRef.current = (e.target as HTMLTextAreaElement).selectionStart;
+						setCaretTick((n) => n + 1);
+					}}
 					onScroll={syncHighlightScroll}
 					onPaste={handlePaste}
 					onKeyDown={(e) => {
+						// `@` file-reference menu navigation (takes priority).
+						if (atOpen) {
+							if (e.key === "ArrowDown") {
+								e.preventDefault();
+								setAtIndex((i) => Math.min(i + 1, atFiltered.length - 1));
+								return;
+							}
+							if (e.key === "ArrowUp") {
+								e.preventDefault();
+								setAtIndex((i) => Math.max(i - 1, 0));
+								return;
+							}
+							if (e.key === "Tab" && activeAt) {
+								e.preventDefault();
+								insertAtReference(activeAt);
+								return;
+							}
+							if (e.key === "Escape") {
+								e.preventDefault();
+								// Replace the `@query` token with a plain `@` and close.
+								setText((cur) => {
+									const before = cur.slice(0, caretRef.current);
+									const start = atMatch ? before.lastIndexOf(atMatch.token) : -1;
+									if (start < 0) return cur;
+									return cur.slice(0, start) + "@" + cur.slice(caretRef.current);
+								});
+								return;
+							}
+							if (e.key === "Enter" && !e.shiftKey && activeAt) {
+								e.preventDefault();
+								insertAtReference(activeAt);
+								return;
+							}
+						}
 						// Slash-command menu navigation (takes priority over send).
 						if (slashOpen) {
 							if (e.key === "ArrowDown") {
@@ -1027,6 +1252,37 @@ export function Composer({
 							if (isComposing || e.nativeEvent.isComposing) return;
 							e.preventDefault();
 							submit(editingQueueId ? "normal" : (running ? sendDuringRun : "normal"));
+							return;
+						}
+						// Prompt history: ↑ on the first line / empty draft goes
+						// back; ↓ returns to newer entries (TUI historyPrevious/Next).
+						if (e.key === "ArrowUp") {
+							const caret = caretRef.current;
+							const atLineStart =
+								caret === 0 || text.slice(0, caret).lastIndexOf("\n") === -1;
+							if (!e.shiftKey && atLineStart && historyRef.current.length > 0) {
+								e.preventDefault();
+								historyPrev();
+								return;
+							}
+						}
+						if (e.key === "ArrowDown") {
+							const caret = caretRef.current;
+							const atLineEnd =
+								caret === text.length ||
+								text.slice(caret).indexOf("\n") === -1;
+							if (!e.shiftKey && atLineEnd && historyIndexRef.current >= 0) {
+								e.preventDefault();
+								historyNext();
+								return;
+							}
+						}
+						// Shift+Tab cycles the thinking level (TUI shift+tab) when no
+						// completion menu is open.
+						if (e.shiftKey && e.key === "Tab" && !slashOpen && !atOpen) {
+							e.preventDefault();
+							onCycleThinking();
+							return;
 						}
 					}}
 					onCompositionStart={() => setIsComposing(true)}

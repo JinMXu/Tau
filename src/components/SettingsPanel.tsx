@@ -259,6 +259,7 @@ export function SettingsPanel({
 	onCompactArchived,
 	onClose,
 	onOpenSessionDir,
+	onOpenScopedModels,
 }: {
 	t: MessageCatalog;
 	settings: AppSettings;
@@ -273,6 +274,7 @@ export function SettingsPanel({
 	onCompactArchived: (path: string) => void;
 	onClose: () => void;
 	onOpenSessionDir: () => void;
+	onOpenScopedModels: () => void;
 }) {
 	const themeOptions: { id: Theme; label: string }[] = [
 		{ id: "light", label: t.settings.themeLight },
@@ -705,6 +707,67 @@ export function SettingsPanel({
 							/>
 							<span className="switch-track"><span /></span>
 						</label>
+					</Row>
+					<Row label={t.settings.autoCompaction} hint={t.settings.autoCompactionHint}>
+						<label className="switch-row">
+							<input
+								type="checkbox"
+								checked={settings.autoCompaction}
+								onChange={(e) =>
+									onChange({
+										...settings,
+										autoCompaction: e.target.checked,
+									})
+								}
+							/>
+							<span className="switch-track"><span /></span>
+						</label>
+					</Row>
+					<Row label={t.settings.steeringMode} hint={t.settings.steeringModeHint}>
+						<select
+							value={settings.steeringMode}
+							onChange={(e) =>
+								onChange({
+									...settings,
+									steeringMode: e.target.value as "all" | "one-at-a-time",
+								})
+							}
+						>
+							<option value="all">{t.settings.queueModeAll}</option>
+							<option value="one-at-a-time">{t.settings.queueModeOneAtATime}</option>
+						</select>
+					</Row>
+					<Row label={t.settings.followUpMode} hint={t.settings.followUpModeHint}>
+						<select
+							value={settings.followUpMode}
+							// The TUI default is one-at-a-time; the local queue already
+							// serializes delivery, so all/one-at-a-time maps to pi's
+							// delivery granularity per turn.
+							onChange={(e) =>
+								onChange({
+									...settings,
+									followUpMode: e.target.value as "all" | "one-at-a-time",
+								})
+							}
+						>
+							<option value="all">{t.settings.queueModeAll}</option>
+							<option value="one-at-a-time">{t.settings.queueModeOneAtATime}</option>
+						</select>
+					</Row>
+					<Row label={t.settings.scopedModels} hint={t.settings.scopedModelsHint}>
+						<div className="scoped-models-row">
+							<span className="scoped-models-count mono">
+								{settings.scopedModels.length
+									? settings.scopedModels.join(", ")
+									: t.settings.scopedModelsEmpty}
+							</span>
+							<button
+								className="btn secondary"
+								onClick={onOpenScopedModels}
+							>
+								{t.settings.scopedModelsEdit}
+							</button>
+						</div>
 					</Row>
 					</section>
 					)}

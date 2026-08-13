@@ -154,6 +154,8 @@ export async function start(
 		systemPrompt?: string | null;
 		/** Tool allowlist; empty array disables all tools, undefined = all tools. */
 		tools?: string[] | null;
+		/** Model patterns for Ctrl+P cycling (--models flag, scoped models). */
+		models?: string | null;
 	},
 ): Promise<void> {
 	await invoke("pi_start", {
@@ -163,6 +165,7 @@ export async function start(
 		sessionName: opts?.sessionName ?? null,
 		systemPrompt: opts?.systemPrompt ?? null,
 		tools: opts?.tools ?? null,
+		models: opts?.models ?? null,
 	});
 }
 
@@ -306,4 +309,19 @@ export async function compactSessionImages(
 	path: string,
 ): Promise<{ ok: boolean; removed: number; before: number; after: number }> {
 	return invoke("pi_compact_session_images", { path });
+}
+
+/** List project files (relative paths, dirs end with "/") for `@` completion. */
+export async function projectFiles(project: string): Promise<string[]> {
+	return invoke("pi_project_files", { project });
+}
+
+/** Pick an external JSONL session and import it into the sessions directory. */
+export async function importSession(): Promise<string | null> {
+	return invoke("pi_import_session");
+}
+
+/** Share the session as a private GitHub gist (needs `gh` CLI). Returns URL. */
+export async function shareSession(sessionPath: string): Promise<string> {
+	return invoke("pi_share_session", { sessionPath });
 }

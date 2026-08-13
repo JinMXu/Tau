@@ -6,7 +6,9 @@ import type { MessageCatalog } from "../i18n";
 import type { GitBranchState, PiSessionInfo } from "../pi";
 import {
 	ArchiveIcon,
+	BarChartIcon,
 	BoltIcon,
+	BranchIcon,
 	CheckIcon,
 	ChevronDownIcon,
 	ChevronUpIcon,
@@ -16,6 +18,7 @@ import {
 	FolderOpenIcon,
 	MoreIcon,
 	SearchIcon,
+	SparkleIcon,
 	TrashIcon,
 	XIcon,
 } from "../icons";
@@ -59,6 +62,11 @@ export function ChatArea({
 	onDelete,
 	onCompactImages,
 	onReveal,
+	onTree,
+	onSessionInfo,
+	onShare,
+	onImport,
+	onHotkeys,
 	composerFocusRequest,
 	showTurnWait,
 	gitState,
@@ -83,6 +91,10 @@ export function ChatArea({
 	showContextUsage,
 	modelsLoading,
 	commands,
+	extensionWidgets,
+	externalDraft,
+	onExternalDraftConsumed,
+	onCycleThinking,
 }: {
 	t: MessageCatalog;
 	session: PiSessionInfo | null;
@@ -117,6 +129,11 @@ export function ChatArea({
 	onDelete: () => void;
 	onCompactImages: () => void;
 	onReveal: () => void;
+	onTree: () => void;
+	onSessionInfo: () => void;
+	onShare: () => void;
+	onImport: () => void;
+	onHotkeys: () => void;
 	composerFocusRequest: number;
 	showTurnWait: boolean;
 	gitState: GitBranchState | null;
@@ -141,6 +158,13 @@ export function ChatArea({
 	showContextUsage: boolean;
 	modelsLoading: boolean;
 	commands: PiCommand[];
+	extensionWidgets: Record<
+		string,
+		{ lines: string[]; placement: "aboveEditor" | "belowEditor" }
+	>;
+	externalDraft: string | null;
+	onExternalDraftConsumed: () => void;
+	onCycleThinking: () => void;
 }) {
 	const [menuOpen, setMenuOpen] = useState(false);
 	const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
@@ -254,6 +278,10 @@ export function ChatArea({
 			commands={commands}
 			showContextUsage={showContextUsage}
 			stats={stats}
+			workspacePath={workspace}
+			externalDraft={externalDraft}
+			onExternalDraftConsumed={onExternalDraftConsumed}
+			onCycleThinking={onCycleThinking}
 			t={t}
 		/>
 	);
@@ -314,6 +342,24 @@ export function ChatArea({
 									<ArchiveIcon size={14} />
 									<span>{t.chat.compact}</span>
 								</button>
+								<button
+									onClick={() => {
+										onTree();
+										setMenuOpen(false);
+									}}
+								>
+									<BranchIcon size={14} />
+									<span>{t.chat.tree}</span>
+								</button>
+								<button
+									onClick={() => {
+										onSessionInfo();
+										setMenuOpen(false);
+									}}
+								>
+									<BarChartIcon size={14} />
+									<span>{t.chat.sessionInfo}</span>
+								</button>
 								<button onClick={handleCopy}>
 									{copyState === "copied" ? (
 										<CheckIcon size={14} />
@@ -353,6 +399,24 @@ export function ChatArea({
 								</button>
 								<button
 									onClick={() => {
+										onImport();
+										setMenuOpen(false);
+									}}
+								>
+									<DownloadIcon size={14} />
+									<span>{t.chat.import}</span>
+								</button>
+								<button
+									onClick={() => {
+										onShare();
+										setMenuOpen(false);
+									}}
+								>
+									<SparkleIcon size={14} />
+									<span>{t.chat.share}</span>
+								</button>
+								<button
+									onClick={() => {
 										onCompactImages();
 										setMenuOpen(false);
 									}}
@@ -369,6 +433,15 @@ export function ChatArea({
 									<span>{t.chat.reveal}</span>
 								</button>
 								<div className="menu-sep" />
+								<button
+									onClick={() => {
+										onHotkeys();
+										setMenuOpen(false);
+									}}
+								>
+									<SearchIcon size={14} />
+									<span>{t.chat.hotkeys}</span>
+								</button>
 								<button
 									onClick={() => { onArchive(); setMenuOpen(false); }}
 								>
@@ -456,7 +529,31 @@ export function ChatArea({
 				)}
 			</div>
 
+			{Object.values(extensionWidgets)
+				.filter((w) => w.placement === "aboveEditor")
+				.map((w, i) => (
+					<div className="ext-widget" key={`above-${i}`}>
+						{w.lines.map((line, j) => (
+							<div className="ext-widget-line" key={j}>
+								{line}
+							</div>
+						))}
+					</div>
+				))}
+
 			{composerEl}
+
+			{Object.values(extensionWidgets)
+				.filter((w) => w.placement === "belowEditor")
+				.map((w, i) => (
+					<div className="ext-widget below" key={`below-${i}`}>
+						{w.lines.map((line, j) => (
+							<div className="ext-widget-line" key={j}>
+								{line}
+							</div>
+						))}
+					</div>
+				))}
 		</main>
 	);
 }
