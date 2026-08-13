@@ -288,7 +288,7 @@ export function TreePanel({
 							<div
 								key={id}
 								className={`tree-node ${isSel ? "selected" : ""} ${isLeaf(id) ? "leaf" : ""} role-${roleClass(role)}`}
-								style={{ paddingLeft: 10 + depth * 16 }}
+								style={{ paddingLeft: 10 + Math.min(depth, 40) * 16 }}
 								onClick={() => setSelectedId(id)}
 							>
 								<span

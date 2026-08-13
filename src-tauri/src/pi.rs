@@ -538,12 +538,16 @@ impl PiProcess {
 				}
 				let payload: Value =
 					serde_json::from_str(&line).unwrap_or_else(|_| Value::String(line));
-				// get_tree responses carry the FULL session tree (every message,
-				// tool output and thinking block) — multi-MB lines that are slow
-				// to ship over the webview IPC and can blow the event-line cap.
-				// Slim the payload down to what the tree viewer actually needs
-				// before emitting it.
-				let payload = slim_get_tree_payload(&payload);
+				// Best-effort slim for get_tree responses (deeply nested pi trees
+				// usually fail serde_json's default 128-level parse, so the
+				// frontend reads trees from the JSONL file via pi_read_tree).
+				let payload = if payload.get("type").and_then(|x| x.as_str()) == Some("response")
+					&& payload.get("command").and_then(|x| x.as_str()) == Some("get_tree")
+				{
+					slim_get_tree_payload(&payload)
+				} else {
+					payload
+				};
 				let _ = win_stdout.emit("pi://event", &payload);
 			}
 			let mut guard = lock_state(&state);
@@ -2192,6 +2196,81 @@ async fn pi_share_session(session_path: String) -> Result<String, String> {
 /// get_tree response: `{ tree: [...], leafId }`. The leaf is approximated by
 /// the last entry in the file (the RPC path remains authoritative for it).
 /// Build a slim session tree straight from a session JSONL file.
+/// Build one tree node (and its whole subtree) with an explicit-stack
+/// post-order walk. Identical shape to the slimmed get_tree nodes; the
+/// frame budget (2x entry count) guards against cyclic parent links in
+/// corrupt session files.
+/// Maximum depth of the output tree. Deeper chains are truncated (entries
+/// beyond the limit become leaves). Keeping the output shallow matters:
+/// serde_json's Serialize and Drop are recursive, so a thousands-level
+/// Value would overflow the worker stack on the way out.
+const MAX_TREE_DEPTH: usize = 512;
+
+fn build_tree_node_iter(
+	root_id: &str,
+	by_id: &HashMap<String, Value>,
+	children: &HashMap<String, Vec<String>>,
+	labels: &HashMap<String, String>,
+) -> Value {
+	struct Frame {
+		id: String,
+		map: serde_json::Map<String, Value>,
+		idx: usize,
+		depth: usize,
+	}
+	let mut stack = vec![Frame {
+		id: root_id.to_string(),
+		map: serde_json::Map::new(),
+		idx: 0,
+		depth: 0,
+	}];
+	let mut completed: Vec<Value> = Vec::new();
+	let max_frames = by_id.len().saturating_mul(2) + 8;
+	let mut frames = 0usize;
+	while let Some(frame) = stack.pop() {
+		frames += 1;
+		if frames > max_frames {
+			break;
+		}
+		let kids = children.get(&frame.id).cloned().unwrap_or_default();
+		let count = kids.len();
+		if frame.idx < count && frame.depth < MAX_TREE_DEPTH {
+			stack.push(Frame {
+				id: frame.id.clone(),
+				map: frame.map,
+				idx: frame.idx + 1,
+				depth: frame.depth,
+			});
+			stack.push(Frame {
+				id: kids[frame.idx].clone(),
+				map: serde_json::Map::new(),
+				idx: 0,
+				depth: frame.depth + 1,
+			});
+		} else {
+			let mut map = frame.map;
+			let mut child_nodes = Vec::with_capacity(count);
+			for _ in 0..count {
+				if let Some(k) = completed.pop() {
+					child_nodes.push(k);
+				}
+			}
+			child_nodes.reverse();
+			map.insert("children".to_string(), Value::Array(child_nodes));
+			if let Some(e) = by_id.get(&frame.id) {
+				map.insert("entry".to_string(), e.clone());
+			}
+			if let Some(l) = labels.get(&frame.id) {
+				map.insert("label".to_string(), serde_json::json!(l));
+			}
+			completed.push(Value::Object(map));
+		}
+	}
+	completed
+		.pop()
+		.unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+}
+
 fn read_tree_from_file(p: &Path) -> Result<serde_json::Value, String> {
 		let file = File::open(p).map_err(|e| format!("cannot read session: {e}"))?;
 		let reader = BufReader::new(file);
@@ -2239,36 +2318,10 @@ fn read_tree_from_file(p: &Path) -> Result<serde_json::Value, String> {
 				_ => roots.push(id),
 			}
 		}
-		fn build_node(
-			id: &str,
-			by_id: &HashMap<String, Value>,
-			children: &HashMap<String, Vec<String>>,
-			labels: &HashMap<String, String>,
-		) -> Value {
-			let mut node = serde_json::Map::new();
-			if let Some(e) = by_id.get(id) {
-				node.insert("entry".to_string(), e.clone());
-			}
-			let kids = children
-				.get(id)
-				.map(|v| {
-					Value::Array(
-						v.iter()
-							.map(|c| build_node(c, by_id, children, labels))
-							.collect(),
-					)
-				})
-				.unwrap_or(Value::Array(Vec::new()));
-			node.insert("children".to_string(), kids);
-			if let Some(l) = labels.get(id) {
-				node.insert("label".to_string(), serde_json::json!(l));
-			}
-			Value::Object(node)
-		}
 		let tree = Value::Array(
 			roots
 				.iter()
-				.map(|r| build_node(r, &by_id, &children, &labels))
+				.map(|r| build_tree_node_iter(r, &by_id, &children, &labels))
 				.collect(),
 		);
 		Ok(serde_json::json!({ "tree": tree, "leafId": last_id }))
@@ -2532,53 +2585,72 @@ async fn pi_llama_unload(
 /// Keep only the fields the tree viewer needs, dropping tool outputs,
 /// thinking blocks, image data and usage records. Text content is kept as a
 /// short preview so node labels still make sense.
-fn slim_tree_node(node: &Value) -> Value {
-	let mut out = serde_json::Map::new();
-	if let Some(entry) = node.get("entry") {
-		let mut e = serde_json::Map::new();
-		for key in [
-			"type", "id", "parentId", "timestamp", "provider", "modelId",
-			"thinkingLevel", "name", "customType", "fromId",
-		] {
-			if let Some(x) = entry.get(key) {
-				e.insert(key.to_string(), x.clone());
-			}
-		}
-		if let Some(summary) = entry.get("summary").and_then(|x| x.as_str()) {
-			e.insert(
-				"summary".to_string(),
-				serde_json::json!(summary.chars().take(400).collect::<String>()),
-			);
-		}
-		if let Some(m) = entry.get("message") {
-			let mut mm = serde_json::Map::new();
-			for key in ["role", "toolName", "model", "provider", "customType"] {
-				if let Some(x) = m.get(key) {
-					mm.insert(key.to_string(), x.clone());
+fn slim_tree_node(root: &Value) -> Value {
+	// Iterative post-order DFS with an explicit stack. Sessions are linear
+	// chains thousands of entries deep; recursion would overflow the 2 MB
+	// worker stack (observed: STATUS_STACK_OVERFLOW on a 1000-level session).
+	let mut stack: Vec<(&Value, serde_json::Map<String, Value>, usize)> =
+		vec![(root, serde_json::Map::new(), 0)];
+	let mut completed: Vec<Value> = Vec::new();
+	while let Some((node, mut map, idx)) = stack.pop() {
+		let children = node.get("children").and_then(|x| x.as_array());
+		let count = children.map(|c| c.len()).unwrap_or(0);
+		if idx < count {
+			stack.push((node, map, idx + 1));
+			stack.push((&children.unwrap()[idx], serde_json::Map::new(), 0));
+		} else {
+			let mut kids = Vec::with_capacity(count);
+			for _ in 0..count {
+				if let Some(k) = completed.pop() {
+					kids.push(k);
 				}
 			}
-			if let Some(content) = m.get("content") {
-				let preview = tree_text_preview(content, 400);
-				if !preview.is_empty() {
-					mm.insert("content".to_string(), serde_json::json!(preview));
+			kids.reverse();
+			map.insert("children".to_string(), Value::Array(kids));
+			if let Some(entry) = node.get("entry") {
+				let mut e = serde_json::Map::new();
+				for key in [
+					"type", "id", "parentId", "timestamp", "provider", "modelId",
+					"thinkingLevel", "name", "customType", "fromId",
+				] {
+					if let Some(x) = entry.get(key) {
+						e.insert(key.to_string(), x.clone());
+					}
+				}
+				if let Some(summary) = entry.get("summary").and_then(|x| x.as_str()) {
+					e.insert(
+						"summary".to_string(),
+						serde_json::json!(summary.chars().take(400).collect::<String>()),
+					);
+				}
+				if let Some(m) = entry.get("message") {
+					let mut mm = serde_json::Map::new();
+					for key in ["role", "toolName", "model", "provider", "customType"] {
+						if let Some(x) = m.get(key) {
+							mm.insert(key.to_string(), x.clone());
+						}
+					}
+					if let Some(content) = m.get("content") {
+						let preview = tree_text_preview(content, 400);
+						if !preview.is_empty() {
+							mm.insert("content".to_string(), serde_json::json!(preview));
+						}
+					}
+					e.insert("message".to_string(), Value::Object(mm));
+				}
+				map.insert("entry".to_string(), Value::Object(e));
+			}
+			for key in ["label", "labelTimestamp"] {
+				if let Some(x) = node.get(key) {
+					map.insert(key.to_string(), x.clone());
 				}
 			}
-			e.insert("message".to_string(), Value::Object(mm));
-		}
-		out.insert("entry".to_string(), Value::Object(e));
-	}
-	if let Some(children) = node.get("children").and_then(|x| x.as_array()) {
-		out.insert(
-			"children".to_string(),
-			Value::Array(children.iter().map(slim_tree_node).collect()),
-		);
-	}
-	for key in ["label", "labelTimestamp"] {
-		if let Some(x) = node.get(key) {
-			out.insert(key.to_string(), x.clone());
+			completed.push(Value::Object(map));
 		}
 	}
-	Value::Object(out)
+	completed
+		.pop()
+		.unwrap_or_else(|| Value::Object(serde_json::Map::new()))
 }
 
 /// Concatenate text/thinking blocks up to `max` chars (what the tree labels
@@ -2850,6 +2922,46 @@ mod tests {
 		assert!(tree[0]["children"][0]["entry"]["message"]["content"].is_string());
 		assert_eq!(tree[0]["children"][0]["entry"]["message"]["content"], "reply");
 		assert_eq!(out["leafId"], "a2", "leaf approximated by last entry");
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn deep_chains_do_not_overflow_the_stack() {
+		// A 5000-level linear chain used to blow the worker stack. The file
+		// builder is iterative AND depth-limited, so the output Value stays
+		// shallow enough for serde_json's recursive serialize/drop.
+		let dir = std::env::temp_dir().join(format!("tau-deep-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		std::fs::create_dir_all(&dir).unwrap();
+		let path = dir.join("deep.jsonl");
+		{
+			use std::io::Write;
+			let mut f = File::create(&path).unwrap();
+			writeln!(f, "{}", r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-08-12T00:00:00.000Z","cwd":"C:/tmp"}"#).unwrap();
+			for i in 0..5000 {
+				let parent = if i == 0 { "null".to_string() } else { format!(r#""n{}""#, i - 1) };
+				writeln!(f, "{}", format!(r#"{{"type":"message","id":"n{i}","parentId":{parent},"timestamp":"2026-08-12T00:00:00.000Z","message":{{"role":"user","content":[{{"type":"text","text":"x"}}]}}}}"#)).unwrap();
+			}
+		}
+		let out = read_tree_from_file(&path).unwrap();
+		assert_eq!(out["tree"][0]["entry"]["id"], "n0");
+		assert_eq!(out["leafId"], "n4999");
+		// The chain is truncated at MAX_TREE_DEPTH so the nested Value stays
+		// shallow enough to serialize and drop safely.
+		let mut node = &out["tree"][0];
+		let mut depth = 1;
+		while let Some(kids) = node["children"].as_array() {
+			if kids.is_empty() {
+				break;
+			}
+			node = &kids[0];
+			depth += 1;
+			assert!(depth <= MAX_TREE_DEPTH + 2, "depth exceeded limit");
+		}
+		assert!(depth >= MAX_TREE_DEPTH - 1, "expected the chain to reach the limit, got {depth}");
+		// Serialize the result — recursive in serde_json — must not overflow.
+		let text = serde_json::to_string(&out).unwrap();
+		assert!(text.len() > 1000);
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 

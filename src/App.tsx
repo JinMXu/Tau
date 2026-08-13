@@ -2407,30 +2407,25 @@ export default function App() {
 		[handleResponse, refreshSessions, loadHistory, toast, t],
 	);
 
-	// ---- /tree: fetch the session tree and open the navigator ----
+	// ---- /tree: build the session tree from the JSONL file and open the
+	// navigator. The RPC get_tree is not used: pi serializes the tree as one
+	// deeply nested JSON line (thousands of levels for long sessions), which
+	// serde_json refuses to parse beyond 128 levels and the webview IPC would
+	// choke on anyway. Reading the file directly is fast and immune to the
+	// pi process state (the leaf marker falls back to the last entry).
 	const openTree = useCallback(async () => {
-		if (!connected) return;
 		const path = sessionPathRef.current;
-		try {
-			// Primary path: the pi RPC owns the authoritative leaf pointer.
-			const r = await handleResponse({ type: "get_tree" });
-			setTreeData(r.data as PiTreeData);
-		} catch {
-			// Fallback: build the tree straight from the session file so a
-			// busy or slow pi process can never block the tree viewer.
-			if (!path) {
-				setError(t.tree.unavailable);
-				return;
-			}
-			try {
-				setTreeData((await readTree(path)) as PiTreeData);
-			} catch (e2) {
-				setError(String(e2));
-				return;
-			}
+		if (!path) {
+			setError(t.tree.unavailable);
+			return;
 		}
-		setTreeOpen(true);
-	}, [connected, handleResponse, t]);
+		try {
+			setTreeData((await readTree(path)) as PiTreeData);
+			setTreeOpen(true);
+		} catch (e) {
+			setError(String(e));
+		}
+	}, [t]);
 
 	// ---- /session: fetch details for the info dialog ----
 	const openSessionInfo = useCallback(async () => {
