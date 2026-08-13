@@ -21,6 +21,17 @@ pub struct AuthProviderStatus {
 	kind: String,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiProviderInfo {
+	/// Provider id as pi knows it (catalog file name, models.json key, or
+	/// auth.json key).
+	id: String,
+	/// True when the provider ships with pi's built-in model catalog; false
+	/// for custom providers (models.json) or extension-registered ones.
+	known: bool,
+}
+
 fn pi_agent_dir() -> PathBuf {
 	if let Some(dir) = std::env::var_os("PI_AGENT_DIR") {
 		return PathBuf::from(dir);
@@ -32,6 +43,105 @@ fn pi_agent_dir() -> PathBuf {
 
 fn auth_file_path() -> PathBuf {
 	pi_agent_dir().join("auth.json")
+}
+
+/// All provider ids pi can configure, in one list: the built-in catalog
+/// shipped inside the pi package, plus custom providers from models.json,
+/// plus any provider that already has a stored credential (covers
+/// extension-registered providers). This mirrors what the TUI's `/login`
+/// and `/logout` dialogs enumerate.
+#[tauri::command]
+pub fn pi_providers() -> Result<Vec<PiProviderInfo>, String> {
+	let mut merged: std::collections::BTreeMap<String, bool> =
+		std::collections::BTreeMap::new();
+
+	// 1) Built-in catalog: pi-ai ships one JSON file per provider.
+	if let Some(dir) = pi_ai_providers_data_dir() {
+		for id in read_catalog_provider_ids(&dir) {
+			merged.insert(id, true);
+		}
+	}
+
+	// 2) Custom providers (Ollama, vLLM, proxies, ...) from models.json.
+	let mut custom: Vec<String> = Vec::new();
+	if let Ok(raw) = fs::read_to_string(pi_agent_dir().join("models.json")) {
+		if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+			if let Some(map) = v.get("providers").and_then(|p| p.as_object()) {
+				custom.extend(map.keys().cloned());
+			}
+		}
+	}
+
+	// 3) Providers that already hold a credential in auth.json.
+	custom.extend(read_auth_map().keys().cloned());
+	custom.sort();
+	custom.dedup();
+	for id in custom {
+		merged.entry(id).or_insert(false);
+	}
+
+	Ok(merged
+		.into_iter()
+		.map(|(id, known)| PiProviderInfo { id, known })
+		.collect())
+}
+
+/// Locate pi-ai's provider catalog (`dist/providers/data/.manifest.json`)
+/// next to the resolved pi package. Falls back to the hoisted layout used by
+/// global npm installs. Returns None for standalone (compiled) pi binaries,
+/// which embed the catalog and don't ship it on disk.
+fn pi_ai_providers_data_dir() -> Option<PathBuf> {
+	let info = crate::pi::probe_pi()?;
+	let script = info.direct.as_ref().map(|(_, script)| script)?;
+	let pkg = Path::new(script).parent()?.parent()?;
+	let data = |base: &Path| {
+		base.join("node_modules")
+			.join("@earendil-works")
+			.join("pi-ai")
+			.join("dist")
+			.join("providers")
+			.join("data")
+	};
+	let mut candidates = vec![data(pkg)];
+	// Hoisted: <prefix>/node_modules/@earendil-works/pi-ai/...
+	if let Some(prefix) = pkg.parent().and_then(Path::parent) {
+		candidates.push(data(prefix));
+	}
+	candidates.into_iter().find(|d| d.join(".manifest.json").is_file())
+}
+
+/// Provider ids from the catalog: the manifest's `files` map (file name minus
+/// `.json`), or any `*.json` file in the data dir as a fallback.
+fn read_catalog_provider_ids(data_dir: &Path) -> Vec<String> {
+	let mut ids = Vec::new();
+	if let Ok(raw) = fs::read_to_string(data_dir.join(".manifest.json")) {
+		if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+			if let Some(files) = v.get("files").and_then(|f| f.as_object()) {
+				ids.extend(
+					files
+						.keys()
+						.filter_map(|k| k.strip_suffix(".json"))
+						.map(str::to_string),
+				);
+			}
+		}
+	}
+	if ids.is_empty() {
+		if let Ok(entries) = fs::read_dir(data_dir) {
+			for entry in entries.flatten() {
+				let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+					continue;
+				};
+				if let Some(id) = name.strip_suffix(".json") {
+					if id != ".manifest" {
+						ids.push(id.to_string());
+					}
+				}
+			}
+		}
+	}
+	ids.sort();
+	ids
 }
 
 /// Serializes read-modify-write updates so concurrent key edits can't clobber
@@ -72,10 +182,16 @@ pub fn pi_auth_status() -> Result<Vec<AuthProviderStatus>, String> {
 				.and_then(|v| v.as_str())
 				.unwrap_or("api_key")
 				.to_string();
+			// API-key entries store the secret under `key`; OAuth entries store
+			// tokens under `access`/`refresh`. Either counts as configured.
 			let has_key = value
 				.get("key")
 				.map(|v| v.as_str().is_some_and(|s| !s.is_empty()))
-				.unwrap_or(false);
+				.unwrap_or(false)
+				|| value
+					.get("access")
+					.map(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+					.unwrap_or(false);
 			AuthProviderStatus { provider: provider.clone(), has_key, kind }
 		})
 		.collect())
@@ -554,6 +670,63 @@ pub async fn pi_move_session(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn catalog_ids_from_manifest_and_fallback() {
+		let dir =
+			std::env::temp_dir().join(format!("pi-gui-catalog-test-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		// Manifest path: ids come from the `files` map (no .json suffix).
+		std::fs::write(
+			dir.join(".manifest.json"),
+			r#"{"files":{"anthropic.json":"a","deepseek.json":"b"}}"#,
+		)
+		.unwrap();
+		let ids = read_catalog_provider_ids(&dir);
+		assert_eq!(ids, vec!["anthropic", "deepseek"]);
+		// Without a manifest, any *.json file counts (manifest itself excluded).
+		std::fs::remove_file(dir.join(".manifest.json")).unwrap();
+		std::fs::write(dir.join("ollama.json"), "{}").unwrap();
+		let ids = read_catalog_provider_ids(&dir);
+		assert_eq!(ids, vec!["ollama"]);
+		std::fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn providers_merge_catalog_custom_and_auth() {
+		let _guard = crate::pi::ENV_GUARD.lock().unwrap();
+		let old_agent_dir = std::env::var_os("PI_AGENT_DIR");
+		let dir =
+			std::env::temp_dir().join(format!("pi-gui-providers-test-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		std::env::set_var("PI_AGENT_DIR", &dir);
+		std::fs::write(
+			dir.join("models.json"),
+			r#"{"providers":{"ollama":{"baseUrl":"http://localhost:11434/v1","models":[{"id":"llama3.1:8b"}]}}}"#,
+		)
+		.unwrap();
+		let _ = pi_auth_set_key("anthropic".into(), "sk-ant-test".into());
+
+		let providers = pi_providers().unwrap();
+		let by_id: std::collections::HashMap<&str, bool> = providers
+			.iter()
+			.map(|p| (p.id.as_str(), p.known))
+			.collect();
+		// Custom provider from models.json is present and marked unknown.
+		assert_eq!(by_id.get("ollama"), Some(&false));
+		// Stored credential is present even without a catalog entry.
+		assert_eq!(by_id.get("anthropic"), Some(&true));
+		// The built-in catalog is found when pi is installed on the host and
+		// its providers are marked known.
+		let known = providers.iter().filter(|p| p.known).count();
+		assert!(known == 0 || known >= 30, "unexpected known count: {known}");
+
+		std::fs::remove_dir_all(&dir).ok();
+		match old_agent_dir {
+			Some(v) => std::env::set_var("PI_AGENT_DIR", v),
+			None => std::env::remove_var("PI_AGENT_DIR"),
+		}
+	}
 
 	#[test]
 	fn parses_pi_list_output() {

@@ -61,6 +61,11 @@ export interface AuthProviderStatus {
 	kind: string;
 }
 
+export interface PiProviderInfo {
+	id: string;
+	known: boolean;
+}
+
 export interface GitBranchState {
 	isRepository: boolean;
 	branches: string[];
@@ -236,6 +241,10 @@ export async function openWorkspace(): Promise<string | null> {
 
 export async function authStatus(): Promise<AuthProviderStatus[]> {
 	return invoke("pi_auth_status");
+}
+
+export async function piProviders(): Promise<PiProviderInfo[]> {
+	return invoke("pi_providers");
 }
 
 export async function authSetKey(provider: string, key: string): Promise<void> {

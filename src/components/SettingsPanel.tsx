@@ -8,6 +8,7 @@ import {
 	piPackageInstall,
 	piPackageRemove,
 	piPackages,
+	piProviders,
 	type AuthProviderStatus,
 	type PiPackageEntry,
 	type PiSkillEntry,
@@ -50,18 +51,66 @@ const colorScales: { id: ColorScale; label: string; swatch: string[] }[] = [
 	{ id: "ocean", label: "Ocean", swatch: ["#e6ebef", "#c3d3de", "#8aa3b3"] },
 ];
 
-const PROVIDER_NAMES: { id: string; label: string }[] = [
-	{ id: "anthropic", label: "Anthropic (Claude)" },
-	{ id: "openai", label: "OpenAI" },
-	{ id: "google", label: "Google Gemini" },
-	{ id: "deepseek", label: "DeepSeek" },
-	{ id: "xai", label: "xAI (Grok)" },
-	{ id: "openrouter", label: "OpenRouter" },
-	{ id: "groq", label: "Groq" },
-	{ id: "mistral", label: "Mistral" },
-	{ id: "kimi-coding", label: "Kimi" },
-	{ id: "ant-ling", label: "Ant Ling" },
-];
+/**
+ * Display labels for pi's built-in provider catalog (pi-ai `providers/data`).
+ * The list itself comes from the installed pi at runtime; this map only
+ * decorates ids with human-readable names. Unknown ids (custom providers in
+ * models.json, extension-registered providers) fall back to a prettified id.
+ */
+const PROVIDER_LABELS: Record<string, string> = {
+	"amazon-bedrock": "Amazon Bedrock",
+	"ant-ling": "Ant Ling",
+	anthropic: "Anthropic (Claude)",
+	"azure-openai-responses": "Azure OpenAI",
+	baseten: "Baseten",
+	cerebras: "Cerebras",
+	"cloudflare-ai-gateway": "Cloudflare AI Gateway",
+	"cloudflare-workers-ai": "Cloudflare Workers AI",
+	deepseek: "DeepSeek",
+	fireworks: "Fireworks AI",
+	"github-copilot": "GitHub Copilot",
+	"google-vertex": "Google Vertex AI",
+	google: "Google Gemini",
+	groq: "Groq",
+	huggingface: "Hugging Face",
+	"kimi-coding": "Kimi",
+	"minimax-cn": "MiniMax (CN)",
+	minimax: "MiniMax",
+	mistral: "Mistral",
+	"moonshotai-cn": "Moonshot AI (CN)",
+	moonshotai: "Moonshot AI",
+	nvidia: "NVIDIA NIM",
+	"openai-codex": "OpenAI Codex",
+	openai: "OpenAI",
+	"opencode-go": "OpenCode Go",
+	opencode: "OpenCode",
+	openrouter: "OpenRouter",
+	"qwen-token-plan-cn": "Qwen Token Plan (CN)",
+	"qwen-token-plan-individual": "Qwen Token Plan (Individual)",
+	"qwen-token-plan": "Qwen Token Plan",
+	together: "Together AI",
+	"vercel-ai-gateway": "Vercel AI Gateway",
+	xai: "xAI (Grok)",
+	"xiaomi-token-plan-ams": "Xiaomi Token Plan (AMS)",
+	"xiaomi-token-plan-cn": "Xiaomi Token Plan (CN)",
+	"xiaomi-token-plan-sgp": "Xiaomi Token Plan (SGP)",
+	xiaomi: "Xiaomi MiMo",
+	"zai-coding-cn": "ZAI Coding (CN)",
+	zai: "ZAI",
+};
+
+/** Shown when pi's catalog can't be located (standalone pi binaries). */
+const FALLBACK_PROVIDER_IDS = Object.keys(PROVIDER_LABELS);
+
+function providerLabel(id: string): string {
+	return (
+		PROVIDER_LABELS[id] ??
+		id
+			.split(/[-_]/)
+			.map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+			.join(" ")
+	);
+}
 
 // Session-scoped cache: packages + skills survive panel close/reopen so
 // re-entering settings doesn't re-run the pi CLI every time.
@@ -147,7 +196,11 @@ function ProviderRow({
 			<div className="provider-info">
 				<span className="provider-name">{label}</span>
 				<span className={`provider-status ${configured ? "ok" : ""}`}>
-					{configured ? t.settings.providerConfigured : t.settings.providerNotConfigured}
+					{configured
+						? status?.kind === "oauth"
+							? t.settings.providerConfiguredOAuth
+							: t.settings.providerConfigured
+						: t.settings.providerNotConfigured}
 				</span>
 			</div>
 			{editing ? (
@@ -283,6 +336,36 @@ export function SettingsPanel({
 	const [auth, setAuth] = useState<AuthProviderStatus[]>([]);
 	const [toastMsg, setToastMsg] = useState<string | null>(null);
 	const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+	// Provider list mirrors the TUI: whatever the installed pi can configure
+	// (built-in catalog + models.json customs + providers with stored keys).
+	// Falls back to the bundled list when pi isn't installed or its catalog
+	// isn't on disk.
+	const [providerIds, setProviderIds] = useState<string[] | null>(null);
+
+	useEffect(() => {
+		let cancelled = false;
+		piProviders()
+			.then((list) => {
+				if (cancelled) return;
+				const ids = list.some((p) => p.known)
+					? list.map((p) => p.id)
+					: [
+							...new Set([
+								...FALLBACK_PROVIDER_IDS,
+								...list.map((p) => p.id),
+							]),
+						];
+				setProviderIds(ids);
+			})
+			.catch(() => {
+				if (!cancelled) setProviderIds(FALLBACK_PROVIDER_IDS);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+	const providers = providerIds ?? FALLBACK_PROVIDER_IDS;
 
 	const refreshAuth = useCallback(() => {
 		authStatus()
@@ -631,12 +714,12 @@ export function SettingsPanel({
 						<h3>{t.settings.providers}</h3>
 					<p className="settings-hint">{t.settings.providersHint}</p>
 					<ul className="provider-list">
-						{PROVIDER_NAMES.map((p) => (
+						{providers.map((id) => (
 							<ProviderRow
-								key={p.id}
-								provider={p.id}
-								label={p.label}
-								status={auth.find((a) => a.provider === p.id)}
+								key={id}
+								provider={id}
+								label={providerLabel(id)}
+								status={auth.find((a) => a.provider === id)}
 								onSaved={notify}
 								onError={notifyError}
 								onAuthChanged={refreshAuth}

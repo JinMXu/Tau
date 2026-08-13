@@ -26,7 +26,7 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **归档 / 删除 / 恢复** — 软删除移入归档区，可随时恢复；彻底删除移入回收站，仍可手动 purge。
 - **全文搜索** — ⌘K 唤起搜索浮层，跨所有会话标题和消息内容搜索，带片段预览，点击跳转。
 - **扩展与 Skills 管理** — 内置精选 Pi 包目录（100 个，按下载量排序，支持搜索），一键安装/移除扩展、skills、提示词、主题；支持自定义包源（npm/git/本地路径）；列出已安装的 skills。
-- **模型提供商配置** — 设置页可配置 Anthropic/OpenAI/Gemini/DeepSeek 等 provider 的 API Key，读写 `~/.pi/agent/auth.json`，与 Pi CLI 共享凭据。
+- **模型提供商配置** — 设置页动态读取 Pi 内置的全部模型提供商（约 40 个：Anthropic/OpenAI/Gemini/DeepSeek/Kimi/OpenRouter 等，含 `models.json` 自定义提供商），可逐个配置 API Key，读写 `~/.pi/agent/auth.json`，与 Pi CLI 共享凭据，OAuth 登录状态同样可见。
 - **自定义系统提示词** — 设置页内置 Markdown 编辑器，自定义 Pi 的系统指令，下次连接会话时通过 `--system-prompt` 生效。
 - **Git 分支集成** — 工作目录为 Git 仓库时，Composer 显示当前分支（含未提交文件数徽标），可一键切换已有分支或创建新分支。
 - **消息级分支** — 任意用户消息 hover 出现分支按钮，从该消息 fork 出新会话并自动切换。

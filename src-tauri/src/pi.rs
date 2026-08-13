@@ -2031,6 +2031,7 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			crate::extras::pi_auth_status,
 			crate::extras::pi_auth_set_key,
 			crate::extras::pi_auth_remove,
+			crate::extras::pi_providers,
 			crate::extras::git_branch_state,
 			crate::extras::git_checkout_branch,
 			crate::extras::git_create_branch,
