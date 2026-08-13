@@ -101,12 +101,30 @@ fn rebuild_menu(app: AppHandle, lang: String) -> Result<(), String> {
 	build_menu(&app, &lang).map_err(|e| e.to_string())
 }
 
+/// Frontend error reporting channel: the renderer catches uncaught
+/// exceptions / boundary errors and logs them here so crashes that only
+/// manifest in the webview still leave a trail in tau.log.
+#[tauri::command]
+fn log_frontend(app: AppHandle, message: String) {
+	runtime_log::log_error(&app, &format!("frontend: {message}"));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
 	pi::register(tauri::Builder::default())
 		.plugin(tauri_plugin_opener::init())
 		.plugin(tauri_plugin_dialog::init())
 		.setup(|app| {
+			// Panics on the main thread kill the whole app with zero evidence
+			// (GUI builds have no console and Windows WER doesn't capture
+			// Rust unwinds). Hook panic reporting into the runtime log so a
+			// crash leaves a trace.
+			let handle = app.handle().clone();
+			std::panic::set_hook(Box::new(move |info| {
+				let msg = format!("panic: {info}");
+				eprintln!("{msg}");
+				runtime_log::log_error(&handle, &msg);
+			}));
 			runtime_log::log_info(app.handle(), "app started");
 			let _ = build_menu(app.handle(), "zh");
 			if let Some(win) = app.get_webview_window("main") {

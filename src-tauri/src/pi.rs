@@ -506,7 +506,7 @@ impl PiProcess {
 					serde_json::from_str(&line).unwrap_or_else(|_| Value::String(line));
 				let _ = win_stdout.emit("pi://event", &payload);
 			}
-			let mut guard = state.lock().unwrap();
+			let mut guard = lock_state(&state);
 			let is_current = guard
 				.get(&label_thread)
 				.and_then(|p| p.child.as_ref())
@@ -624,6 +624,16 @@ pub(crate) fn require_session_path(path: &Path) -> Result<PathBuf, String> {
 		return Err("session path is outside the sessions directory".into());
 	}
 	Ok(full)
+}
+
+/// Lock the per-window process map, recovering from a poisoned mutex instead
+/// of panicking: a panic on the main thread while holding this lock would
+/// otherwise cascade into every later command (`.unwrap()` on a poisoned
+/// lock) and kill the whole app.
+fn lock_state(
+	map: &Mutex<HashMap<String, PiProcess>>,
+) -> std::sync::MutexGuard<'_, HashMap<String, PiProcess>> {
+	map.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Whether `path` is the session file of a running pi process in ANY window.
@@ -1165,7 +1175,7 @@ fn pi_start(
 	// the lock is released (kill() waits for the child to exit, which would
 	// otherwise block every other window's RPC commands).
 	let old: Option<PiProcess> = {
-		let mut map = state.inner.lock().unwrap();
+		let mut map = lock_state(&state.inner);
 		// One pi process per session file: reject a second window opening the
 		// same JSONL (concurrent appends would corrupt it). Compare canonicalized
 		// paths so alternate spellings (symlinks, `..`, Windows `\\?\` prefixes)
@@ -1194,7 +1204,7 @@ fn pi_start(
 			tools.as_deref().map(|t| t.join(",")).unwrap_or_else(|| "default".into()),
 		),
 	);
-	let mut map = state.inner.lock().unwrap();
+	let mut map = lock_state(&state.inner);
 	let entry = map.entry(label.clone()).or_default();
 	entry.spawn(
 		&info,
@@ -1213,7 +1223,7 @@ fn pi_start(
 #[tauri::command]
 fn pi_stop(window: WebviewWindow, state: State<'_, PiState>) -> Result<(), String> {
 	let label = window.label().to_string();
-	let mut map = state.inner.lock().unwrap();
+	let mut map = lock_state(&state.inner);
 	if let Some(p) = map.get_mut(&label) {
 		p.kill();
 	}
@@ -1255,7 +1265,7 @@ fn pi_send(window: WebviewWindow, state: State<'_, PiState>, command: Value) -> 
 		return Err(format!("unknown pi command type: {kind}"));
 	}
 	let label = window.label().to_string();
-	let mut map = state.inner.lock().unwrap();
+	let mut map = lock_state(&state.inner);
 	let p = map.get_mut(&label).ok_or("pi is not running")?;
 	p.send(&command)
 }
@@ -1263,7 +1273,7 @@ fn pi_send(window: WebviewWindow, state: State<'_, PiState>, command: Value) -> 
 #[tauri::command]
 fn pi_status(window: WebviewWindow, state: State<'_, PiState>) -> Result<PiStatus, String> {
 	let label = window.label().to_string();
-	let map = state.inner.lock().unwrap();
+	let map = lock_state(&state.inner);
 	// A window that never started pi (fresh multi-window) reports idle
 	// instead of an error so the frontend startup probe stays clean.
 	let Some(p) = map.get(&label) else {
@@ -2021,6 +2031,7 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			crate::extras::pi_installed_skills,
 			crate::extras::pi_move_session,
 			crate::rebuild_menu,
+			crate::log_frontend,
 		])
 }
 

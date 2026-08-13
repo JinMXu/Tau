@@ -58,11 +58,18 @@ function ToolOutput({
 	const body = text.replace(/\n+$/, "");
 	const lineCount = body ? body.split("\n").length : 0;
 	const truncated = lineCount > OUTPUT_PREVIEW_LINES;
+	// Only put the preview slice into the DOM while collapsed — rendering a
+	// multi-megabyte tool dump (even clipped by CSS) can freeze or crash the
+	// webview when a task finishes.
+	const visible =
+		truncated && !expanded
+			? body.split("\n").slice(0, OUTPUT_PREVIEW_LINES).join("\n")
+			: body;
 	return (
 		<div className={`tool-output${error ? " error" : ""}`}>
 			{body.trim() ? (
 				<pre className={truncated && !expanded ? "clamped" : undefined}>
-					{body}
+					{visible}
 				</pre>
 			) : (
 				<div className="tool-output-empty">{t.chat.noOutput}</div>
@@ -92,11 +99,12 @@ function DiffView({
 }) {
 	const [expanded, setExpanded] = useState(false);
 	const truncated = lines.length > OUTPUT_PREVIEW_LINES;
+	const visible = truncated && !expanded ? lines.slice(0, OUTPUT_PREVIEW_LINES) : lines;
 	return (
 		<div className="tool-diff">
 			{label && <div className="diff-label">{label}</div>}
 			<pre className={truncated && !expanded ? "clamped" : undefined}>
-				{lines.map((l, i) => (
+				{visible.map((l, i) => (
 					<span key={i} className={`diff-line ${l.type}`}>
 						<span className="diff-sign">
 							{l.type === "add" ? "+" : l.type === "del" ? "-" : " "}
