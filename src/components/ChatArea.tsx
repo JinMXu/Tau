@@ -292,9 +292,6 @@ export function ChatArea({
 				{error && <div className="error-banner">{error}</div>}
 				<div className="chat-scroll welcome">
 					<div className="empty-chat">
-						<div className="empty-chat-watermark" aria-hidden>
-							<img src="/logo.png" alt="" draggable={false} />
-						</div>
 						<p className="empty-chat-greeting">{greeting(t)}</p>
 						{composerEl}
 					</div>
