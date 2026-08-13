@@ -92,6 +92,13 @@ window.addEventListener("error", (e) =>
 window.addEventListener("unhandledrejection", (e) =>
 	reportError("unhandledrejection", e.reason),
 );
+// Distinguishes a real window close (fires beforeunload) from a webview
+// renderer crash (never fires — the process just dies).
+window.addEventListener("beforeunload", () => {
+	void invoke("log_frontend", { message: "beforeunload: renderer closing" }).catch(
+		() => {},
+	);
+});
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
 	<React.StrictMode>

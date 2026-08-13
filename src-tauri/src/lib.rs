@@ -141,6 +141,34 @@ pub fn run() {
 			}
 			Ok(())
 		})
-		.run(tauri::generate_context!())
-		.expect("error while running tauri application");
+		.build(tauri::generate_context!())
+		.expect("error while building tauri application")
+		.run(|app_handle, event| match event {
+			// Trace every exit path so a "vanishing" window (webview crash vs
+			// real close) is distinguishable in tau.log. A hard process death
+			// (panic is hooked; SEH crash would appear in WER) triggers none
+			// of these — the absence of any log line right before the next
+			// "app started" is itself the signal.
+			tauri::RunEvent::ExitRequested { code, .. } => {
+				runtime_log::log_info(app_handle, &format!("exit requested: code={code:?}"));
+			}
+			tauri::RunEvent::Exit => {
+				runtime_log::log_info(app_handle, "app exiting");
+			}
+			tauri::RunEvent::WindowEvent {
+				label,
+				event: tauri::WindowEvent::CloseRequested { .. },
+				..
+			} => {
+				runtime_log::log_info(app_handle, &format!("window close requested: {label}"));
+			}
+			tauri::RunEvent::WindowEvent {
+				label,
+				event: tauri::WindowEvent::Destroyed,
+				..
+			} => {
+				runtime_log::log_info(app_handle, &format!("window destroyed: {label}"));
+			}
+			_ => {}
+		});
 }

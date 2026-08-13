@@ -290,6 +290,76 @@ export default function App() {
 	const pendingRef = useRef(new Map<string, (v: unknown) => void>());
 	const sessionPathRef = useRef<string | null>(null);
 	const isNewSessionRef = useRef(false);
+
+	// ---- streaming delta coalescing ----
+	// pi delivers one event per token; applying each delta to React state
+	// re-renders (and re-parses markdown for) the whole message, which can
+	// pin the webview's CPU for long answers and spike memory when the
+	// message completes. Deltas are buffered and applied once per animation
+	// frame instead.
+	const pendingDeltaRef = useRef<{
+		text?: string;
+		thinking?: string;
+		tool?: string;
+	} | null>(null);
+	const deltaFlushRef = useRef<number | null>(null);
+	const clearPendingDeltas = useCallback(() => {
+		if (deltaFlushRef.current !== null) {
+			cancelAnimationFrame(deltaFlushRef.current);
+			deltaFlushRef.current = null;
+		}
+		pendingDeltaRef.current = null;
+	}, []);
+	const scheduleDeltaFlush = useCallback(() => {
+		if (deltaFlushRef.current !== null) return;
+		deltaFlushRef.current = requestAnimationFrame(() => {
+			deltaFlushRef.current = null;
+			const d = pendingDeltaRef.current;
+			pendingDeltaRef.current = null;
+			if (!d) return;
+			setMessages((prev) => {
+				const idx = prev.length - 1;
+				if (idx < 0) return prev;
+				const role = prev[idx].role;
+				if (role !== "assistant" && role !== "tool") return prev;
+				const blocks = [...prev[idx].blocks];
+				if (d.text) {
+					const last = blocks[blocks.length - 1];
+					if (last?.kind === "text") {
+						blocks[blocks.length - 1] = { kind: "text", text: last.text + d.text };
+					} else {
+						blocks.push({ kind: "text", text: d.text });
+					}
+				}
+				if (d.thinking) {
+					const last = blocks[blocks.length - 1];
+					if (last?.kind === "thinking") {
+						blocks[blocks.length - 1] = {
+							kind: "thinking",
+							text: last.text + d.thinking,
+						};
+					} else {
+						blocks.push({ kind: "thinking", text: d.thinking });
+					}
+				}
+				if (d.tool) {
+					const last = blocks[blocks.length - 1];
+					if (last?.kind === "tool") {
+						blocks[blocks.length - 1] = {
+							kind: "tool",
+							name: last.name,
+							args: last.args + d.tool,
+						};
+					} else {
+						blocks.push({ kind: "tool", name: "…", args: d.tool });
+					}
+				}
+				const next = [...prev];
+				next[idx] = { ...prev[idx], blocks };
+				return next;
+			});
+		});
+	}, []);
 	// Guards against overlapping connect() calls (double clicks, racing
 	// auto-connect effects): the second caller awaits the in-flight attempt.
 	const connectInFlightRef = useRef<Promise<boolean> | null>(null);
@@ -681,6 +751,9 @@ export default function App() {
 				return;
 			}
 			if (event.type === "message_start") {
+				// A new message begins: drop any deltas that never flushed
+				// (they belong to the previous message).
+				clearPendingDeltas();
 				const message = event.message as { role?: string; id?: string } | undefined;
 				if (message?.role === "assistant") {
 					setMessages((prev) => [
@@ -723,6 +796,9 @@ export default function App() {
 				return;
 			}
 			if (event.type === "message_end") {
+				// The authoritative block list replaces the streamed one;
+				// discard any deltas still waiting to flush.
+				clearPendingDeltas();
 				const message = event.message as
 					| {
 							role?: string;
@@ -802,19 +878,18 @@ export default function App() {
 						}));
 						break;
 					case "text_delta":
-						patchLast((m) => {
-							const blocks = [...m.blocks];
-							const last = blocks[blocks.length - 1];
-							if (last?.kind === "text") {
-								blocks[blocks.length - 1] = {
-									kind: "text",
-									text: last.text + (ame.delta ?? ""),
-								};
-							}
-							return { ...m, blocks };
-						});
+						pendingDeltaRef.current = {
+							...(pendingDeltaRef.current ?? {}),
+							text: (pendingDeltaRef.current?.text ?? "") + (ame.delta ?? ""),
+						};
+						scheduleDeltaFlush();
 						break;
 					case "text_end":
+						// content is the authoritative full text; drop buffered
+						// text deltas so they can't append on top of it.
+						if (pendingDeltaRef.current) {
+							pendingDeltaRef.current.text = undefined;
+						}
 						patchLast((m) => {
 							const blocks = [...m.blocks];
 							const last = blocks[blocks.length - 1];
@@ -834,17 +909,12 @@ export default function App() {
 						}));
 						break;
 					case "thinking_delta":
-						patchLast((m) => {
-							const blocks = [...m.blocks];
-							const last = blocks[blocks.length - 1];
-							if (last?.kind === "thinking") {
-								blocks[blocks.length - 1] = {
-									kind: "thinking",
-									text: last.text + (ame.delta ?? ""),
-								};
-							}
-							return { ...m, blocks };
-						});
+						pendingDeltaRef.current = {
+							...(pendingDeltaRef.current ?? {}),
+							thinking:
+								(pendingDeltaRef.current?.thinking ?? "") + (ame.delta ?? ""),
+						};
+						scheduleDeltaFlush();
 						break;
 					case "toolcall_start":
 						patchLast((m) => ({
@@ -856,20 +926,18 @@ export default function App() {
 						}));
 						break;
 					case "toolcall_delta":
-						patchLast((m) => {
-							const blocks = [...m.blocks];
-							const last = blocks[blocks.length - 1];
-							if (last?.kind === "tool") {
-								blocks[blocks.length - 1] = {
-									kind: "tool",
-									name: last.name,
-									args: last.args + (ame.delta ?? ""),
-								};
-							}
-							return { ...m, blocks };
-						});
+						pendingDeltaRef.current = {
+							...(pendingDeltaRef.current ?? {}),
+							tool: (pendingDeltaRef.current?.tool ?? "") + (ame.delta ?? ""),
+						};
+						scheduleDeltaFlush();
 						break;
 					case "toolcall_end": {
+						// The full arguments replace the streamed ones; drop
+						// buffered tool deltas first.
+						if (pendingDeltaRef.current) {
+							pendingDeltaRef.current.tool = undefined;
+						}
 						const toolCall = ame.toolCall as
 							| { name?: string; arguments?: unknown }
 							| undefined;
@@ -898,6 +966,7 @@ export default function App() {
 				event.type === "agent_settled" ||
 				event.type === "agent_error"
 			) {
+				clearPendingDeltas();
 				patchLast((m) => ({ ...m, streaming: false }));
 				setStreaming(false);
 				setWorking(false);
@@ -927,7 +996,7 @@ export default function App() {
 				return;
 			}
 		},
-		[deliverQueuedNext, patchLast, refreshSessions, refreshStats, toast],
+		[deliverQueuedNext, patchLast, refreshSessions, refreshStats, toast, clearPendingDeltas, scheduleDeltaFlush],
 	);
 
 	useEffect(() => {
