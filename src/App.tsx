@@ -1056,18 +1056,28 @@ export default function App() {
 				try {
 					let ws = opts?.workspace ?? workspace;
 					const explicitWs = opts?.workspace ?? null;
+					const sessionFile = opts?.sessionFile ?? null;
+					// When resuming/opening an existing session, its project dir
+					// (from the session header) is the source of truth for the
+					// workspace — resolve it BEFORE the folder picker so clicking
+					// a history session never pops the dialog. The picker is only
+					// a fallback for sessions whose project is unknown.
+					if (!ws && !explicitWs && sessionFile) {
+						const known = sessions.find((s) => s.path === sessionFile);
+						if (known?.project) {
+							ws = known.project;
+							setWorkspace(ws);
+						}
+					}
 					if (!ws) {
 						ws = await openWorkspace();
 						if (!ws) return false;
 						setWorkspace(ws);
 					}
-					const sessionFile = opts?.sessionFile ?? null;
-					// When resuming/opening an existing session, its project dir is
-					// the source of truth for the workspace — otherwise the composer
-					// could show a different directory than the one pi actually
-					// runs in (and where the session file lands). An explicitly
-					// requested workspace wins (e.g. right after moving a session
-					// to a different project).
+					// An explicitly requested workspace wins (e.g. right after
+					// moving a session to a different project); otherwise the
+					// session's project overrides a stale workspace so the
+					// composer shows the directory pi actually runs in.
 					if (sessionFile && !explicitWs) {
 						const known = sessions.find((s) => s.path === sessionFile);
 						if (known?.project && known.project !== ws) {
