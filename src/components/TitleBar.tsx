@@ -110,7 +110,16 @@ export function TitleBar({
 }) {
 	const [openMenu, setOpenMenu] = useState<string | null>(null);
 	const [maximized, setMaximized] = useState(false);
+	const [focused, setFocused] = useState(true);
 	const rootRef = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		void appWindow.isFocused().then(setFocused);
+		const unlisten = appWindow.onFocusChanged(({ payload }) => setFocused(payload));
+		return () => {
+			void unlisten.then((f) => f());
+		};
+	}, []);
 
 	useEffect(() => {
 		void appWindow.isMaximized().then(setMaximized);
@@ -221,7 +230,7 @@ export function TitleBar({
 			<div className="titlebar" ref={rootRef}>
 				<div className="titlebar-left">
 					{isMac && (
-						<div className="traffic-lights">
+						<div className={`traffic-lights${focused ? "" : " inactive"}`}>
 							<button
 								className="tl-btn tl-close"
 								title={t.menu.close}

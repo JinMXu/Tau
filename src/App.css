@@ -4096,7 +4096,7 @@ textarea {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 0 10px 0 13px;
+	padding: 0 10px 0 11px;
 }
 
 .tl-btn {
@@ -4111,7 +4111,9 @@ textarea {
 	cursor: default;
 	appearance: none;
 	-webkit-appearance: none;
-	transition: filter var(--dur) var(--ease);
+	transition:
+		filter var(--dur) var(--ease),
+		background-color 0.15s ease;
 }
 
 .tl-btn svg {
@@ -4124,6 +4126,39 @@ textarea {
 	opacity: 1;
 }
 
+/* Native behavior: an unfocused window's lights go gray, but hovering a
+   button brings back its color (and shows its symbol). */
+.traffic-lights.inactive .tl-btn {
+	background: #d9d9d9;
+	box-shadow:
+		inset 0 0 0 0.5px rgba(0, 0, 0, 0.08),
+		0 0.5px 1.5px rgba(0, 0, 0, 0.12);
+}
+.traffic-lights.inactive .tl-btn svg {
+	color: #6b6b6b;
+}
+.traffic-lights.inactive .tl-close:hover {
+	background: #ff5f57;
+}
+.traffic-lights.inactive .tl-min:hover {
+	background: #febc2e;
+}
+.traffic-lights.inactive .tl-zoom:hover {
+	background: #28c840;
+}
+.traffic-lights.inactive .tl-close:hover svg {
+	color: #4d0000;
+}
+.traffic-lights.inactive .tl-min:hover svg {
+	color: #985712;
+}
+.traffic-lights.inactive .tl-zoom:hover svg {
+	color: #006500;
+}
+
+.tl-btn:hover {
+	filter: brightness(1.12);
+}
 .tl-btn:active {
 	filter: brightness(0.82);
 }
