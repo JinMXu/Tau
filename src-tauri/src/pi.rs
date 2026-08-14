@@ -872,7 +872,9 @@ fn pi_new_window<R: tauri::Runtime>(app: AppHandle<R>) -> Result<(), String> {
 	let label = format!("main-{stamp}-{seq}");
 	let win = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::default())
 		.title("Tau")
-		.inner_size(800.0, 600.0)
+		.inner_size(1280.0, 800.0)
+		.min_inner_size(960.0, 640.0)
+		.center()
 		.decorations(false)
 		.build()
 		.map_err(|e| e.to_string())?;

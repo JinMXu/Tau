@@ -170,8 +170,8 @@ pub fn restore<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 pub fn attach<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 	let path = state_path(window.app_handle(), window.label());
 	let state = Arc::new(Mutex::new(WindowState {
-		width: 800.0,
-		height: 600.0,
+		width: 1280.0,
+		height: 800.0,
 		x: i32::MIN,
 		y: i32::MIN,
 		maximized: false,
