@@ -100,7 +100,55 @@
 	--ease: cubic-bezier(0.2, 0.7, 0.3, 1);
 	--dur: 150ms;
 
-	/* fenced code block — warm dark in both themes */
+	/* ----------------------------------------------------------------------
+	 * Content rendering tokens — DeepSeek Harness design system (neutral
+	 * bluish palette + DeepSeek blue), applied to the chat output area
+	 * (messages, markdown, tool cards, thinking rows). Kept independent from
+	 * the app-chrome tokens above so the chrome color scales keep working.
+	 * -------------------------------------------------------------------- */
+	--dsh-bg-base: #ffffff; /* bluish-00 */
+	--dsh-bg-layer: #f9fafb;
+	--dsh-fg-primary: #0f1115; /* bluish-1000 */
+	--dsh-fg-secondary: #61666b; /* bluish-700 */
+	--dsh-fg-tertiary: #81858c; /* bluish-600 */
+	--dsh-fg-caption: #adb2b8; /* bluish-400 */
+	--dsh-brand: #4176e6; /* deepseek-500 */
+	--dsh-brand-hover: #679efe;
+	--dsh-code-block: #f9fafb; /* bluish-50 */
+	--dsh-code-banner: #f9fafb;
+	--dsh-inline-code: #ebeef2; /* bluish-100 */
+	--dsh-bubble: #edf3fe; /* deepseek-50 */
+	--dsh-border-l1: rgba(0, 0, 0, 0.04);
+	--dsh-border-l2: rgba(0, 0, 0, 0.1);
+	--dsh-border-l3: rgba(0, 0, 0, 0.12);
+	--dsh-ok: #2f9e44;
+	--dsh-err: #c0392b;
+	--dsh-warn: #e8590c;
+	--dsh-font-code: "SF Mono", "JetBrains Mono", "Fira Code", Consolas,
+		"Liberation Mono", Menlo, Courier, "PingFang SC", "Microsoft YaHei", monospace;
+	/* markdown typography — DSH scale (16/28 base) expressed in em so the
+	 * user's font-size setting scales it proportionally. Heading sizes are
+	 * relative to the markdown root's 16px base (1.5em=24px, 1.375em=22px…). */
+	--md-base-size: calc(var(--ousia-chat-font-size) * 16 / 14);
+	--md-line-height: calc(var(--ousia-chat-line-height) * 1.0606); /* 28/16 @1.65 */
+	--md-h1: 700 1.5em/1.4167em var(--chat-font, var(--font-sans));
+	--md-h2: 700 1.375em/1.4545em var(--chat-font, var(--font-sans));
+	--md-h3: 700 1.25em/1.5em var(--chat-font, var(--font-sans));
+	--md-h4: 600 1em/var(--md-line-height) var(--chat-font, var(--font-sans));
+	--md-base: 400 1em/var(--md-line-height) var(--chat-font, var(--font-sans));
+	--md-base-strong: 600 1em/var(--md-line-height) var(--chat-font, var(--font-sans));
+	--md-code-inline: 400 0.875em/1.4 var(--dsh-font-code);
+	--md-code-block: 400 13px/22px var(--dsh-font-code);
+	--md-code-block-small: 400 12px/18px var(--dsh-font-code);
+	--md-table: 400 15px/25px var(--chat-font, var(--font-sans));
+	--md-table-head: 500 15px/25px var(--chat-font, var(--font-sans));
+	--dsh-xs: 400 13px/20px var(--chat-font, var(--font-sans));
+	/* motion */
+	--dsh-ease: cubic-bezier(0.4, 0, 0.2, 1);
+	--dsh-dur: 0.2s;
+
+	/* legacy fenced code block tokens (kept for reference; content now uses
+	 * the DSH code-block surface above) */
 	--cb-bg: #29261f;
 	--cb-header-bg: #34302a;
 	--cb-fg: #e6e0d2;
@@ -156,6 +204,26 @@ html[data-theme="dark"] {
 	--cb-fg: #ddd9cf;
 	--cb-border: #2b2924;
 	--cb-muted: #8f8a7e;
+
+	/* DSH content tokens — dark */
+	--dsh-bg-base: #151517; /* bluish-950 */
+	--dsh-bg-layer: #1b1b1c;
+	--dsh-fg-primary: #f9fafb; /* bluish-50 */
+	--dsh-fg-secondary: #cfd3d6; /* bluish-300 */
+	--dsh-fg-tertiary: #adb2b8; /* bluish-400 */
+	--dsh-fg-caption: #81858c; /* bluish-600 */
+	--dsh-brand: #679efe; /* deepseek-400 */
+	--dsh-brand-hover: #86b0ff;
+	--dsh-code-block: #1b1b1c; /* bluish-900 */
+	--dsh-code-banner: #2c2c2e; /* bluish-850 */
+	--dsh-inline-code: #2c2c2e;
+	--dsh-bubble: #2c2c2e; /* bluish-850 */
+	--dsh-border-l1: rgba(255, 255, 255, 0.06);
+	--dsh-border-l2: rgba(255, 255, 255, 0.12);
+	--dsh-border-l3: rgba(255, 255, 255, 0.16);
+	--dsh-ok: #69db7c;
+	--dsh-err: #ff6b6b;
+	--dsh-warn: #ffa94d;
 }
 
 /* --- color scales (light) --- */
@@ -771,7 +839,7 @@ textarea {
 	min-width: 0;
 	display: flex;
 	flex-direction: column;
-	background: var(--panel-bg);
+	background: var(--dsh-bg-base);
 }
 
 .chat-header {
@@ -781,8 +849,8 @@ textarea {
 	align-items: center;
 	gap: 10px;
 	padding: 0 14px;
-	border-bottom: 1px solid var(--app-border);
-	background: var(--panel-bg);
+	border-bottom: 1px solid var(--dsh-border-l2);
+	background: var(--dsh-bg-base);
 }
 
 .chat-header-left {
@@ -894,7 +962,7 @@ textarea {
 	display: flex;
 	flex-direction: column;
 	gap: var(--chat-spacing);
-	padding: 18px var(--chat-gutter) 12px;
+	padding: 24px var(--chat-gutter) 12px;
 	max-width: var(--chat-max-width);
 	width: 100%;
 	margin: 0 auto;
@@ -931,7 +999,12 @@ textarea {
 	padding: 0 var(--chat-gutter);
 }
 
-/* --- messages --- */
+/* ---------------------------------------------------------------------------
+ * Messages — DeepSeek Harness conversation layout: assistant content sits in
+ * a centered content column with no bubble, user turns are right-aligned
+ * soft bubbles, tool/thinking blocks are borderless disclosure rows.
+ * ------------------------------------------------------------------------- */
+
 .message {
 	width: 100%;
 }
@@ -940,21 +1013,26 @@ textarea {
 	display: flex;
 	flex-direction: column;
 	align-items: flex-end;
+	gap: 6px;
 }
 
+/* DSH user bubble: radius 22, 16/24 text, soft blue tint */
 .message.user .text-block {
-	background: var(--user-bubble);
-	border-radius: var(--r-lg) var(--r-lg) var(--sp-1) var(--r-lg);
-	padding: 9px 13px;
+	background: var(--dsh-bubble);
+	color: var(--dsh-fg-primary);
+	border-radius: 22px;
+	padding: 10px 16px;
 	white-space: pre-wrap;
-	max-width: 78%;
-	font-size: calc(var(--ousia-chat-font-size) * 0.98);
+	overflow-wrap: anywhere;
+	max-width: min(525px, 82%);
+	font-size: 16px;
+	line-height: 24px;
 }
 
 .message-meta {
-	margin-top: var(--sp-1);
-	font-size: 10px;
-	color: var(--text-3);
+	margin-top: 4px;
+	font-size: 11px;
+	color: var(--dsh-fg-caption);
 	opacity: 0;
 	transition: opacity var(--dur) var(--ease);
 }
@@ -967,20 +1045,20 @@ textarea {
 	display: flex;
 	align-items: center;
 	gap: var(--sp-2);
-	margin-bottom: var(--sp-1);
+	margin-bottom: 6px;
 }
 
 .assistant-name {
-	font-size: var(--fs-xs);
-	font-weight: 600;
+	font-size: 11px;
+	font-weight: 500;
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
-	color: var(--text-3);
+	color: var(--dsh-fg-caption);
 }
 
 .replay-badge {
 	font-size: 10px;
-	color: var(--text-3);
+	color: var(--dsh-fg-caption);
 	background: var(--hover);
 	padding: 1px 6px;
 	border-radius: 999px;
@@ -989,235 +1067,383 @@ textarea {
 
 .text-block {
 	font-family: var(--chat-font, var(--font-sans));
-	font-size: var(--ousia-chat-font-size);
-	line-height: var(--ousia-chat-line-height);
+	font-size: var(--md-base-size);
+	line-height: var(--md-line-height);
 	overflow-wrap: break-word;
+	color: var(--dsh-fg-primary);
 }
 
 /* ---------------------------------------------------------------------------
- * Markdown text — rendered with Streamdown (see Markdown.tsx).
- * Typography and block rhythm are driven by the chat tokens above; the
- * [data-streamdown] selectors mirror what Streamdown emits, following the
- * same approach as the ousia desktop app.
+ * Stream coherence — blocks that appear while output streams fade in gently
+ * instead of popping into existence, so the stream reads as continuous
+ * growth rather than a series of discrete refreshes. Applies on mount only;
+ * growing content inside a block never re-animates.
+ * ------------------------------------------------------------------------- */
+.think-card,
+.tool-card,
+.tool-io-card,
+.tool-diffs,
+.text-block,
+.msg-error {
+	animation: dsh-block-in 0.18s var(--dsh-ease);
+}
+
+@keyframes dsh-block-in {
+	from {
+		opacity: 0;
+		transform: translateY(3px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.think-card,
+	.tool-card,
+	.tool-io-card,
+	.tool-diffs,
+	.text-block,
+	.msg-error {
+		animation: none;
+	}
+}
+
+/* ---------------------------------------------------------------------------
+ * Markdown text — rendered with Streamdown (see Markdown.tsx). The typography
+ * and block rhythm follow DeepSeek Harness's markdown design: 16/28 base,
+ * 700-weight heading scale with generous 32/16 margins, borderless tables
+ * with row dividers, 12px-radius code cards with a language banner.
  * ------------------------------------------------------------------------- */
 
 .ousia-chat-markdown {
 	font-family: var(--chat-font, var(--font-sans));
-	font-size: var(--ousia-chat-font-size);
-	line-height: var(--ousia-chat-line-height);
+	font: var(--md-base);
+	font-size: var(--md-base-size);
+	color: var(--dsh-fg-primary);
+	min-width: 0;
+	overflow-wrap: anywhere;
 }
 
 /* Degraded rendering for oversized messages (see Markdown.tsx): plain,
  * scrollable, wrapped text — no markdown parse, no syntax highlighting. */
 .markdown-plain {
 	font-family: var(--chat-font, var(--font-sans));
-	font-size: var(--ousia-chat-font-size);
-	line-height: var(--ousia-chat-line-height);
+	font-size: var(--md-base-size);
+	line-height: var(--md-line-height);
 	white-space: pre-wrap;
 	word-break: break-word;
 	margin: 0;
 	max-height: 60vh;
 	overflow: auto;
-	color: var(--text-1);
-}
-
-.ousia-chat-markdown :where(*, p, ul, ol, li, blockquote, table, th, td) {
-	font-family: inherit;
-}
-
-.ousia-chat-markdown
-	:where(pre, code, kbd, samp, [data-streamdown="code-block-body"]) {
-	font-family: var(--font-mono);
+	color: var(--dsh-fg-primary);
 }
 
 /* streamdown's root carries `space-y-*` utilities (Tailwind); without
  * Tailwind we own the block rhythm ourselves. */
-.ousia-chat-markdown > :first-child {
-	margin-block-start: 0;
+.ousia-chat-markdown > *:first-child,
+.ousia-chat-markdown p:first-child {
+	margin-block-start: 0 !important;
 }
 
-.ousia-chat-markdown > :last-child {
-	margin-block-end: 0;
+.ousia-chat-markdown > *:last-child,
+.ousia-chat-markdown p:last-child {
+	margin-block-end: 0 !important;
 }
 
-.ousia-chat-markdown :where(p, ul, ol, blockquote) {
-	margin-block: 0.4em;
-	line-height: inherit;
-}
-
-.ousia-chat-markdown :where(h1, h2, h3, h4, h5, h6) {
-	margin-block: 0.8em 0.35em;
-	line-height: 1.35;
-	font-weight: 650;
-}
-
+/* --- headings: DSH scale, em-based so the font-size setting scales --- */
 .ousia-chat-markdown h1 {
-	font-size: 1.18rem;
+	font: var(--md-h1);
+	margin: 32px 0 16px;
 }
 
 .ousia-chat-markdown h2 {
-	font-size: 1.14rem;
+	font: var(--md-h2);
+	margin: 32px 0 16px;
 }
 
 .ousia-chat-markdown h3 {
-	font-size: 1.1rem;
+	font: var(--md-h3);
+	margin: 32px 0 16px;
 }
 
 .ousia-chat-markdown h4 {
-	font-size: 1.06rem;
+	font: var(--md-h4);
+	margin: 16px 0;
 }
 
-.ousia-chat-markdown h5 {
-	font-size: 1.03rem;
+.ousia-chat-markdown :where(h5, h6) {
+	font: var(--md-base-strong);
+	margin: 16px 0;
 }
 
-.ousia-chat-markdown h6 {
-	font-size: 1rem;
+.ousia-chat-markdown :where(h1, h2, h3, h4, h5, h6) strong {
+	font-weight: inherit;
 }
 
-.ousia-chat-markdown [data-streamdown="unordered-list"],
-.ousia-chat-markdown [data-streamdown="ordered-list"] {
-	padding-inline-start: 1.4em;
+.ousia-chat-markdown p {
+	margin: 16px 0;
 }
 
-.ousia-chat-markdown [data-streamdown="list-item"] {
-	margin-block: 0;
-	padding-block: 0;
-	line-height: inherit;
+.ousia-chat-markdown :where(h4, h5, h6) + :where(ul, ol) {
+	margin-top: 8px;
 }
 
-.ousia-chat-markdown :where(li > p) {
-	margin-block: 0;
-	line-height: inherit;
+.ousia-chat-markdown :where(h4, h5, h6):has(+ :where(ul, ol)) {
+	margin-bottom: 8px;
 }
 
+/* --- lists --- */
+.ousia-chat-markdown :where(ul, ol) {
+	margin: 16px 0;
+	padding-left: 18px;
+}
+
+.ousia-chat-markdown li:not(:first-child) {
+	margin-top: 6px;
+}
+
+.ousia-chat-markdown li > :where(ul, ol) {
+	margin-top: 4px;
+}
+
+.ousia-chat-markdown li::marker {
+	line-height: var(--md-line-height);
+	color: var(--dsh-fg-secondary);
+}
+
+.ousia-chat-markdown :where(ul, ol) ol {
+	list-style-position: inside;
+	padding-left: 0;
+}
+
+.ousia-chat-markdown :where(ul, ol) ol li p {
+	display: inline;
+}
+
+.ousia-chat-markdown li > p {
+	margin: 8px 0;
+}
+
+.ousia-chat-markdown li > *:first-child {
+	margin-top: 0;
+}
+
+.ousia-chat-markdown li > *:last-child {
+	margin-bottom: 0;
+}
+
+/* --- horizontal rule --- */
+.ousia-chat-markdown hr,
 .ousia-chat-markdown [data-streamdown="horizontal-rule"] {
+	display: block;
 	border: none;
-	border-top: 1px solid var(--border-1);
-	margin: 0.9em 0;
+	height: 1px;
+	margin: 32px 0;
+	background: var(--dsh-border-l2);
 }
 
+/* --- blockquote: caption-colored bar, text keeps primary color --- */
+.ousia-chat-markdown blockquote,
 .ousia-chat-markdown [data-streamdown="blockquote"] {
-	margin-block: 0.5em;
-	padding-left: 12px;
-	border-left: 2px solid var(--border-2);
-	color: var(--text-2);
+	border-left: 2px solid var(--dsh-fg-caption);
+	margin: 16px 0 0;
+	padding-left: 14px;
 }
 
+/* --- links: business blue, underline on hover --- */
+.ousia-chat-markdown a,
 .ousia-chat-markdown [data-streamdown="link"] {
-	color: var(--link);
+	color: var(--dsh-brand);
 	text-decoration: none;
 	overflow-wrap: anywhere;
+	transition: box-shadow var(--dsh-dur) var(--dsh-ease);
 }
 
-.ousia-chat-markdown [data-streamdown="link"]:hover {
-	text-decoration: underline;
+.ousia-chat-markdown a:hover,
+.ousia-chat-markdown a:focus {
+	outline: none;
+	text-decoration: underline var(--dsh-brand);
 }
 
-.ousia-chat-markdown [data-streamdown="inline-code"] {
-	background: var(--code-bg);
-	padding: 1px 5px;
-	border-radius: var(--r-sm);
-	font-size: 0.9em;
-	line-height: 1.25;
+.ousia-chat-markdown a:focus-visible {
+	box-shadow: 0 0 0 2px var(--dsh-brand);
 }
 
-/* tables — card-style wrapper with its own scroll container */
+/* --- inline code pill --- */
+.ousia-chat-markdown :not(pre) > code {
+	display: inline-flex;
+	align-items: center;
+	box-sizing: border-box;
+	font: var(--md-code-inline);
+	background-color: var(--dsh-inline-code);
+	border-radius: 6px;
+	padding: 0 5px;
+}
+
+.ousia-chat-markdown :where(h1, h2, h3, h4, h5, h6) code {
+	font: inherit;
+	font-family: var(--dsh-font-code);
+}
+
+/* --- tables: DSH row-divider style, no card frame --- */
 .ousia-chat-markdown [data-streamdown="table-wrapper"] {
-	margin-block: 0.5em;
-	border: 1px solid var(--border-1);
-	border-radius: var(--r-md);
-	overflow: hidden;
+	max-width: 100%;
+	margin: 16px 0;
+	overflow-x: auto;
+	overscroll-behavior-x: contain;
 }
 
-.ousia-chat-markdown [data-streamdown="table-wrapper"] > div:last-child {
-	overflow-x: auto;
+/* neutralize streamdown's inner wrapper (its Tailwind card classes are dead
+ * without Tailwind, but keep the element transparent anyway) */
+.ousia-chat-markdown [data-streamdown="table-wrapper"] > div {
+	border: none;
+	border-radius: 0;
+	overflow-x: visible;
+	padding: 0;
+	background: transparent;
 }
 
 .ousia-chat-markdown [data-streamdown="table"] {
 	border-collapse: collapse;
-	width: 100%;
-	font-size: 0.95em;
+	width: max-content;
+	max-width: max-content;
+	margin: 0;
 }
 
 .ousia-chat-markdown [data-streamdown="table-header-cell"],
-.ousia-chat-markdown [data-streamdown="table-cell"] {
-	border: 1px solid var(--border-1);
-	padding: 5px 9px;
-	text-align: left;
+.ousia-chat-markdown th {
+	text-align: start;
+	padding: 10px 16px;
+	border-bottom: 1px solid var(--dsh-border-l3);
+	border-top: none;
+	font: var(--md-table-head);
+	max-width: min(30vw, 320px);
+	min-width: 100px;
 }
 
-.ousia-chat-markdown [data-streamdown="table-header-cell"] {
-	font-size: 0.85em;
-	font-weight: 600;
-	letter-spacing: 0.03em;
-	color: var(--text-2);
-	background: color-mix(in srgb, var(--text-1) 4%, transparent);
+.ousia-chat-markdown [data-streamdown="table-cell"],
+.ousia-chat-markdown td {
+	padding: 10px 16px;
+	border-bottom: 1px solid var(--dsh-border-l2);
+	font: var(--md-table);
+	max-width: min(30vw, 320px);
+	min-width: 100px;
 }
 
-/* code blocks */
+.ousia-chat-markdown th:first-child,
+.ousia-chat-markdown td:first-child {
+	padding-left: 0;
+}
+
+.ousia-chat-markdown td:last-child {
+	padding-right: 0;
+}
+
+.ousia-chat-markdown table code {
+	font-size: 13px;
+}
+
+/* --- images --- */
+.ousia-chat-markdown img {
+	display: block;
+	width: auto;
+	max-width: 100%;
+	height: auto;
+	margin: 0;
+	border-radius: 8px;
+}
+
+/* --- task lists --- */
+.ousia-chat-markdown input[type="checkbox"] {
+	margin: 0 8px 0 0;
+	accent-color: var(--dsh-fg-secondary);
+}
+
+/* --- code blocks: DSH code card (12px radius, banner + 16px body) --- */
 .ousia-chat-markdown [data-streamdown="code-block"] {
 	position: relative;
 	display: flex;
 	flex-direction: column;
-	margin: 0.6em 0;
-	border: 1px solid var(--cb-border);
-	border-radius: var(--r-md);
-	background: var(--cb-bg);
+	margin: 16px 0;
+	border: none;
+	border-radius: 12px;
+	background: var(--dsh-code-block);
 	overflow: hidden;
+	/* Streamdown inlines content-visibility:auto with a 200px intrinsic
+	 * placeholder — off-screen code blocks would occupy 200px and then
+	 * resize to their real height as they scroll into view, a visible
+	 * layout jump right at the streaming edge. Render at true size. */
+	content-visibility: visible !important;
+	contain-intrinsic-size: none !important;
 }
 
 .ousia-chat-markdown [data-streamdown="code-block-header"] {
 	display: flex;
 	align-items: center;
-	padding: 4px 12px;
-	background: var(--cb-header-bg);
-	border-bottom: 1px solid var(--cb-border);
-	font-size: 10.5px;
-	line-height: 1;
+	background: var(--dsh-code-banner);
+	padding: 9px 14px;
+	color: var(--dsh-fg-secondary);
+	font-size: 13px;
+	line-height: 20px;
 }
 
 .ousia-chat-markdown [data-streamdown="code-block-header"] > span {
-	color: var(--cb-muted);
-	font-family: var(--font-mono);
+	color: var(--dsh-fg-tertiary);
+	font-family: var(--dsh-font-code);
+	font-size: 12px;
+	line-height: 18px;
 	text-transform: lowercase;
 }
 
 /* no language label → drop the header entirely */
-.ousia-chat-markdown
-	[data-streamdown="code-block-header"]:has(> span:empty) {
+.ousia-chat-markdown [data-streamdown="code-block-header"]:has(> span:empty) {
 	display: none;
 }
 
+/* copy action floats inside the banner (streamdown positions it over the
+ * header with a negative top margin) */
 .ousia-chat-markdown [data-streamdown="code-block-actions"] {
 	position: absolute;
-	top: 4px;
-	right: 4px;
-	z-index: 2;
+	top: 0;
+	right: 8px;
+	z-index: 7;
 	display: flex;
 	align-items: center;
+	justify-content: flex-end;
+	height: 38px;
+	margin: 0;
 	padding: 0;
-	border: 0;
+}
+
+.ousia-chat-markdown [data-streamdown="code-block-actions"] > div {
+	display: flex;
+	align-items: center;
+	gap: 2px;
 	background: transparent;
+	border: none;
+	border-radius: 0;
+	padding: 0;
 }
 
 .ousia-chat-markdown [data-streamdown="code-block-copy-button"] {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 24px;
-	height: 22px;
-	padding: 0;
+	padding: 2px 6px;
 	border: 0;
-	border-radius: var(--r-sm);
+	border-radius: 6px;
 	background: transparent;
-	color: var(--cb-muted);
+	color: var(--dsh-fg-secondary);
 	cursor: pointer;
+	font-size: 13px;
+	line-height: 20px;
 }
 
 .ousia-chat-markdown [data-streamdown="code-block-copy-button"]:hover {
-	color: var(--cb-fg);
-	background: rgba(255, 255, 255, 0.07);
+	color: var(--dsh-fg-primary);
+	background: color-mix(in srgb, var(--dsh-fg-primary) 8%, transparent);
 }
 
 .ousia-chat-markdown [data-streamdown="code-block-copy-button"]:disabled {
@@ -1226,25 +1452,23 @@ textarea {
 }
 
 .ousia-chat-markdown [data-streamdown="code-block-body"] {
-	padding: 11px 13px;
+	padding: 16px;
 	overflow-x: auto;
-	font-size: 12.5px;
-	line-height: 1.6;
-	color: var(--cb-fg);
-	background: var(--cb-bg);
+	font: var(--md-code-block);
+	color: var(--dsh-fg-primary);
+	background: var(--dsh-code-block);
 }
 
 .ousia-chat-markdown [data-streamdown="code-block-body"] pre {
 	margin: 0;
 	background: transparent;
-	font-size: inherit;
-	line-height: inherit;
+	font: inherit;
 }
 
 .ousia-chat-markdown [data-streamdown="code-block-body"] code {
 	background: none;
 	padding: 0;
-	font-size: inherit;
+	font: inherit;
 }
 
 /* @streamdown/code drops the newline text nodes between shiki's line spans
@@ -1273,161 +1497,187 @@ textarea {
 	animation-duration: 0ms !important;
 }
 
-.thinking-block,
-.tool-card {
-	margin: var(--chat-spacing-tool) 0;
+/* ---------------------------------------------------------------------------
+ * Thinking + tool call rows — DeepSeek Harness disclosure rows: borderless
+ * one-liners (icon + name + dot separator + summary), a sweeping shimmer
+ * while the block is the streaming tail, and a code-surface io card when
+ * expanded.
+ * ------------------------------------------------------------------------- */
+
+/* shared sweep shimmer for the running row */
+@keyframes dsh-row-sweep {
+	0% {
+		left: -300px;
+	}
+	90%,
+	100% {
+		left: 100%;
+	}
 }
 
-.thinking-block summary,
-.tool-card .tool-head {
+@media (prefers-reduced-motion: reduce) {
+	.think-card.running .think-head::after,
+	.tool-card.running .tool-head::after {
+		animation: none;
+	}
+}
+
+/* --- thinking (reasoning disclosure) --- */
+.think-card {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.think-head {
+	position: relative;
+	overflow: hidden;
 	display: flex;
 	align-items: center;
-	gap: var(--sp-2);
+	gap: 6px;
+	min-width: 0;
+	padding: 2px 0;
+	border: none;
+	background: none;
+	color: var(--dsh-fg-secondary);
+	font-size: 14px;
+	line-height: 24px;
+	text-align: left;
 	cursor: pointer;
 	user-select: none;
-	list-style: none;
-	font-size: var(--fs-sm);
 }
 
-.thinking-block summary::-webkit-details-marker {
-	display: none;
+.think-card.running .think-head::after {
+	content: "";
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: 0;
+	width: 300px;
+	pointer-events: none;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		color-mix(in srgb, var(--dsh-bg-base) 60%, transparent) 55%,
+		transparent 100%
+	);
+	animation: dsh-row-sweep 2.6s ease-out infinite;
 }
 
-/* thinking — quiet one-liner */
-.thinking-block summary {
-	padding: var(--sp-1) 0;
-	color: var(--text-3);
-}
-
-.thinking-dot {
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
-	background: var(--text-3);
+.think-chevron {
 	flex: none;
+	color: var(--dsh-fg-secondary);
+	transition: transform var(--dsh-dur) var(--dsh-ease);
 }
 
-.thinking-dot.pulse {
-	animation: think-pulse 1.4s var(--ease) infinite;
+.think-chevron.open {
+	transform: rotate(90deg);
 }
 
-@keyframes think-pulse {
-	50% {
-		opacity: 0.3;
-	}
+.think-icon {
+	flex: none;
+	color: var(--dsh-fg-secondary);
 }
 
-.thinking-label {
-	font-weight: 500;
+.think-title {
+	flex: none;
+	color: var(--dsh-fg-primary);
 }
 
-.thinking-body {
-	border-left: 2px solid var(--border-2);
-	margin: 2px 0 var(--sp-1) 3px;
-	padding: 2px 0 2px var(--sp-3);
-	font-size: var(--fs-sm);
-	color: var(--text-3);
+.think-sep {
+	flex: none;
+	width: 2px;
+	height: 2px;
+	border-radius: 1px;
+	background: var(--dsh-fg-caption);
+	margin: 0 4px;
+}
+
+.think-summary {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--dsh-fg-tertiary);
+}
+
+/* while streaming the summary follows the newest line (see ThinkingBlock) */
+.think-summary.follow-end {
+	text-overflow: clip;
+}
+
+.think-body {
+	padding: 4px 0 4px 22px;
+	color: var(--dsh-fg-tertiary);
 	white-space: pre-wrap;
-	line-height: 1.55;
+	word-break: break-word;
+	font-size: 14px;
+	line-height: 24px;
 }
 
-/* tool call — status row; clicking it reveals the raw call arguments */
-.tool-card .tool-head {
-	padding: 6px 10px;
-	background: var(--surface-1);
-	border: 1px solid var(--border-2);
-	border-radius: var(--r-md);
-	color: var(--text-2);
-	transition: background var(--dur) var(--ease),
-		border-color var(--dur) var(--ease);
+/* --- tool call row --- */
+.tool-card {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
 }
 
-.tool-card .tool-head:hover {
-	background: var(--hover);
+.tool-head {
+	position: relative;
+	overflow: hidden;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	padding: 2px 0;
+	border: none;
+	background: none;
+	color: var(--dsh-fg-secondary);
+	font-size: 14px;
+	line-height: 24px;
+	text-align: left;
+	cursor: pointer;
+	user-select: none;
 }
 
-.tool-card.args-open .tool-head {
-	border-radius: var(--r-md) var(--r-md) 0 0;
-}
-
-/* tool result — the tool's output, shown quieter than a call */
-.tool-card.result .tool-head {
-	background: transparent;
-	border-style: dashed;
-	color: var(--text-3);
-	cursor: default;
-}
-
-.tool-card.result .tool-head:hover {
-	background: transparent;
-}
-
-.tool-card.result .tool-name {
-	color: var(--text-2);
-}
-
-.tool-card.error .tool-head {
-	border-color: color-mix(in srgb, var(--status-err) 45%, var(--border-2));
-}
-
-.tool-result-label {
-	font-size: var(--fs-xs);
-	color: var(--text-3);
-	background: var(--surface-1);
-	border: 1px solid var(--border-2);
-	border-radius: 999px;
-	padding: 0 7px;
-	line-height: 1.6;
-	flex: none;
-}
-
-.tool-card.error .tool-result-label {
-	color: var(--status-err);
-	border-color: color-mix(in srgb, var(--status-err) 40%, var(--border-2));
-}
-
-.tool-status {
-	width: 7px;
-	height: 7px;
-	border-radius: 50%;
-	flex: none;
-	background: var(--status-ok);
-}
-
-.tool-status.running {
-	background: var(--status-run);
-	animation: tool-pulse 1.2s var(--ease) infinite;
-}
-
-.tool-status.error {
-	background: var(--status-err);
-}
-
-@keyframes tool-pulse {
-	0%,
-	100% {
-		box-shadow: 0 0 0 0
-			color-mix(in srgb, var(--status-run) 35%, transparent);
-	}
-	50% {
-		box-shadow: 0 0 0 4px transparent;
-	}
+.tool-card.running .tool-head::after {
+	content: "";
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: 0;
+	width: 300px;
+	pointer-events: none;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		color-mix(in srgb, var(--dsh-bg-base) 60%, transparent) 55%,
+		transparent 100%
+	);
+	animation: dsh-row-sweep 2.6s ease-out infinite;
 }
 
 .tool-icon {
 	display: inline-flex;
-	width: 16px;
-	height: 16px;
 	align-items: center;
 	justify-content: center;
-	color: var(--text-3);
 	flex: none;
+	color: var(--dsh-fg-secondary);
 }
 
 .tool-name {
-	font-weight: 600;
-	color: var(--text-1);
 	flex: none;
+	color: var(--dsh-fg-primary);
+}
+
+.tool-sep {
+	flex: none;
+	width: 2px;
+	height: 2px;
+	border-radius: 1px;
+	background: var(--dsh-fg-caption);
+	margin: 0 4px;
 }
 
 .tool-summary {
@@ -1436,136 +1686,171 @@ textarea {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	font-family: var(--font-mono);
-	font-size: var(--fs-xs);
-	color: var(--text-3);
+	color: var(--dsh-fg-tertiary);
+}
+
+.tool-summary-suffix {
+	flex: none;
+	margin-left: 4px;
+	color: var(--dsh-fg-tertiary);
+	font-size: 14px;
+	line-height: 24px;
+}
+
+.tool-card.error .tool-summary-suffix,
+.tool-card.error .tool-summary {
+	color: var(--dsh-err);
 }
 
 .tool-chevron {
 	margin-left: auto;
-	color: var(--text-3);
 	flex: none;
-	transition: transform var(--dur) var(--ease);
+	color: var(--dsh-fg-secondary);
+	transition: transform var(--dsh-dur) var(--dsh-ease);
 }
 
-.tool-card .tool-chevron.open,
-.thinking-block[open] .tool-chevron {
-	transform: rotate(180deg);
+.tool-card .tool-chevron.open {
+	transform: rotate(90deg);
 }
 
-.tool-args {
-	background: var(--tool-bg);
-	border: 1px solid var(--border-2);
-	border-top: none;
-	border-radius: 0 0 var(--r-md) var(--r-md);
-	padding: 10px 12px;
-	margin: -1px 0 0;
-	font-family: var(--font-mono);
-	font-size: var(--fs-xs);
-	color: var(--text-2);
-	max-height: 260px;
-	overflow: auto;
-	white-space: pre-wrap;
-	line-height: 1.55;
-}
-
-/* tool output & diff — always visible under the call, clamped with a fade.
- * The clamp height must match OUTPUT_PREVIEW_LINES in MessageList.tsx. */
-.tool-output,
-.tool-diff {
-	margin: 2px 0 2px 10px;
-	padding: 2px 0 2px var(--sp-3);
-	border-left: 2px solid var(--border-2);
-}
-
-/* Multiple edit hunks inside one tool call (pi's `edits: [...]` array). */
-.tool-diffs {
-	display: flex;
-	flex-direction: column;
-	gap: 4px;
-}
-
-.tool-diffs .tool-diff {
-	margin-top: 2px;
-	margin-bottom: 2px;
-}
-
-.diff-label {
-	font-size: 10px;
-	font-weight: 600;
-	letter-spacing: 0.04em;
-	text-transform: uppercase;
-	color: var(--text-3);
-	margin-bottom: 2px;
-	user-select: none;
-}
-
-.tool-output pre,
-.tool-diff pre {
-	margin: 0;
-	font-family: var(--font-mono);
-	font-size: var(--fs-xs);
-	line-height: 1.55;
-	color: var(--text-2);
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
-}
-
-.tool-output pre.clamped,
-.tool-diff pre.clamped {
-	max-height: calc(1.55em * 8);
-	overflow: hidden;
-	mask-image: linear-gradient(to bottom, #000 60%, transparent);
-	-webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
-}
-
-/* Quiet tools (read/grep/ls/cd…) keep their result collapsed; the header is
- * intentionally quieter so the stream stays focused on real work. */
+/* quiet tools (read/grep/ls/cd…) stay dimmer so the stream keeps its focus */
 .tool-card.result.quiet .tool-head {
-	opacity: 0.75;
-	cursor: pointer;
+	opacity: 0.8;
 }
 
-.tool-card.result.quiet .tool-result-label {
-	cursor: pointer;
-}
-
-.tool-card.result.quiet:hover .tool-head {
+.tool-card.result.quiet .tool-head:hover {
 	opacity: 1;
 }
 
-.tool-output.error {
-	border-left-color: color-mix(in srgb, var(--status-err) 45%, var(--border-2));
+/* --- io card: expanded call arguments + result (DSH ToolRow io sections) --- */
+.tool-io-card {
+	display: flex;
+	flex-direction: column;
+	margin: 4px 0 4px 4px;
+	border: 1px solid var(--dsh-border-l1);
+	background: var(--dsh-code-block);
+	border-radius: 12px;
+	overflow: hidden;
 }
 
-.tool-output.error pre {
-	color: var(--status-err);
+.io-section {
+	display: grid;
+	grid-template-columns: max-content 1fr;
+	align-items: baseline;
+	column-gap: 14px;
+	max-height: 150px;
+	padding: 12px 16px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
 }
 
-.tool-output-empty {
-	padding: 2px 0;
-	font-size: var(--fs-xs);
-	color: var(--text-3);
+/* slim scrollbar for the streaming output area */
+.io-section::-webkit-scrollbar {
+	width: 9px;
 }
 
-.tool-output-toggle {
-	display: inline-block;
-	margin-top: 2px;
+.io-section::-webkit-scrollbar-thumb {
+	background: var(--scrollbar-thumb);
+	background-clip: padding-box;
+	border: 2px solid transparent;
+	border-radius: 6px;
+}
+
+.io-section::-webkit-scrollbar-track {
+	margin: 6px 0;
+	background: transparent;
+}
+
+.io-label {
+	align-self: start;
+	position: sticky;
+	top: 0;
+	color: var(--dsh-fg-caption);
+	font-size: 12px;
+	line-height: 18px;
+}
+
+.io-divider {
+	flex: none;
+	height: 1px;
+	background: var(--dsh-border-l2);
+}
+
+.io-text {
+	min-width: 0;
+	color: var(--dsh-fg-secondary);
+	font: var(--md-code-block-small);
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.io-text[data-error] {
+	color: var(--dsh-err);
+}
+
+/* open-file quick action under the call args */
+.tool-file-actions {
+	display: flex;
+	padding: 0 16px 12px;
+}
+
+.tool-file-actions button {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
 	padding: 0;
-	background: none;
-	border: none;
-	font-size: var(--fs-xs);
-	color: var(--text-3);
-	cursor: pointer;
+	color: var(--dsh-fg-secondary);
+	font-size: 13px;
+	line-height: 20px;
+	text-decoration: underline;
+	text-decoration-color: var(--dsh-fg-caption);
+	text-underline-offset: 3px;
+	text-align: left;
 }
 
-.tool-output-toggle:hover {
-	color: var(--text-1);
+.tool-file-actions button:hover {
+	color: var(--dsh-fg-primary);
+	text-decoration-color: currentColor;
 }
 
-/* diff lines — edit/write call changes */
+/* --- diff blocks (edit/write call changes): DSH diff card --- */
+.tool-diffs {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin: 4px 0 4px 4px;
+}
+
+.tool-diff {
+	border-radius: 12px;
+	background: var(--dsh-code-block);
+	overflow: hidden;
+}
+
+.diff-label {
+	padding: 9px 14px;
+	background: var(--dsh-code-banner);
+	font-size: 12px;
+	line-height: 18px;
+	font-weight: 500;
+	color: var(--dsh-fg-tertiary);
+	user-select: none;
+}
+
+.tool-diff pre {
+	margin: 0;
+	padding: 12px 14px;
+	font: var(--md-code-block);
+	color: var(--dsh-fg-secondary);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	overflow-x: auto;
+}
+
 .diff-line {
 	display: block;
+	min-height: 22px;
+	white-space: pre;
 	padding-right: 6px;
 }
 
@@ -1573,24 +1858,24 @@ textarea {
 	display: inline-block;
 	width: 1em;
 	margin-right: 4px;
-	color: var(--text-3);
+	color: var(--dsh-fg-caption);
 	user-select: none;
 }
 
 .diff-line.del {
-	background: color-mix(in srgb, var(--status-err) 13%, transparent);
+	background: color-mix(in srgb, var(--dsh-err) 9%, transparent);
 }
 
 .diff-line.del .diff-sign {
-	color: var(--status-err);
+	color: var(--dsh-err);
 }
 
 .diff-line.add {
-	background: color-mix(in srgb, var(--status-ok) 13%, transparent);
+	background: color-mix(in srgb, var(--dsh-ok) 9%, transparent);
 }
 
 .diff-line.add .diff-sign {
-	color: var(--status-ok);
+	color: var(--dsh-ok);
 }
 
 /* -del +add counts in the tool card header */
@@ -1598,38 +1883,41 @@ textarea {
 	display: inline-flex;
 	gap: 6px;
 	margin-left: auto;
-	font-family: var(--font-mono);
-	font-size: var(--fs-xs);
+	font-family: var(--dsh-font-code);
+	font-size: 12px;
+	line-height: 24px;
 	flex: none;
 }
 
 .diff-stats .add {
-	color: var(--status-ok);
+	color: var(--dsh-ok);
 }
 
 .diff-stats .del {
-	color: var(--status-err);
+	color: var(--dsh-err);
 }
 
 .msg-error {
-	margin-top: var(--sp-2);
-	padding: 6px 10px;
-	border-radius: var(--r-md);
-	background: var(--err-bg);
-	border: 1px solid color-mix(in srgb, var(--status-err) 30%, transparent);
-	color: var(--status-err);
-	font-size: var(--fs-sm);
+	margin-top: 8px;
+	padding: 10px 12px;
+	border-radius: 10px;
+	background: color-mix(in srgb, var(--dsh-err) 8%, transparent);
+	border: 1px solid color-mix(in srgb, var(--dsh-err) 30%, transparent);
+	color: var(--dsh-err);
+	font-size: 14px;
+	white-space: pre-wrap;
 }
 
+/* streaming caret — thin brand-blue bar */
 .cursor {
 	display: inline-block;
-	width: 7px;
-	height: 14px;
-	background: var(--text-3);
-	border-radius: 2px;
-	opacity: 0.8;
+	width: 2px;
+	height: 1.1em;
+	background: var(--dsh-brand);
+	border-radius: 1px;
+	opacity: 0.9;
 	animation: blink 1.1s steps(1) infinite;
-	vertical-align: -2px;
+	vertical-align: -0.15em;
 	margin-left: 2px;
 }
 
@@ -1639,20 +1927,68 @@ textarea {
 	}
 }
 
-.turn-wait-wrap {
-	padding: 0 var(--chat-gutter) 14px;
+/* ---------------------------------------------------------------------------
+ * Turn status — "Working..." label at the end of the chat column while the
+ * model works (covering the pre-first-token wait too); an elapsed clock
+ * joins it after 15s (tabular digits). The shimmering gradient is built
+ * from the neutral font-color family (primary base, caption highlight) so
+ * the flowing effect keeps the text color identity without brand accents.
+ * ------------------------------------------------------------------------- */
+.turn-status-wrap {
+	padding: 0 var(--chat-gutter) 10px;
 	max-width: var(--chat-max-width);
 	width: 100%;
 	margin: 0 auto;
 }
 
-.turn-wait {
-	display: flex;
+.turn-status {
+	height: 26px;
+	font-weight: 600;
+	font-size: 14px;
+	line-height: 22px;
+	white-space: nowrap;
+	background: linear-gradient(
+		90deg,
+		var(--dsh-fg-primary) 0%,
+		var(--dsh-fg-primary) 40%,
+		var(--dsh-fg-caption) 50%,
+		var(--dsh-fg-primary) 60%,
+		var(--dsh-fg-primary) 100%
+	);
+	color: transparent;
+	-webkit-text-fill-color: transparent;
+	background-position: 100% 0;
+	background-size: 250% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	flex: none;
+	display: inline-flex;
 	align-items: center;
-	gap: var(--sp-2);
-	color: var(--text-3);
-	font-size: var(--fs-sm);
-	padding: var(--sp-2) 0;
+	animation: dsh-turn-status-shimmer 1.8s linear infinite;
+}
+
+.turn-status-clock {
+	font-weight: 400;
+	font-size: 13px;
+	line-height: 20px;
+	font-variant-numeric: tabular-nums;
+	color: var(--dsh-fg-caption);
+	-webkit-text-fill-color: var(--dsh-fg-caption);
+	margin-left: 8px;
+}
+
+@keyframes dsh-turn-status-shimmer {
+	to {
+		background-position: 0 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.turn-status {
+		animation: none;
+		background-position: 0 0;
+		background-size: 100% 100%;
+	}
 }
 
 .spin {
@@ -1677,19 +2013,19 @@ textarea {
 .composer {
 	width: 100%;
 	max-width: var(--chat-max-width);
-	background: var(--card-bg);
-	border: 1px solid var(--card-border);
-	border-radius: 22px;
+	background: var(--dsh-bg-layer);
+	border: 1px solid var(--dsh-border-l2);
+	border-radius: 16px;
 	padding: 10px 12px 8px;
-	box-shadow: var(--composer-shadow);
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 	transition: border-color var(--dur) var(--ease),
 		box-shadow var(--dur) var(--ease);
 	position: relative;
 }
 
 .composer:focus-within {
-	border-color: color-mix(in srgb, var(--app-muted) 42%, transparent);
-	box-shadow: var(--composer-shadow), 0 0 0 3px var(--selection);
+	border-color: var(--dsh-brand);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsh-brand) 18%, transparent);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1713,13 +2049,13 @@ textarea {
 	padding: 4px 6px; /* must match .composer textarea */
 	font-size: var(--ousia-chat-font-size);
 	line-height: var(--ousia-chat-line-height);
-	color: var(--app-fg);
+	color: var(--dsh-fg-primary);
 	text-align: left; /* the welcome hero centers text; the input must not */
 	z-index: 2;
 }
 
 .composer-highlight mark.slash-highlight {
-	color: var(--link);
+	color: var(--dsh-brand);
 	background: transparent;
 }
 
@@ -1739,7 +2075,7 @@ textarea {
 	 * so the caret and selection still work while the tinted command words
 	 * show through from above. */
 	color: transparent;
-	caret-color: var(--app-fg);
+	caret-color: var(--dsh-brand);
 	/* Keep at least two visible lines even when the auto-size shrink
 	 * logic collapses an empty/one-line draft. */
 	min-height: calc(
@@ -1766,7 +2102,7 @@ textarea {
 /* IME composition: fall back to native rendering (overlay hidden, text
  * visible) so candidate text and underlines render correctly. */
 .composer-input-wrap.composing textarea {
-	color: var(--app-fg);
+	color: var(--dsh-fg-primary);
 }
 
 .composer-input-wrap.composing .composer-highlight {
@@ -1774,7 +2110,7 @@ textarea {
 }
 
 .composer textarea::placeholder {
-	color: color-mix(in srgb, var(--app-muted) 75%, transparent);
+	color: var(--dsh-fg-caption);
 }
 
 .composer-toolbar {
@@ -3535,17 +3871,16 @@ textarea {
 	width: 24px;
 	height: 24px;
 	border-radius: var(--r-sm);
-	background: var(--card-bg);
-	border: 1px solid var(--border-2);
-	color: var(--text-3);
-	box-shadow: var(--shadow-1);
+	background: var(--dsh-bg-layer);
+	border: 1px solid var(--dsh-border-l2);
+	color: var(--dsh-fg-secondary);
 	cursor: pointer;
 	transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
 }
 
 .fork-btn:hover {
-	color: var(--link);
-	border-color: color-mix(in srgb, var(--link) 45%, transparent);
+	color: var(--dsh-brand);
+	border-color: color-mix(in srgb, var(--dsh-brand) 45%, transparent);
 }
 
 /* ---------------------------------------------------------------------------
@@ -4426,13 +4761,13 @@ textarea {
 }
 
 .session-search-hit {
-	background: rgba(250, 204, 21, 0.35);
-	border-radius: 2px;
-	color: inherit;
+	background: color-mix(in srgb, var(--dsh-brand) 24%, transparent);
+	border-radius: 3px;
+	color: var(--dsh-fg-primary);
 }
 
 .session-search-active {
-	background: rgba(249, 115, 22, 0.4);
+	background: color-mix(in srgb, var(--dsh-brand) 45%, transparent);
 }
 
 .message-search-target {
@@ -4440,8 +4775,12 @@ textarea {
 }
 
 @keyframes searchFlash {
-	0% { background: rgba(250, 204, 21, 0.22); }
-	100% { background: transparent; }
+	0% {
+		background: color-mix(in srgb, var(--dsh-brand) 18%, transparent);
+	}
+	100% {
+		background: transparent;
+	}
 }
 
 .archived-search-input {

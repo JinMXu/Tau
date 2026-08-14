@@ -1,4 +1,4 @@
-import { memo, useDeferredValue, useMemo, useSyncExternalStore } from "react";
+import { memo, startTransition, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { MouseEvent } from "react";
 import { Streamdown } from "streamdown";
 import type { ThemeInput } from "streamdown";
@@ -13,6 +13,17 @@ const DARK_THEME: ThemeInput = "github-dark";
 /// Streamdown's full re-parse + syntax highlighting (see the degraded branch
 /// in the component).
 const MAX_MARKDOWN_CHARS = 300_000;
+
+/**
+ * Deterministic streaming cadence: render the latest text at most every
+ * 80ms while a block streams. This replaces `useDeferredValue`, whose
+ * transition scheduling renders in unpredictable bursts — text would freeze
+ * and then jump forward, with a final "snap" when the stream settled. The
+ * throttle keeps updates small, regular and near-real-time; updates are
+ * wrapped in `startTransition` so composer typing can still preempt a heavy
+ * parse.
+ */
+const STREAM_UPDATE_INTERVAL_MS = 80;
 
 const LINK_SAFETY = { enabled: false } as const;
 const CONTROLS = {
@@ -80,12 +91,26 @@ export const Markdown = memo(function Markdown({
 	streaming?: boolean;
 }) {
 	const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot);
-	// Defer the text so Streamdown's expensive re-parse + syntax-highlight
-	// doesn't run on every single animation frame during streaming.  React
-	// will render the previous (cheaper) content first and schedule the
-	// updated parse as a transition, dropping intermediate renders when
-	// deltas arrive faster than the parse can keep up.
-	const deferredText = useDeferredValue(text);
+	// Throttled streaming text (see STREAM_UPDATE_INTERVAL_MS). Settled
+	// messages render `text` directly — no stale state, no final burst.
+	const [displayText, setDisplayText] = useState(text);
+	const latestRef = useRef(text);
+	latestRef.current = text;
+	useEffect(() => {
+		if (!streaming) return;
+		let rafId = 0;
+		let last = 0;
+		const tick = (now: number) => {
+			rafId = requestAnimationFrame(tick);
+			if (now - last < STREAM_UPDATE_INTERVAL_MS) return;
+			last = now;
+			const latest = latestRef.current;
+			startTransition(() => setDisplayText(latest));
+		};
+		rafId = requestAnimationFrame(tick);
+		return () => cancelAnimationFrame(rafId);
+	}, [streaming]);
+	const shown = streaming ? displayText : text;
 	const codePlugin = useMemo(() => {
 		// Pass the active theme as both entries so token colors work without
 		// Tailwind's `dark:` variant (see the CSS shims in App.css).
@@ -95,22 +120,27 @@ export const Markdown = memo(function Markdown({
 	}, [theme]);
 
 	// Degraded rendering for very large messages: Streamdown re-parses the
-	// whole document (and highlights code) on every update and again when
-	// switching out of streaming mode at message_end. For huge replies that
-	// parse spike is exactly what tips the webview over the edge — render
-	// them as plain pre-formatted text instead (still selectable/scrolled).
-	if (deferredText.length > MAX_MARKDOWN_CHARS) {
+	// whole document (and highlights code) on every update. For huge replies
+	// that parse spike is exactly what tips the webview over the edge —
+	// render them as plain pre-formatted text instead (still selectable).
+	if (shown.length > MAX_MARKDOWN_CHARS) {
 		return (
 			<div className="markdown-host">
-				<pre className="markdown-plain">{deferredText}</pre>
+				<pre className="markdown-plain">{shown}</pre>
 			</div>
 		);
 	}
 
 	return (
 		<div className="markdown-host" onClick={onMarkdownClick}>
+			{/* `mode="streaming"` is kept across the whole lifetime so the
+			 * message_end transition never re-parses the document in "static"
+			 * mode — that re-render is what made a finished answer visibly
+			 * refresh. Streaming-mode parsing is identical for complete
+			 * markdown; `isAnimating` only controls the word-by-word typing
+			 * animation, which simply stops at the end. */}
 			<Streamdown
-				mode={streaming ? "streaming" : "static"}
+				mode="streaming"
 				animated
 				isAnimating={streaming}
 				plugins={{ code: codePlugin }}
@@ -119,7 +149,7 @@ export const Markdown = memo(function Markdown({
 				lineNumbers={false}
 				className="ousia-chat-markdown"
 			>
-				{deferredText}
+				{shown}
 			</Streamdown>
 		</div>
 	);

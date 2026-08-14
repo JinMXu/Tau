@@ -10,7 +10,6 @@ import {
 	CopyIcon,
 	FileIcon,
 	FolderOpenIcon,
-	LoaderIcon,
 	SearchIcon,
 	SparkleIcon,
 	TerminalIcon,
@@ -31,19 +30,14 @@ const toolIcon = (name: string, size = 14) => {
 		return <TerminalIcon size={size} />;
 	if (key.startsWith("read") || key.startsWith("ls") || key.startsWith("find"))
 		return <FolderOpenIcon size={size} />;
-	if (key.startsWith("write") || key.startsWith("edit"))
-		return <FileIcon size={size} />;
+	if (key.startsWith("write") || key.startsWith("edit")) return <FileIcon size={size} />;
 	if (key.startsWith("grep") || key.startsWith("search") || key.startsWith("web"))
 		return <SearchIcon size={size} />;
-	if (key.includes("apply") || key.includes("patch"))
-		return <BoltIcon size={size} />;
+	if (key.includes("apply") || key.includes("patch")) return <BoltIcon size={size} />;
 	return <SparkleIcon size={size} />;
 };
 
 type ToolBlockT = Extract<Block, { kind: "tool" }>;
-
-/** Lines of tool output shown inline before the rest is tucked behind a toggle. */
-const OUTPUT_PREVIEW_LINES = 8;
 
 /**
  * Read-only / low-signal tools whose result content nobody reads (cd, read,
@@ -72,66 +66,34 @@ function isQuietTool(name: string): boolean {
 	);
 }
 
-const ToolOutput = memo(function ToolOutput({
-	text,
-	error,
-	t,
-}: {
-	text: string;
-	error?: boolean;
-	t: MessageCatalog;
-}) {
-	const [expanded, setExpanded] = useState(false);
-	const { lines, body, truncated } = useMemo(() => {
-		const body = text.replace(/\n+$/, "");
-		const lines = body ? body.split("\n") : [];
-		return { lines, body, truncated: lines.length > OUTPUT_PREVIEW_LINES };
-	}, [text]);
-	const lineCount = lines.length;
-	const visible =
-		truncated && !expanded
-			? lines.slice(0, OUTPUT_PREVIEW_LINES).join("\n")
-			: body;
+/**
+ * Tools whose body renders as a structured line diff (not raw io JSON).
+ * For these the card waits until the diff is ready and then opens directly
+ * onto the final form — no partial-JSON → diff content swap mid-stream.
+ */
+function isDiffTool(name: string): boolean {
+	const key = name.toLowerCase();
 	return (
-		<div className={`tool-output${error ? " error" : ""}`}>
-			{body.trim() ? (
-				<pre className={truncated && !expanded ? "clamped" : undefined}>
-					{visible}
-				</pre>
-			) : (
-				<div className="tool-output-empty">{t.chat.noOutput}</div>
-			)}
-			{truncated && (
-				<button
-					className="tool-output-toggle"
-					onClick={() => setExpanded((v) => !v)}
-				>
-					{expanded
-						? t.chat.showLess
-						: t.chat.showAllLines.replace("{count}", String(lineCount))}
-				</button>
-			)}
-		</div>
+		key === "edit" ||
+		key === "write" ||
+		key.includes("apply") ||
+		key.includes("patch")
 	);
-});
+}
 
 const DiffView = memo(function DiffView({
 	lines,
 	label,
-	t,
 }: {
 	lines: DiffLine[];
 	label?: string;
-	t: MessageCatalog;
 }) {
-	const [expanded, setExpanded] = useState(false);
-	const truncated = lines.length > OUTPUT_PREVIEW_LINES;
-	const visible = truncated && !expanded ? lines.slice(0, OUTPUT_PREVIEW_LINES) : lines;
+	// DSH diff card: code-surface block, optional hunk label banner.
 	return (
 		<div className="tool-diff">
 			{label && <div className="diff-label">{label}</div>}
-			<pre className={truncated && !expanded ? "clamped" : undefined}>
-				{visible.map((l, i) => (
+			<pre>
+				{lines.map((l, i) => (
 					<span key={i} className={`diff-line ${l.type}`}>
 						<span className="diff-sign">
 							{l.type === "add" ? "+" : l.type === "del" ? "-" : " "}
@@ -140,16 +102,6 @@ const DiffView = memo(function DiffView({
 					</span>
 				))}
 			</pre>
-			{truncated && (
-				<button
-					className="tool-output-toggle"
-					onClick={() => setExpanded((v) => !v)}
-				>
-					{expanded
-						? t.chat.showLess
-						: t.chat.showAllLines.replace("{count}", String(lines.length))}
-				</button>
-			)}
 		</div>
 	);
 });
@@ -167,9 +119,13 @@ const ToolCard = memo(function ToolCard({
 	running: boolean;
 	t: MessageCatalog;
 }) {
-	const [showArgs, setShowArgs] = useState(false);
-	const [showResult, setShowResult] = useState(false);
+	// Stable streaming model (no open/close flapping): the card opens at
+	// most once, never auto-closes, and the expanded content stays put when
+	// the run settles — the output the user just watched keeps streaming in
+	// place instead of vanishing. Collapsing is always the user's choice.
+	const [bodyOpen, setBodyOpen] = useState(false);
 	const quiet = useMemo(() => isQuietTool(block.name), [block.name]);
+	const diffTool = useMemo(() => isDiffTool(block.name), [block.name]);
 	const prettyName = useMemo(
 		() =>
 			block.name
@@ -198,24 +154,31 @@ const ToolCard = memo(function ToolCard({
 		return result.args ? result.args.split("\n").length : 0;
 	}, [result, quiet]);
 	const error = block.error || result?.error;
-	// Quiet tools keep their output collapsed behind the header; only
-	// meaningful tools (bash, edit/write…) show the preview inline.
-	const resultCollapsed = quiet && !showResult;
-	const toggleBody = block.result
-		? quiet
-			? () => setShowResult((v) => !v)
-			: undefined
-		: () => setShowArgs((v) => !v);
-	const bodyOpen = block.result ? showResult : showArgs;
 	// Edit/write-style calls surface their changes as inline line diffs.
-	// While the call is streaming its args are incomplete JSON that would be
-	// discarded at toolcall_end anyway — skip the expensive diff extraction
-	// entirely until the call finishes.
+	// The diff depends only on the args being complete: while the call
+	// streams, args are partial JSON and parse to null; once toolcall_end
+	// lands the args are final and the diff becomes stable — it must NOT
+	// reset while the attached result streams afterwards, or the body would
+	// swap diff ↔ io cards mid-flight (a visible "refresh").
 	const diffBlocks = useMemo(
-		() =>
-			block.result || running ? null : diffBlocksFromArgs(block.args),
-		[block.result, block.args, running],
+		() => (block.result ? null : diffBlocksFromArgs(block.args)),
+		[block.result, block.args],
 	);
+	// Open-once rule:
+	// - quiet tools (read/grep/ls…) never open on their own — the row's live
+	//   line count and shimmer carry the activity, exactly like DSH;
+	// - diff tools (edit/write/apply/patch) open when the structured diff is
+	//   ready, so the final form appears directly (no JSON → diff swap);
+	// - everything else (bash, …) opens when the call starts running and the
+	//   output then streams into place.
+	useEffect(() => {
+		if (quiet || block.result) return;
+		if (diffTool) {
+			if (diffBlocks && diffBlocks.length > 0) setBodyOpen(true);
+			return;
+		}
+		if (running) setBodyOpen(true);
+	}, [quiet, diffTool, running, diffBlocks, block.result]);
 	const { diffAdd, diffDel } = useMemo(() => {
 		let add = 0;
 		let del = 0;
@@ -229,87 +192,107 @@ const ToolCard = memo(function ToolCard({
 		}
 		return { diffAdd: add, diffDel: del };
 	}, [diffBlocks]);
+	const outputText = result?.args ? result.args.replace(/\n+$/, "") : "";
+	// Once a diff tool has revealed its structured diff, the remaining result
+	// stream is a trivial acknowledgement — keep the settled card still
+	// instead of restarting the running shimmer on it.
+	const showRunning =
+		running && !(diffTool && diffBlocks !== null && diffBlocks.length > 0);
+	// Anchored output follow (DSH's anchored max-height output): while the
+	// output streams the section stays pinned to the newest line; scrolling
+	// up inside it un-pins, scrolling back to the bottom re-pins.
+	const outputSectionRef = useRef<HTMLElement>(null);
+	const outputAnchorRef = useRef(true);
+	useEffect(() => {
+		const el = outputSectionRef.current;
+		// `bodyOpen` in the deps re-anchors to the newest line when the card
+		// is re-opened mid-stream (the remounted section would otherwise
+		// start at the top of the buffer).
+		if (el && outputAnchorRef.current) el.scrollTop = el.scrollHeight;
+	}, [outputText, bodyOpen]);
+	const onOutputScroll = useCallback(() => {
+		const el = outputSectionRef.current;
+		if (!el) return;
+		outputAnchorRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 12;
+	}, []);
 	return (
 		<div
-			className={`tool-card${block.result ? " result" : ""}${quiet && block.result ? " quiet" : ""}${error ? " error" : ""}${bodyOpen ? " args-open" : ""}`}
+			className={`tool-card${showRunning ? " running" : ""}${block.result ? " result" : ""}${quiet && block.result ? " quiet" : ""}${error ? " error" : ""}${bodyOpen ? " open" : ""}`}
+			data-state={showRunning ? "running" : error ? "error" : "ok"}
 		>
-			<div
+			<button
+				type="button"
 				className="tool-head"
-				role={toggleBody ? "button" : undefined}
-				tabIndex={toggleBody ? 0 : undefined}
-				aria-expanded={toggleBody ? bodyOpen : undefined}
-				onClick={toggleBody}
-				onKeyDown={
-					toggleBody
-						? (e) => {
-								if (e.key === "Enter" || e.key === " ") {
-									e.preventDefault();
-									toggleBody();
-								}
-							}
-						: undefined
-				}
+				aria-expanded={bodyOpen}
+				onClick={() => setBodyOpen((v) => !v)}
 			>
-				<span
-					className={`tool-status${running ? " running" : ""}${error ? " error" : ""}`}
-				/>
 				<span className="tool-icon">{toolIcon(block.name)}</span>
-				<span className="tool-name">{prettyName || "tool"}</span>
-				{block.result && (
-					<span className="tool-result-label">
+				<span className="tool-name">{prettyName || t.chat.tool}</span>
+				<span className="tool-sep" />
+				{summary && <span className="tool-summary">{summary}</span>}
+				{result && (
+					<span className="tool-summary-suffix">
 						{error
 							? t.chat.error
 							: quiet
 								? resultLineCount > 0
-									? t.chat.outputLines.replace(
-											"{count}",
-											String(resultLineCount),
-										)
+									? t.chat.outputLines.replace("{count}", String(resultLineCount))
 									: t.chat.noOutput
 								: t.chat.result}
 					</span>
 				)}
-				{summary && <span className="tool-summary">{summary}</span>}
 				{diffBlocks && (diffAdd > 0 || diffDel > 0) && (
 					<span className="diff-stats">
 						{diffDel > 0 && <span className="del">-{diffDel}</span>}
 						{diffAdd > 0 && <span className="add">+{diffAdd}</span>}
 					</span>
 				)}
-				{toggleBody && (
-					<ChevronDownIcon
-						size={12}
-						className={`tool-chevron${bodyOpen ? " open" : ""}`}
-					/>
-				)}
-			</div>
-			{showArgs && !block.result && (
+				<ChevronDownIcon size={12} className={`tool-chevron${bodyOpen ? " open" : ""}`} />
+			</button>
+			{bodyOpen && (
 				<>
-					<pre className="tool-args">{block.args}</pre>
-					{filePath && (
-						<div className="tool-file-actions">
-							<button onClick={() => void openPath(filePath)}>
-								<FileIcon size={12} />
-								<span>{filePath}</span>
-							</button>
+					{diffBlocks && diffBlocks.length > 0 ? (
+						<div className="tool-diffs">
+							{diffBlocks.map((b, i) => (
+								<DiffView key={i} lines={b.lines} label={b.label || undefined} />
+							))}
+						</div>
+					) : (
+						<div className="tool-io-card">
+							{!block.result && (
+								<section className="io-section">
+									<span className="io-label">{t.chat.ioInput}</span>
+									<div className="io-text">
+										{block.args.trim() ? block.args : t.chat.noOutput}
+									</div>
+								</section>
+							)}
+							{result && !quiet && (
+								<>
+									{!block.result && <div className="io-divider" />}
+									<section
+										ref={outputSectionRef}
+										className="io-section"
+										onScroll={onOutputScroll}
+									>
+										<span className="io-label">{t.chat.ioOutput}</span>
+										<div className="io-text" data-error={error || undefined}>
+											{outputText ? outputText : t.chat.noOutput}
+										</div>
+									</section>
+								</>
+							)}
+							{!block.result && filePath && (
+								<div className="tool-file-actions">
+									<button onClick={() => void openPath(filePath)}>
+										<FileIcon size={12} />
+										<span>{filePath}</span>
+									</button>
+								</div>
+							)}
 						</div>
 					)}
 				</>
-			)}
-			{diffBlocks && diffBlocks.length > 0 && (
-				<div className="tool-diffs">
-					{diffBlocks.map((b, i) => (
-						<DiffView
-							key={i}
-							lines={b.lines}
-							label={b.label || undefined}
-							t={t}
-						/>
-					))}
-				</div>
-			)}
-			{result && !resultCollapsed && (
-				<ToolOutput text={result.args} error={result.error} t={t} />
 			)}
 		</div>
 	);
@@ -324,15 +307,80 @@ const ThinkingBlock = memo(function ThinkingBlock({
 	streaming: boolean;
 	t: MessageCatalog;
 }) {
+	// DSH ReasoningRow verbatim behaviour: the block stays collapsed unless
+	// the user opens it. While running, the collapsed summary shows the
+	// *latest* line and follows its end; once settled it shows the first
+	// line, left-aligned. No auto expand/collapse — the user owns the state.
+	const [expanded, setExpanded] = useState(false);
+	const summaryRef = useRef<HTMLSpanElement>(null);
+	const summary = useMemo(() => {
+		const trimmed = text.trimEnd();
+		if (streaming) {
+			const nl = trimmed.lastIndexOf("\n");
+			return nl === -1 ? trimmed : trimmed.slice(nl + 1);
+		}
+		const nl = text.indexOf("\n");
+		return nl === -1 ? text : text.slice(0, nl);
+	}, [text, streaming]);
+	// Frame-throttled follow of the collapsed summary, mirroring DSH's
+	// useThrottledVisualUpdate (every 3rd frame): streaming deltas arrive
+	// faster than a frame, so coalescing avoids a forced layout per token.
+	const pendingFrameRef = useRef<number | null>(null);
+	const cancelFollow = useCallback(() => {
+		if (pendingFrameRef.current !== null) {
+			cancelAnimationFrame(pendingFrameRef.current);
+			pendingFrameRef.current = null;
+		}
+	}, []);
+	useEffect(() => cancelFollow, [cancelFollow]);
+	useEffect(() => {
+		cancelFollow();
+		if (streaming) {
+			let remaining = 3;
+			const advance = () => {
+				remaining -= 1;
+				if (remaining > 0) {
+					pendingFrameRef.current = requestAnimationFrame(advance);
+					return;
+				}
+				pendingFrameRef.current = null;
+				const el = summaryRef.current;
+				if (el) el.scrollLeft = el.scrollWidth - el.clientWidth;
+			};
+			pendingFrameRef.current = requestAnimationFrame(advance);
+		} else {
+			const el = summaryRef.current;
+			if (el) el.scrollLeft = 0;
+		}
+	}, [summary, streaming, cancelFollow]);
 	return (
-		<details className="thinking-block">
-			<summary>
-				<span className={`thinking-dot${streaming ? " pulse" : ""}`} />
-				<span className="thinking-label">{t.chat.thinking}</span>
-				<ChevronDownIcon size={12} className="tool-chevron" />
-			</summary>
-			<div className="thinking-body">{text}</div>
-		</details>
+		<div
+			className={`think-card${streaming ? " running" : ""}`}
+			data-state={streaming ? "running" : "ok"}
+		>
+			<button
+				type="button"
+				className="think-head"
+				aria-expanded={expanded}
+				onClick={() => setExpanded((v) => !v)}
+			>
+				<ChevronDownIcon size={12} className={`think-chevron${expanded ? " open" : ""}`} />
+				<SparkleIcon size={14} className="think-icon" />
+				<span className="think-title">{t.chat.thinking}</span>
+				{!expanded && (
+					<>
+						<span className="think-sep" />
+						<span
+							ref={summaryRef}
+							className={`think-summary${streaming ? " follow-end" : ""}`}
+						>
+							{summary}
+						</span>
+					</>
+				)}
+			</button>
+			{expanded && <div className="think-body">{text}</div>}
+		</div>
 	);
 });
 
@@ -352,11 +400,40 @@ function formatTime(ts?: string): string | null {
 	return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function TurnWaitIndicator({ t }: { t: MessageCatalog }) {
+/** Compact elapsed duration for the live "working…" status: `42s`, `1:05`. */
+function formatDuration(ms: number): string {
+	const total = Math.max(0, Math.floor(ms / 1000));
+	const minutes = Math.floor(total / 60);
+	const seconds = total % 60;
+	return minutes > 0 ? `${minutes}:${String(seconds).padStart(2, "0")}` : `${seconds}s`;
+}
+
+/**
+ * Turn-level activity label shown while the model is working — covering the
+ * pre-first-token wait and the streaming phases alike — rendered at the end
+ * of the chat column (port of DSH's ChatView TurnStatus pattern). Plain
+ * content-font styling; an elapsed clock appears after 15s and counts from
+ * the turn start, retained across the thinking / tool / text phases.
+ */
+export function TurnStatus({ startTime }: { startTime: number }) {
+	const [mountedAt] = useState(() => Date.now());
+	const anchor = startTime ?? mountedAt;
+	const [elapsedMs, setElapsedMs] = useState(() => Math.max(0, Date.now() - anchor));
+	useEffect(() => {
+		const tick = () => setElapsedMs(Math.max(0, Date.now() - anchor));
+		tick();
+		const id = window.setInterval(tick, 1000);
+		return () => window.clearInterval(id);
+	}, [anchor]);
+	const showClock = elapsedMs >= 15_000;
 	return (
-		<div className="turn-wait">
-			<LoaderIcon size={14} className="spin" />
-			<span>{t.chat.turnWait}</span>
+		<div className="turn-status" role="status" aria-live="polite">
+			Working...
+			{showClock && (
+				<span className="turn-status-clock" aria-hidden="true">
+					{formatDuration(elapsedMs)}
+				</span>
+			)}
 		</div>
 	);
 }
@@ -405,7 +482,7 @@ export const MessageList = memo(function MessageList({
 	}, [messages, streaming, autoScroll, follow]);
 
 	// Also follow growth that never re-renders: async content (images, fonts),
-	// the turn-wait indicator, window resizes.  Both observers are coalesced
+	// the working-status row, window resizes.  Both observers are coalesced
 	// into a single rAF so that a burst of mutations (e.g. streaming text
 	// deltas re-rendering many nodes) produces at most one follow() per frame
 	// instead of dozens of forced reflows.
@@ -425,23 +502,100 @@ export const MessageList = memo(function MessageList({
 		resizeObserver.observe(el);
 		resizeObserver.observe(scroller);
 		// childList only (no subtree) so the observer fires when direct
-		// children are added/removed (e.g. the turn-wait indicator) but NOT
+		// children are added/removed (e.g. the working-status row) but NOT
 		// on every text-node mutation deep inside the streaming markdown.
 		const mutationObserver = new MutationObserver(throttledFollow);
 		mutationObserver.observe(scroller, { childList: true });
 		// User intent: scrolling away unsticks, scrolling back to the bottom
 		// re-sticks.
+		//
+		// Scroll events alone must NOT unstick: follow() scrolls are echoed
+		// back as scroll events, and Blink coalesces and dispatches those
+		// echoes asynchronously — by the time one arrives the streamed
+		// content has usually grown further, so the distance check compares
+		// the stale scrollTop against the grown scrollHeight and mistakes
+		// the echo for the user scrolling away, killing the follow mid-run.
+		// Unstick synchronously from real input (wheel up, touch drag down,
+		// scrollbar grab, scroll keys) instead; scroll events only re-stick
+		// when the view is back at the bottom.
+		const STICK_MARGIN = 120;
 		const onScroll = () => {
-			stickRef.current =
-				scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <
-				120;
+			if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < STICK_MARGIN) {
+				stickRef.current = true;
+			}
+		};
+		// Whether a wheel/touch interaction over `target` would actually move
+		// the chat scroller, or is consumed by a nested scrollable (expanded
+		// tool outputs, code blocks) and must not be read as chat scrolling.
+		const chatWillScroll = (target: EventTarget | null): boolean => {
+			let node = target instanceof Element ? target : null;
+			while (node && node !== scroller) {
+				const style = getComputedStyle(node);
+				if (
+					/(auto|scroll|overlay)/.test(style.overflowY) &&
+					node.scrollHeight > node.clientHeight
+				) {
+					return false;
+				}
+				node = node.parentElement;
+			}
+			return true;
+		};
+		const onWheel = (e: WheelEvent) => {
+			if (e.deltaY < 0 && scroller.scrollTop > 0 && chatWillScroll(e.target)) {
+				stickRef.current = false;
+			}
+		};
+		let touchStartTarget: EventTarget | null = null;
+		let touchStartY: number | null = null;
+		const onTouchStart = (e: TouchEvent) => {
+			touchStartTarget = e.touches[0]?.target ?? null;
+			touchStartY = e.touches[0]?.clientY ?? null;
+		};
+		const onTouchMove = (e: TouchEvent) => {
+			const y = e.touches[0]?.clientY;
+			// Finger dragging down reveals older content (scrollTop shrinks).
+			if (
+				touchStartY !== null &&
+				y !== undefined &&
+				y - touchStartY > 4 &&
+				scroller.scrollTop > 0 &&
+				chatWillScroll(touchStartTarget)
+			) {
+				stickRef.current = false;
+			}
+		};
+		const onPointerDown = (e: PointerEvent) => {
+			// Grabbing the vertical scrollbar (custom 9px thumb) is user
+			// scrolling that never produces a wheel/touch signal.
+			if (e.button !== 0 || scroller.scrollTop <= 0) return;
+			const rect = scroller.getBoundingClientRect();
+			if (e.clientX >= rect.right - 12) stickRef.current = false;
+		};
+		const onKeyDown = (e: KeyboardEvent) => {
+			if (
+				(e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") &&
+				scroller.scrollTop > 0
+			) {
+				stickRef.current = false;
+			}
 		};
 		scroller.addEventListener("scroll", onScroll, { passive: true });
+		scroller.addEventListener("wheel", onWheel, { passive: true });
+		scroller.addEventListener("touchstart", onTouchStart, { passive: true });
+		scroller.addEventListener("touchmove", onTouchMove, { passive: true });
+		scroller.addEventListener("pointerdown", onPointerDown);
+		scroller.addEventListener("keydown", onKeyDown);
 		return () => {
 			if (rafId !== null) cancelAnimationFrame(rafId);
 			resizeObserver.disconnect();
 			mutationObserver.disconnect();
 			scroller.removeEventListener("scroll", onScroll);
+			scroller.removeEventListener("wheel", onWheel);
+			scroller.removeEventListener("touchstart", onTouchStart);
+			scroller.removeEventListener("touchmove", onTouchMove);
+			scroller.removeEventListener("pointerdown", onPointerDown);
+			scroller.removeEventListener("keydown", onKeyDown);
 		};
 	}, [follow]);
 
@@ -453,6 +607,8 @@ export const MessageList = memo(function MessageList({
 		const list: {
 			msg: ChatMessage;
 			attached: Map<number, ToolBlockT>;
+			/** Whether the tool-result message feeding this slot is streaming. */
+			attachedStreaming: Map<number, boolean>;
 			consumed: Set<number>;
 		}[] = [];
 		let pending: { item: (typeof list)[number]; index: number }[] = [];
@@ -461,6 +617,7 @@ export const MessageList = memo(function MessageList({
 			const item = {
 				msg,
 				attached: new Map<number, ToolBlockT>(),
+				attachedStreaming: new Map<number, boolean>(),
 				consumed: new Set<number>(),
 			};
 			if (msg.role === "tool") {
@@ -469,6 +626,7 @@ export const MessageList = memo(function MessageList({
 					const slot = pending.shift();
 					if (slot) {
 						slot.item.attached.set(slot.index, b);
+						slot.item.attachedStreaming.set(slot.index, msg.streaming);
 						item.consumed.add(i);
 					}
 				});
@@ -479,45 +637,43 @@ export const MessageList = memo(function MessageList({
 			list.push(item);
 			if (msg.role === "assistant") {
 				msg.blocks.forEach((b, i) => {
-					if (b.kind === "tool" && !b.result)
-						pending.push({ item, index: i });
+					if (b.kind === "tool" && !b.result) pending.push({ item, index: i });
 				});
 			}
 		}
 		return list;
 	}, [messages]);
 
-	const copyMessage = useCallback(
-		async (m: ChatMessage, mode: "md" | "text") => {
-			const content =
-				mode === "md" ? chatMessageToMarkdown(m) : chatMessageToPlainText(m);
-			if (!content) return;
-			const key = `${m.id}-${mode}`;
-			try {
-				await navigator.clipboard.writeText(content);
-				setCopiedId(key);
-				window.clearTimeout(copyTimerRef.current);
-				copyTimerRef.current = window.setTimeout(() => {
-					setCopiedId((cur) => (cur === key ? null : cur));
-				}, 1200);
-			} catch {
-				/* clipboard unavailable */
-			}
-		},
-		[],
-	);
+	const copyMessage = useCallback(async (m: ChatMessage, mode: "md" | "text") => {
+		const content = mode === "md" ? chatMessageToMarkdown(m) : chatMessageToPlainText(m);
+		if (!content) return;
+		const key = `${m.id}-${mode}`;
+		try {
+			await navigator.clipboard.writeText(content);
+			setCopiedId(key);
+			window.clearTimeout(copyTimerRef.current);
+			copyTimerRef.current = window.setTimeout(() => {
+				setCopiedId((cur) => (cur === key ? null : cur));
+			}, 1200);
+		} catch {
+			/* clipboard unavailable */
+		}
+	}, []);
 
 	// Clear the copied-indicator timer on unmount.
 	useEffect(() => () => window.clearTimeout(copyTimerRef.current), []);
 
 	// Scroll the active search hit into view within the chat scroller (its
 	// parent `.chat-scroll`), not via scrollIntoView (which can also scroll
-	// ancestor containers).
+	// ancestor containers). Jumping to a hit is explicit user intent: stop
+	// following so the stream can't yank the view back down (scroll events
+	// are no longer treated as user scrolling — see the observer effect).
 	useEffect(() => {
 		if (searchActiveMessageId == null) return;
 		const el = msgElsRef.current.get(searchActiveMessageId);
 		const scroller = scrollRef.current?.parentElement;
 		if (el && scroller) {
+			stickRef.current = false;
 			const elRect = el.getBoundingClientRect();
 			const scrollerRect = scroller.getBoundingClientRect();
 			const top =
@@ -530,12 +686,10 @@ export const MessageList = memo(function MessageList({
 
 	return (
 		<div ref={scrollRef} className="messages">
-			{items.map(({ msg: m, attached, consumed }) => {
+			{items.map(({ msg: m, attached, attachedStreaming, consumed }) => {
 				const time = m.role === "user" ? formatTime(m.timestamp) : null;
 				const isSearchTarget =
-					searchQuery != null &&
-					searchActiveMessageId != null &&
-					m.id === searchActiveMessageId;
+					searchQuery != null && searchActiveMessageId != null && m.id === searchActiveMessageId;
 				return (
 					<div
 						key={m.id}
@@ -545,9 +699,7 @@ export const MessageList = memo(function MessageList({
 						}}
 						className={`message ${m.role}${isSearchTarget ? " message-search-target" : ""}`}
 					>
-						{m.role === "assistant" && (
-							<AssistantFooter message={m} t={t} />
-						)}
+						{m.role === "assistant" && <AssistantFooter message={m} t={t} />}
 						{(m.role === "assistant" || (m.role === "user" && onFork && m.entryId)) && (
 							<div className="message-hover-actions">
 								{m.role === "user" && onFork && m.entryId && (
@@ -564,28 +716,20 @@ export const MessageList = memo(function MessageList({
 									title={t.chat.copy}
 									onClick={() => void copyMessage(m, "md")}
 								>
-									{copiedId === `${m.id}-md` ? (
-										<CheckIcon size={12} />
-									) : (
-										<CopyIcon size={12} />
-									)}
+									{copiedId === `${m.id}-md` ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
 								</button>
 								<button
 									className="fork-btn"
 									title={t.chat.copyPlainText}
 									onClick={() => void copyMessage(m, "text")}
 								>
-									{copiedId === `${m.id}-text` ? (
-										<CheckIcon size={12} />
-									) : (
-										<CopyIcon size={12} />
-									)}
+									{copiedId === `${m.id}-text` ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
 								</button>
 							</div>
 						)}
 						{m.blocks.map((b, i) => {
 							if (consumed.has(i)) return null;
-						if (b.kind === "text") {
+							if (b.kind === "text") {
 								if (m.role === "tool") {
 									// Tool result text streaming in. Nobody reads
 									// this mid-stream — the assistant's running
@@ -597,22 +741,15 @@ export const MessageList = memo(function MessageList({
 									// content the user is actively looking for.
 									if (isSearchTarget && searchQuery) {
 										return (
-											<div
-												className="text-block highlighted-text"
-												key={i}
-											>
-												{splitOnQuery(b.text, searchQuery).map(
-													(p, j) =>
-														p.match ? (
-															<mark
-																key={j}
-																className="session-search-hit"
-															>
-																{p.text}
-															</mark>
-														) : (
-															<span key={j}>{p.text}</span>
-														),
+											<div className="text-block highlighted-text" key={i}>
+												{splitOnQuery(b.text, searchQuery).map((p, j) =>
+													p.match ? (
+														<mark key={j} className="session-search-hit">
+															{p.text}
+														</mark>
+													) : (
+														<span key={j}>{p.text}</span>
+													),
 												)}
 											</div>
 										);
@@ -647,10 +784,7 @@ export const MessageList = memo(function MessageList({
 									// Highlight matches inside thinking blocks too, so a
 									// hit there is visible (not just counted).
 									return (
-										<div
-											className="text-block thinking highlighted-text"
-											key={i}
-										>
+										<div className="text-block thinking highlighted-text" key={i}>
 											{splitOnQuery(b.text, searchQuery).map((p, j) =>
 												p.match ? (
 													<mark key={j} className="session-search-hit">
@@ -663,21 +797,17 @@ export const MessageList = memo(function MessageList({
 										</div>
 									);
 								}
-								return (
-									<ThinkingBlock
-										key={i}
-										text={b.text}
-										streaming={m.streaming}
-										t={t}
-									/>
-								);
+								return <ThinkingBlock key={i} text={b.text} streaming={m.streaming} t={t} />;
 							}
 							return (
 								<ToolCard
 									key={i}
 									block={b}
 									result={b.result ? b : (attached.get(i) ?? null)}
-									running={m.streaming && i === m.blocks.length - 1}
+									running={
+										(m.streaming && i === m.blocks.length - 1) ||
+										(attachedStreaming.get(i) ?? false)
+									}
 									t={t}
 								/>
 							);

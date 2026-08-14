@@ -23,7 +23,7 @@ import {
 	XIcon,
 } from "../icons";
 import { Composer, type ModelEntry } from "./Composer";
-import { MessageList, TurnWaitIndicator } from "./MessageList";
+import { MessageList, TurnStatus } from "./MessageList";
 import { searchMessages } from "./message-utils";
 
 function greeting(t: MessageCatalog): string {
@@ -196,6 +196,19 @@ export const ChatArea = memo(function ChatArea({
 		setSearchQuery("");
 		setActiveHit(0);
 	};
+
+	// Turn-level status anchor (DSH "Deep diving..."): the elapsed clock
+	// counts from when the turn opened — including the pre-first-token wait
+	// — and is retained across the thinking / tool / text phases.
+	const turnActive = showTurnWait || streaming;
+	const [turnStartTime, setTurnStartTime] = useState<number | null>(null);
+	useEffect(() => {
+		if (turnActive) {
+			setTurnStartTime((cur) => cur ?? Date.now());
+		} else {
+			setTurnStartTime(null);
+		}
+	}, [turnActive]);
 
 	// Ctrl+F opens/focuses the search bar; capture-phase Escape closes it
 	// before the global Escape-interrupt handler sees the key.
@@ -519,9 +532,9 @@ export const ChatArea = memo(function ChatArea({
 					searchQuery={searchOpen ? searchQuery : undefined}
 					searchActiveMessageId={activeMessageId}
 				/>
-				{showTurnWait && !streaming && (
-					<div className="turn-wait-wrap">
-						<TurnWaitIndicator t={t} />
+				{turnStartTime !== null && (
+					<div className="turn-status-wrap">
+						<TurnStatus startTime={turnStartTime} />
 					</div>
 				)}
 			</div>
