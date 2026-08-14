@@ -252,9 +252,11 @@ fn probe_candidate(bin: &str) -> Option<PiBinaryInfo> {
 	let (mut cmd, direct) =
 		if bin.ends_with(".js") || bin.ends_with(".mjs") || bin.ends_with(".cjs") {
 			// `PI_BIN` may point straight at the JS entrypoint.
-			let mut c = Command::new("node");
+			let node = find_node(None).unwrap_or_else(|| PathBuf::from("node"));
+			let node_s = node.to_string_lossy().into_owned();
+			let mut c = Command::new(&node);
 			c.arg(bin);
-			(c, Some(("node".to_string(), bin.to_string())))
+			(c, Some((node_s, bin.to_string())))
 		} else if bin.ends_with(".cmd") || bin.ends_with(".bat") {
 			// Probe candidates are bare names; resolve the shim's full path so its
 			// directory (and the node_modules tree next to it) can be found.
@@ -300,6 +302,34 @@ fn probe_candidate(bin: &str) -> Option<PiBinaryInfo> {
 						// we forward (system prompts, session names, package sources).
 						// An unresolvable shim is treated as "not found" instead.
 						None => return None,
+					}
+				}
+				#[cfg(not(windows))]
+				Some(resolved) => {
+					// Unix: npm global installs expose `pi` as a symlink to cli.js with
+					// a `#!/usr/bin/env node` shebang. From Finder/LaunchServices the
+					// GUI inherits a minimal PATH (no node), so the shebang alone can't
+					// run. Detect the symlink-to-JS case and spawn `node script`
+					// directly.
+					match std::fs::canonicalize(&resolved) {
+						Ok(real)
+							if real
+								.extension()
+								.and_then(|e| e.to_str())
+								.is_some_and(|e| e == "js" || e == "mjs" || e == "cjs") =>
+						{
+							let Some(node) = find_node(Some(&resolved)) else {
+								// Found pi but no node to run it with; treat as not found
+								// so the next candidate / known-location probe can try.
+								return None;
+							};
+							let node_s = node.to_string_lossy().into_owned();
+							let script = real.to_string_lossy().into_owned();
+							let mut c = Command::new(&node);
+							c.arg(&script);
+							(c, Some((node_s, script)))
+						}
+						_ => (Command::new(bin), None),
 					}
 				}
 				_ => (Command::new(bin), None),
@@ -374,7 +404,9 @@ fn probe_pi_uncached() -> Option<PiBinaryInfo> {
 /// Look for pi in places it is typically installed even when PATH doesn't
 /// cover them: the npm global bin dir, and any PATH directory that holds
 /// node.exe (npm's prefix is usually the node install dir, and pi is a
-/// sibling of node there).
+/// sibling of node there). On Unix this also covers the well-known npm-global
+/// / nvm / brew roots (a .app launched from Finder inherits only
+/// /usr/bin:/bin:/usr/sbin:/sbin, which none of them live in).
 fn probe_known_locations() -> Option<PiBinaryInfo> {
 	let mut dirs: Vec<PathBuf> = Vec::new();
 	#[cfg(windows)]
@@ -388,6 +420,12 @@ fn probe_known_locations() -> Option<PiBinaryInfo> {
 			}
 		}
 	}
+	#[cfg(not(windows))]
+	for dir in known_bin_dirs() {
+		if !dirs.contains(&dir) {
+			dirs.push(dir);
+		}
+	}
 	for dir in dirs {
 		for name in ["pi.cmd", "pi.bat", "pi.exe", "pi"] {
 			let candidate = dir.join(name);
@@ -399,6 +437,74 @@ fn probe_known_locations() -> Option<PiBinaryInfo> {
 		}
 	}
 	None
+}
+
+/// Well-known directories that hold npm-global binaries (and the node that
+/// runs them) when the GUI's inherited PATH is too minimal to include them.
+#[cfg(not(windows))]
+fn known_bin_dirs() -> Vec<PathBuf> {
+	let mut dirs: Vec<PathBuf> = Vec::new();
+	if let Some(home) = std::env::var_os("HOME") {
+		let home = PathBuf::from(home);
+		dirs.push(home.join(".npm-global").join("bin"));
+		dirs.push(home.join(".local").join("bin"));
+		dirs.push(home.join(".volta").join("bin"));
+		dirs.push(home.join(".asdf").join("shims"));
+		// nvm: ~/.nvm/versions/node/<v>/bin (all installed versions, newest last).
+		if let Ok(entries) = std::fs::read_dir(home.join(".nvm").join("versions").join("node")) {
+			let mut vers: Vec<PathBuf> = entries
+				.filter_map(|e| e.ok().map(|e| e.path().join("bin")))
+				.collect();
+			vers.sort();
+			dirs.extend(vers);
+		}
+		// Laravel Herd bundles its own nvm tree under Application Support.
+		let herd = home
+			.join("Library")
+			.join("Application Support")
+			.join("Herd")
+			.join("config")
+			.join("nvm")
+			.join("versions")
+			.join("node");
+		if let Ok(entries) = std::fs::read_dir(herd) {
+			let mut vers: Vec<PathBuf> = entries
+				.filter_map(|e| e.ok().map(|e| e.path().join("bin")))
+				.collect();
+			vers.sort();
+			dirs.extend(vers);
+		}
+	}
+	dirs.push(PathBuf::from("/opt/homebrew/bin"));
+	dirs.push(PathBuf::from("/usr/local/bin"));
+	dirs.push(PathBuf::from("/opt/local/bin"));
+	dirs
+}
+
+/// Locate a node binary able to run pi's JS entrypoint. Called when pi is a
+/// symlink-to-JS shim (npm global installs on Unix): the `#!/usr/bin/env
+/// node` shebang can't resolve node when the GUI inherited a minimal PATH, so
+/// we spawn `node script` directly. `near` is the pi shim path — npm puts
+/// node next to the shim in the same prefix bin dir.
+#[cfg(not(windows))]
+fn find_node(near: Option<&Path>) -> Option<PathBuf> {
+	if let Some(dir) = near.and_then(|s| s.parent()) {
+		let c = dir.join("node");
+		if c.is_file() {
+			return Some(c);
+		}
+	}
+	if let Some(path) = std::env::var_os("PATH") {
+		for dir in std::env::split_paths(&path) {
+			let c = dir.join("node");
+			if c.is_file() {
+				return Some(c);
+			}
+		}
+	}
+	known_bin_dirs()
+		.into_iter()
+		.find(|dir| dir.join("node").is_file())
 }
 
 /// Base `Command` for launching pi. Never goes through cmd.exe argument
@@ -3373,6 +3479,77 @@ mod tests {
 				.join("cli.js")
 		);
 		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[cfg(not(windows))]
+	#[test]
+	fn resolves_unix_js_symlink_shims() {
+		// Simulate an npm global install layout: `prefix/bin/pi` is a symlink to
+		// the package's dist/cli.js. probe_candidate must resolve it to
+		// node + script instead of relying on the `#!/usr/bin/env node` shebang,
+		// which cannot resolve node when the GUI inherits a minimal PATH.
+		let Some(node) = find_node(None) else {
+			eprintln!("node not found on this machine — skipping");
+			return;
+		};
+		let dir = std::env::temp_dir().join(format!("pi-gui-unix-shim-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let bin = dir.join("bin");
+		let dist = dir
+			.join("lib")
+			.join("node_modules")
+			.join("pkg")
+			.join("dist");
+		std::fs::create_dir_all(&bin).unwrap();
+		std::fs::create_dir_all(&dist).unwrap();
+		let script = dist.join("cli.js");
+		std::fs::write(&script, "console.log('1.2.3-test');\n").unwrap();
+		std::os::unix::fs::symlink(&script, bin.join("pi")).unwrap();
+		let info = probe_candidate(&bin.join("pi").to_string_lossy()).unwrap();
+		assert_eq!(info.version, "1.2.3-test");
+		let (node_bin, script_bin) = info.direct.as_ref().unwrap();
+		assert_eq!(Path::new(node_bin), node);
+		assert_eq!(Path::new(script_bin), script.canonicalize().unwrap());
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	/// Finder/LaunchServices launches a .app with a minimal PATH
+	/// (/usr/bin:/bin:/usr/sbin:/sbin) that contains neither pi nor node.
+	/// The probe must still find a pi that lives in one of the well-known
+	/// npm-global / nvm / brew roots, resolve its symlink-to-JS shim, and
+	/// pick a node able to run it. Skipped when no node is installed at all
+	/// (then pi could never run either way).
+	#[cfg(not(windows))]
+	#[test]
+	fn probe_finds_pi_with_minimal_path_via_known_locations() {
+		if find_node(None).is_none() {
+			eprintln!("no node found — skipping");
+			return;
+		}
+		let _g = ENV_GUARD.lock().unwrap();
+		let old_path = std::env::var_os("PATH");
+		let old_pi_bin = std::env::var_os("PI_BIN");
+		std::env::remove_var("PI_BIN");
+		// Minimal Finder-like PATH, plus a non-existent dir to prove the
+		// probe cannot be succeeding through PATH resolution.
+		std::env::set_var("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
+		let info = probe_pi_uncached();
+		match old_pi_bin {
+			Some(v) => std::env::set_var("PI_BIN", v),
+			None => std::env::remove_var("PI_BIN"),
+		}
+		match old_path {
+			Some(v) => std::env::set_var("PATH", v),
+			None => std::env::remove_var("PATH"),
+		}
+		let Some(info) = info else {
+			eprintln!("pi not installed in a known location on this machine — skipping");
+			return;
+		};
+		// Must launch node + cli.js directly: the shebang can't resolve node
+		// under the minimal PATH.
+		assert!(info.direct.is_some(), "expected node+script direct launch");
+		assert!(!info.version.is_empty());
 	}
 
 	#[test]
