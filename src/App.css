@@ -5,10 +5,10 @@
  * ------------------------------------------------------------------------- */
 
 :root {
-	--font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC",
-		"PingFang SC", "Microsoft YaHei", sans-serif;
-	--font-mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono",
-		monospace;
+	--font-sans:
+		-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei",
+		sans-serif;
+	--font-mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
 	--radius: 14px;
 	--titlebar-h: 46px;
 	--chat-max-width: 760px;
@@ -31,8 +31,9 @@
 	--sidebar-border: rgba(35, 33, 30, 0.08);
 	--sidebar-hover: rgba(35, 33, 30, 0.05);
 	--sidebar-active: #fffdfb;
-	--sidebar-active-shadow: 0 1px 2px rgba(35, 33, 30, 0.06),
-		0 3px 8px -4px rgba(35, 33, 30, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.65);
+	--sidebar-active-shadow:
+		0 1px 2px rgba(35, 33, 30, 0.06), 0 3px 8px -4px rgba(35, 33, 30, 0.12),
+		inset 0 1px 0 rgba(255, 255, 255, 0.65);
 	--panel-bg: #fbfaf8;
 	--card-bg: #ffffff;
 	--card-border: rgba(35, 33, 30, 0.1);
@@ -50,8 +51,9 @@
 	--err-bg: #fbeae7;
 	--warn: #a1712d;
 	--selection: rgba(43, 40, 36, 0.14);
-	--composer-shadow: 0 1px 2px rgba(35, 33, 30, 0.04),
-		0 8px 22px -12px rgba(35, 33, 30, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+	--composer-shadow:
+		0 1px 2px rgba(35, 33, 30, 0.04), 0 8px 22px -12px rgba(35, 33, 30, 0.16),
+		inset 0 1px 0 rgba(255, 255, 255, 0.6);
 	--menu-bg: #fffdfb;
 	--menu-border: rgba(35, 33, 30, 0.1);
 	--scrollbar-thumb: rgba(35, 33, 30, 0.16);
@@ -92,8 +94,7 @@
 	--r-lg: 14px;
 
 	/* elevation */
-	--shadow-1: 0 1px 2px rgba(35, 33, 30, 0.05),
-		0 3px 8px -4px rgba(35, 33, 30, 0.1);
+	--shadow-1: 0 1px 2px rgba(35, 33, 30, 0.05), 0 3px 8px -4px rgba(35, 33, 30, 0.1);
 	--shadow-2: 0 8px 30px -10px rgba(35, 33, 30, 0.22);
 
 	/* motion */
@@ -124,8 +125,9 @@
 	--dsh-ok: #2f9e44;
 	--dsh-err: #c0392b;
 	--dsh-warn: #e8590c;
-	--dsh-font-code: "SF Mono", "JetBrains Mono", "Fira Code", Consolas,
-		"Liberation Mono", Menlo, Courier, "PingFang SC", "Microsoft YaHei", monospace;
+	--dsh-font-code:
+		"SF Mono", "JetBrains Mono", "Fira Code", Consolas, "Liberation Mono", Menlo, Courier,
+		"PingFang SC", "Microsoft YaHei", monospace;
 	/* markdown typography — DSH scale (16/28 base) expressed in em so the
 	 * user's font-size setting scales it proportionally. Heading sizes are
 	 * relative to the markdown root's 16px base (1.5em=24px, 1.375em=22px…). */
@@ -167,8 +169,9 @@ html[data-theme="dark"] {
 	--sidebar-border: rgba(255, 255, 255, 0.07);
 	--sidebar-hover: rgba(255, 255, 255, 0.05);
 	--sidebar-active: #262626;
-	--sidebar-active-shadow: 0 1px 2px rgba(0, 0, 0, 0.3),
-		0 4px 12px -6px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+	--sidebar-active-shadow:
+		0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 12px -6px rgba(0, 0, 0, 0.5),
+		inset 0 1px 0 rgba(255, 255, 255, 0.04);
 	--panel-bg: #1a1a1a;
 	--card-bg: #242424;
 	--card-border: rgba(255, 255, 255, 0.09);
@@ -186,8 +189,9 @@ html[data-theme="dark"] {
 	--err-bg: #3a2220;
 	--warn: #d3a45c;
 	--selection: rgba(255, 255, 255, 0.16);
-	--composer-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4),
-		0 6px 20px -10px rgba(0, 0, 0, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+	--composer-shadow:
+		0 0 0 1px rgba(0, 0, 0, 0.4), 0 6px 20px -10px rgba(0, 0, 0, 0.8),
+		inset 0 1px 0 rgba(255, 255, 255, 0.04);
 	--menu-bg: #262626;
 	--menu-border: rgba(255, 255, 255, 0.1);
 	--scrollbar-thumb: rgba(255, 255, 255, 0.14);
@@ -477,7 +481,9 @@ textarea {
 	height: 26px;
 	border-radius: var(--r-sm);
 	color: var(--app-muted);
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 	flex-shrink: 0;
 }
 
@@ -505,7 +511,9 @@ textarea {
 	border-radius: var(--r-md);
 	font-size: var(--fs-sm);
 	color: var(--sidebar-muted);
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 }
 
 .nav-item:hover {
@@ -774,7 +782,9 @@ textarea {
 	border-radius: var(--r-md);
 	font-size: var(--fs-sm);
 	color: var(--sidebar-muted);
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 }
 
 .footer-btn:hover {
@@ -2018,7 +2028,8 @@ textarea {
 	border-radius: 16px;
 	padding: 10px 12px 8px;
 	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
-	transition: border-color var(--dur) var(--ease),
+	transition:
+		border-color var(--dur) var(--ease),
 		box-shadow var(--dur) var(--ease);
 	position: relative;
 }
@@ -2078,9 +2089,7 @@ textarea {
 	caret-color: var(--dsh-brand);
 	/* Keep at least two visible lines even when the auto-size shrink
 	 * logic collapses an empty/one-line draft. */
-	min-height: calc(
-		var(--ousia-chat-font-size) * var(--ousia-chat-line-height) * 2 + 8px
-	);
+	min-height: calc(var(--ousia-chat-font-size) * var(--ousia-chat-line-height) * 2 + 8px);
 	max-height: 180px;
 	overflow-y: auto;
 	display: block;
@@ -2142,7 +2151,9 @@ textarea {
 	border-radius: var(--r-md);
 	font-size: var(--fs-sm);
 	color: var(--text-2);
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 	max-width: 190px;
 }
 
@@ -2269,7 +2280,9 @@ textarea {
 	border-radius: 50%;
 	background: var(--accent);
 	color: var(--accent-fg);
-	transition: filter var(--dur) var(--ease), transform 50ms var(--ease);
+	transition:
+		filter var(--dur) var(--ease),
+		transform 50ms var(--ease);
 }
 
 .send-btn:hover:not(:disabled) {
@@ -2369,7 +2382,9 @@ textarea {
 	border-radius: var(--r-md);
 	font-size: var(--fs-sm);
 	color: var(--sidebar-muted);
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 }
 
 .settings-back:hover {
@@ -2407,7 +2422,9 @@ textarea {
 	font-size: var(--fs-sm);
 	text-align: left;
 	color: var(--sidebar-muted);
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 }
 
 .settings-nav-item:hover {
@@ -2579,7 +2596,9 @@ textarea {
 	border-radius: var(--r-sm);
 	font-size: var(--fs-sm);
 	color: var(--app-muted);
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 }
 
 .segmented button.active {
@@ -2603,7 +2622,9 @@ textarea {
 	border: 1px solid var(--card-border);
 	border-radius: var(--r-md);
 	font-size: var(--fs-sm);
-	transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+	transition:
+		border-color var(--dur) var(--ease),
+		background var(--dur) var(--ease);
 }
 
 .color-scale:hover {
@@ -2875,7 +2896,9 @@ textarea {
 	border-radius: var(--r-md);
 	font-size: var(--fs-sm);
 	text-align: left;
-	transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		border-color var(--dur) var(--ease);
 }
 
 .extension-option:hover {
@@ -2895,7 +2918,9 @@ textarea {
 	border-radius: var(--r-md);
 	font-size: var(--fs-sm);
 	font-weight: 550;
-	transition: filter var(--dur) var(--ease), background var(--dur) var(--ease);
+	transition:
+		filter var(--dur) var(--ease),
+		background var(--dur) var(--ease);
 }
 
 .btn.primary {
@@ -3034,7 +3059,9 @@ textarea {
 	font-size: var(--fs-sm);
 	color: var(--text-2);
 	max-width: 240px;
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 }
 
 .composer-chip:hover:not(:disabled) {
@@ -3192,7 +3219,8 @@ textarea {
 	border: 1px solid transparent;
 	border-radius: var(--r-md);
 	color: var(--text-3);
-	transition: background var(--dur) var(--ease),
+	transition:
+		background var(--dur) var(--ease),
 		border-color var(--dur) var(--ease);
 }
 
@@ -3603,7 +3631,9 @@ textarea {
 	background: var(--hover);
 	border-radius: var(--r-md);
 	padding: var(--sp-2) var(--sp-3);
-	transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+	transition:
+		border-color var(--dur) var(--ease),
+		background var(--dur) var(--ease);
 	border: 1px solid transparent;
 }
 
@@ -3875,7 +3905,9 @@ textarea {
 	border: 1px solid var(--dsh-border-l2);
 	color: var(--dsh-fg-secondary);
 	cursor: pointer;
-	transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+	transition:
+		color var(--dur) var(--ease),
+		border-color var(--dur) var(--ease);
 }
 
 .fork-btn:hover {
@@ -3929,7 +3961,9 @@ textarea {
 	border-radius: var(--r-sm);
 	color: var(--sidebar-muted);
 	opacity: 0;
-	transition: opacity var(--dur) var(--ease), color var(--dur) var(--ease),
+	transition:
+		opacity var(--dur) var(--ease),
+		color var(--dur) var(--ease),
 		background var(--dur) var(--ease);
 }
 
@@ -4057,6 +4091,73 @@ textarea {
 	padding: 0 var(--sp-2);
 }
 
+/* ---- macOS traffic lights (left) ---- */
+.traffic-lights {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 0 10px 0 13px;
+}
+
+.tl-btn {
+	width: 12px;
+	height: 12px;
+	padding: 0;
+	border: none;
+	border-radius: 50%;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: default;
+	appearance: none;
+	-webkit-appearance: none;
+	transition: filter var(--dur) var(--ease);
+}
+
+.tl-btn svg {
+	opacity: 0;
+	transition: opacity 0.12s var(--ease);
+	pointer-events: none;
+}
+
+.tl-btn:hover svg {
+	opacity: 1;
+}
+
+.tl-btn:active {
+	filter: brightness(0.82);
+}
+
+.tl-close {
+	background: #ff5f57;
+	box-shadow:
+		inset 0 0 0 0.5px rgba(0, 0, 0, 0.1),
+		0 0.5px 1.5px rgba(0, 0, 0, 0.22);
+}
+.tl-close svg {
+	color: #4d0000;
+}
+
+.tl-min {
+	background: #febc2e;
+	box-shadow:
+		inset 0 0 0 0.5px rgba(0, 0, 0, 0.1),
+		0 0.5px 1.5px rgba(0, 0, 0, 0.22);
+}
+.tl-min svg {
+	color: #985712;
+}
+
+.tl-zoom {
+	background: #28c840;
+	box-shadow:
+		inset 0 0 0 0.5px rgba(0, 0, 0, 0.1),
+		0 0.5px 1.5px rgba(0, 0, 0, 0.22);
+}
+.tl-zoom svg {
+	color: #006500;
+}
+
 .titlebar-sidebar-btn,
 .titlebar-menu-btn {
 	display: inline-flex;
@@ -4066,7 +4167,9 @@ textarea {
 	line-height: 1;
 	border-radius: var(--r-sm);
 	color: var(--text-2);
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 }
 
 .titlebar-sidebar-btn {
@@ -4139,7 +4242,9 @@ textarea {
 	align-items: center;
 	justify-content: center;
 	color: var(--text-2);
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 }
 
 .win-btn:hover {
@@ -4193,7 +4298,9 @@ textarea {
 	color: var(--text-2);
 	background: var(--hover);
 	cursor: grab;
-	transition: opacity var(--dur) var(--ease), background var(--dur) var(--ease);
+	transition:
+		opacity var(--dur) var(--ease),
+		background var(--dur) var(--ease);
 }
 
 .queue-item:hover {
@@ -4333,7 +4440,9 @@ textarea {
 	font-size: var(--fs-sm);
 	color: var(--text-2);
 	text-align: left;
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 }
 
 .slash-item:hover,
@@ -4468,7 +4577,9 @@ textarea {
 	border-radius: 999px;
 	background: var(--text-3);
 	opacity: 0.45;
-	transition: background var(--dur) var(--ease), opacity var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		opacity var(--dur) var(--ease);
 	flex-shrink: 0;
 }
 
@@ -4522,7 +4633,9 @@ textarea {
 	border-radius: 999px;
 	background: var(--text-3);
 	opacity: 0.5;
-	transition: background var(--dur) var(--ease), opacity var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		opacity var(--dur) var(--ease);
 	display: inline-block;
 }
 
@@ -4625,7 +4738,11 @@ textarea {
 	width: 100%;
 	min-height: 3px;
 	border-radius: 3px 3px 0 0;
-	background: linear-gradient(to top, var(--link), color-mix(in srgb, var(--link) 55%, var(--status-ok)));
+	background: linear-gradient(
+		to top,
+		var(--link),
+		color-mix(in srgb, var(--link) 55%, var(--status-ok))
+	);
 	opacity: 0.85;
 	transition: opacity var(--dur) var(--ease);
 }
@@ -5276,7 +5393,9 @@ textarea {
 	color: var(--text-2);
 	cursor: pointer;
 	user-select: none;
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 }
 
 .excluded-tool-chip input {

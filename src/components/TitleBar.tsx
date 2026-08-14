@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { MessageCatalog } from "../i18n";
-import { MOD_KEY } from "../platform";
+import { MOD_KEY, isMac } from "../platform";
 import {
 	MaximizeIcon,
 	MinusIcon,
@@ -13,20 +13,42 @@ import {
 
 /** Mirrors the (non-exported) ResizeDirection union in @tauri-apps/api. */
 type ResizeDirection =
-	| "East"
-	| "North"
-	| "NorthEast"
-	| "NorthWest"
-	| "South"
-	| "SouthEast"
-	| "SouthWest"
-	| "West";
+	"East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
 
 const appWindow = getCurrentWindow();
 
+/** macOS traffic-light glyphs (only visible while hovering). */
+const TRAFFIC_SVG = {
+	close: (
+		<svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
+			<path
+				d="M3.2 3.2l5.6 5.6M8.8 3.2l-5.6 5.6"
+				stroke="currentColor"
+				strokeWidth="1.3"
+				strokeLinecap="round"
+			/>
+		</svg>
+	),
+	minimize: (
+		<svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
+			<path d="M2.5 6h7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+		</svg>
+	),
+	zoom: (
+		<svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
+			<path
+				d="M2.5 2.5h7v7M3.3 8.7 8.7 3.3"
+				stroke="currentColor"
+				strokeWidth="1.15"
+				strokeLinecap="round"
+				strokeLinejoin="round"
+			/>
+		</svg>
+	),
+};
+
 type MenuEntry =
-	| { kind: "item"; label: string; shortcut?: string; action: () => void }
-	| { kind: "sep" };
+	{ kind: "item"; label: string; shortcut?: string; action: () => void } | { kind: "sep" };
 
 /**
  * Text-edit menu commands. `document.execCommand` is deprecated but still
@@ -123,7 +145,12 @@ export function TitleBar({
 			id: "app",
 			label: t.menu.app,
 			entries: [
-				{ kind: "item", label: t.menu.newWindow, shortcut: `${MOD_KEY}Shift+N`, action: onNewWindow },
+				{
+					kind: "item",
+					label: t.menu.newWindow,
+					shortcut: `${MOD_KEY}Shift+N`,
+					action: onNewWindow,
+				},
 				{ kind: "sep" },
 				{ kind: "item", label: t.menu.about, action: onOpenSettings },
 			],
@@ -132,13 +159,38 @@ export function TitleBar({
 			id: "edit",
 			label: t.menu.edit,
 			entries: [
-				{ kind: "item", label: t.menu.undo, shortcut: `${MOD_KEY}Z`, action: () => editCmd("undo") },
-				{ kind: "item", label: t.menu.redo, shortcut: `${MOD_KEY}Y`, action: () => editCmd("redo") },
+				{
+					kind: "item",
+					label: t.menu.undo,
+					shortcut: `${MOD_KEY}Z`,
+					action: () => editCmd("undo"),
+				},
+				{
+					kind: "item",
+					label: t.menu.redo,
+					shortcut: `${MOD_KEY}Y`,
+					action: () => editCmd("redo"),
+				},
 				{ kind: "sep" },
 				{ kind: "item", label: t.menu.cut, shortcut: `${MOD_KEY}X`, action: () => editCmd("cut") },
-				{ kind: "item", label: t.menu.copy, shortcut: `${MOD_KEY}C`, action: () => editCmd("copy") },
-				{ kind: "item", label: t.menu.paste, shortcut: `${MOD_KEY}V`, action: () => editCmd("paste") },
-				{ kind: "item", label: t.menu.selectAll, shortcut: `${MOD_KEY}A`, action: () => editCmd("selectAll") },
+				{
+					kind: "item",
+					label: t.menu.copy,
+					shortcut: `${MOD_KEY}C`,
+					action: () => editCmd("copy"),
+				},
+				{
+					kind: "item",
+					label: t.menu.paste,
+					shortcut: `${MOD_KEY}V`,
+					action: () => editCmd("paste"),
+				},
+				{
+					kind: "item",
+					label: t.menu.selectAll,
+					shortcut: `${MOD_KEY}A`,
+					action: () => editCmd("selectAll"),
+				},
 			],
 		},
 		{
@@ -149,9 +201,7 @@ export function TitleBar({
 				...(onOpenSessionInfo
 					? [{ kind: "item" as const, label: t.chat.sessionInfo, action: onOpenSessionInfo }]
 					: []),
-				...(onOpenTree
-					? [{ kind: "item" as const, label: t.chat.tree, action: onOpenTree }]
-					: []),
+				...(onOpenTree ? [{ kind: "item" as const, label: t.chat.tree, action: onOpenTree }] : []),
 			],
 		},
 	];
@@ -170,28 +220,54 @@ export function TitleBar({
 			))}
 			<div className="titlebar" ref={rootRef}>
 				<div className="titlebar-left">
+					{isMac && (
+						<div className="traffic-lights">
+							<button
+								className="tl-btn tl-close"
+								title={t.menu.close}
+								aria-label={t.menu.close}
+								onClick={() => void appWindow.close()}
+							>
+								{TRAFFIC_SVG.close}
+							</button>
+							<button
+								className="tl-btn tl-min"
+								title={t.menu.minimize}
+								aria-label={t.menu.minimize}
+								onClick={() => void appWindow.minimize()}
+							>
+								{TRAFFIC_SVG.minimize}
+							</button>
+							<button
+								className="tl-btn tl-zoom"
+								title={t.menu.fullscreen}
+								aria-label={t.menu.fullscreen}
+								onClick={(e) => {
+									// macOS native green-button convention: click toggles
+									// fullscreen; Option+click zooms (fills the work area
+									// without the fullscreen space / menu bar).
+									if (e.altKey) void appWindow.toggleMaximize();
+									else void toggleFullscreen();
+								}}
+							>
+								{TRAFFIC_SVG.zoom}
+							</button>
+						</div>
+					)}
 					<button
 						className="titlebar-sidebar-btn"
-						title={
-							sidebarCollapsed ? t.sidebar.expand : t.sidebar.collapse
-						}
+						title={sidebarCollapsed ? t.sidebar.expand : t.sidebar.collapse}
 						onClick={onToggleSidebar}
 						onMouseEnter={onPeekSidebar}
 						onMouseLeave={onPeekSidebarLeave}
 					>
-						{sidebarCollapsed ? (
-							<PanelLeftOpenIcon size={15} />
-						) : (
-							<PanelLeftCloseIcon size={15} />
-						)}
+						{sidebarCollapsed ? <PanelLeftOpenIcon size={15} /> : <PanelLeftCloseIcon size={15} />}
 					</button>
 					{menus.map((menu) => (
 						<div className="titlebar-menu" key={menu.id}>
 							<button
 								className={`titlebar-menu-btn${openMenu === menu.id ? " open" : ""}`}
-								onClick={() =>
-									setOpenMenu((v) => (v === menu.id ? null : menu.id))
-								}
+								onClick={() => setOpenMenu((v) => (v === menu.id ? null : menu.id))}
 								onMouseEnter={() => {
 									if (openMenu && openMenu !== menu.id) setOpenMenu(menu.id);
 								}}
@@ -238,33 +314,31 @@ export function TitleBar({
 						</div>
 					)}
 				</div>
-				<div className="titlebar-controls">
-					<button
-						className="win-btn"
-						title={t.menu.minimize}
-						onClick={() => void appWindow.minimize()}
-					>
-						<MinusIcon size={13} />
-					</button>
-					<button
-						className="win-btn"
-						title={t.menu.maximize}
-						onClick={() => void appWindow.toggleMaximize()}
-					>
-						{maximized ? (
-							<RestoreWindowIcon size={12} />
-						) : (
-							<MaximizeIcon size={12} />
-						)}
-					</button>
-					<button
-						className="win-btn close"
-						title={t.menu.close}
-						onClick={() => void appWindow.close()}
-					>
-						<XIcon size={13} />
-					</button>
-				</div>
+				{!isMac && (
+					<div className="titlebar-controls">
+						<button
+							className="win-btn"
+							title={t.menu.minimize}
+							onClick={() => void appWindow.minimize()}
+						>
+							<MinusIcon size={13} />
+						</button>
+						<button
+							className="win-btn"
+							title={t.menu.maximize}
+							onClick={() => void appWindow.toggleMaximize()}
+						>
+							{maximized ? <RestoreWindowIcon size={12} /> : <MaximizeIcon size={12} />}
+						</button>
+						<button
+							className="win-btn close"
+							title={t.menu.close}
+							onClick={() => void appWindow.close()}
+						>
+							<XIcon size={13} />
+						</button>
+					</div>
+				)}
 			</div>
 		</>
 	);
