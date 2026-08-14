@@ -48,7 +48,7 @@ export function ScopedModelsDialog({
 			<div className="extension-dialog scoped-models-dialog">
 				<div className="tree-dialog-header">
 					<h3>{t.scopedModels.title}</h3>
-					<button className="icon-btn" title={t.app.close} onClick={onClose}>
+					<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={onClose}>
 						<XIcon size={15} />
 					</button>
 				</div>

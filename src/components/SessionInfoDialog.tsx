@@ -66,7 +66,7 @@ export function SessionInfoDialog({
 			{copyKey && (
 				<button
 					className="icon-btn session-info-copy"
-					title={t.chat.copy}
+					title={t.chat.copy} aria-label={t.chat.copy}
 					onClick={() => void copy(copyKey, value)}
 				>
 					{copied === copyKey ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
@@ -83,7 +83,7 @@ export function SessionInfoDialog({
 			<div className="extension-dialog session-info-dialog">
 				<div className="tree-dialog-header">
 					<h3>{t.chat.sessionInfo}</h3>
-					<button className="icon-btn" title={t.app.close} onClick={onClose}>
+					<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={onClose}>
 						<XIcon size={15} />
 					</button>
 				</div>
@@ -166,7 +166,7 @@ export function SessionInfoDialog({
 							{stats.contextUsage && (
 								<Row
 									label={t.sessionInfo.context}
-									value={`${stats.contextUsage.tokens.toLocaleString()} / ${stats.contextUsage.contextWindow.toLocaleString()} (${stats.contextUsage.percent}%)`}
+									value={`${stats.contextUsage.tokens.toLocaleString()} / ${stats.contextUsage.contextWindow.toLocaleString()} (${Math.round(stats.contextUsage.percent)}%)`}
 								/>
 							)}
 						</>

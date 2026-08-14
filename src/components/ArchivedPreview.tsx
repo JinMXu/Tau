@@ -166,7 +166,7 @@ export function ArchivedPreview({
 								>
 									<ChevronDownIcon size={14} />
 								</button>
-								<button className="icon-btn" title={t.app.close} onClick={closeSearch}>
+								<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={closeSearch}>
 									<XIcon size={14} />
 								</button>
 								<span className="menu-sep" />
@@ -202,7 +202,7 @@ export function ArchivedPreview({
 						</button>
 						<button
 							className="icon-btn"
-							title={t.app.close}
+							title={t.app.close} aria-label={t.app.close}
 							onClick={onClose}
 						>
 							<XIcon size={16} />

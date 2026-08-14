@@ -19,6 +19,10 @@ fn log_path(app: &AppHandle) -> PathBuf {
 		.join("tau.log")
 }
 
+/// Rotate the log once it exceeds this size, so a long-running app can't grow
+/// it without bound (the 15s heartbeat alone would add ~4 MB/month).
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+
 pub fn log(app: &AppHandle, level: &str, message: &str) {
 	let _guard = match LOG_MUTEX.lock() {
 		Ok(g) => g,
@@ -27,6 +31,13 @@ pub fn log(app: &AppHandle, level: &str, message: &str) {
 	let path = log_path(app);
 	if let Some(dir) = path.parent() {
 		let _ = fs::create_dir_all(dir);
+	}
+	// Single-level rotation: once past the cap, keep the previous log as
+	// `tau.log.1` and start fresh.
+	if fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_LOG_BYTES {
+		let backup = path.with_extension("log.1");
+		let _ = fs::remove_file(&backup);
+		let _ = fs::rename(&path, &backup);
 	}
 	let now = SystemTime::now()
 		.duration_since(UNIX_EPOCH)

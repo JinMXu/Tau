@@ -73,7 +73,7 @@ export function HotkeysDialog({
 			<div className="extension-dialog hotkeys-dialog">
 				<div className="tree-dialog-header">
 					<h3>{t.hotkeys.title}</h3>
-					<button className="icon-btn" title={t.app.close} onClick={onClose}>
+					<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={onClose}>
 						<XIcon size={15} />
 					</button>
 				</div>

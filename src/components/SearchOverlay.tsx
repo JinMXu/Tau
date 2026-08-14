@@ -20,6 +20,7 @@ export function SearchOverlay({
 	const [active, setActive] = useState(0);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const timerRef = useRef<number>(0);
+	const reqIdRef = useRef(0);
 
 	useEffect(() => {
 		if (open) {
@@ -39,15 +40,20 @@ export function SearchOverlay({
 			return;
 		}
 		setLoading(true);
+		// Monotonic request id so a slower, older scan can't overwrite a newer
+		// query's results when responses arrive out of order.
+		const reqId = ++reqIdRef.current;
 		timerRef.current = window.setTimeout(async () => {
 			try {
 				const result = await searchSessions(q, 30);
+				if (reqIdRef.current !== reqId) return;
 				setHits(result);
 				setActive(0);
 			} catch {
+				if (reqIdRef.current !== reqId) return;
 				setHits([]);
 			} finally {
-				setLoading(false);
+				if (reqIdRef.current === reqId) setLoading(false);
 			}
 		}, 180);
 		return () => window.clearTimeout(timerRef.current);

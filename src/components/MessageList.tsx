@@ -361,7 +361,7 @@ export function TurnWaitIndicator({ t }: { t: MessageCatalog }) {
 	);
 }
 
-export function MessageList({
+export const MessageList = memo(function MessageList({
 	messages,
 	streaming,
 	autoScroll,
@@ -384,6 +384,7 @@ export function MessageList({
 	// Start "stuck" so the view lands at the latest message when a session
 	// (or history) is loaded; only the user's own scrolling can unstick it.
 	const stickRef = useRef(true);
+	const copyTimerRef = useRef<number>(0);
 
 	// The ref element (`.messages`) grows with content; the actual scroll
 	// container is its parent `.chat-scroll`, so scroll that instead.
@@ -495,7 +496,8 @@ export function MessageList({
 			try {
 				await navigator.clipboard.writeText(content);
 				setCopiedId(key);
-				window.setTimeout(() => {
+				window.clearTimeout(copyTimerRef.current);
+				copyTimerRef.current = window.setTimeout(() => {
 					setCopiedId((cur) => (cur === key ? null : cur));
 				}, 1200);
 			} catch {
@@ -505,12 +507,24 @@ export function MessageList({
 		[],
 	);
 
-	// Scroll the active search hit into view.
+	// Clear the copied-indicator timer on unmount.
+	useEffect(() => () => window.clearTimeout(copyTimerRef.current), []);
+
+	// Scroll the active search hit into view within the chat scroller (its
+	// parent `.chat-scroll`), not via scrollIntoView (which can also scroll
+	// ancestor containers).
 	useEffect(() => {
 		if (searchActiveMessageId == null) return;
 		const el = msgElsRef.current.get(searchActiveMessageId);
-		if (el) {
-			el.scrollIntoView({ block: "center", behavior: "smooth" });
+		const scroller = scrollRef.current?.parentElement;
+		if (el && scroller) {
+			const elRect = el.getBoundingClientRect();
+			const scrollerRect = scroller.getBoundingClientRect();
+			const top =
+				scroller.scrollTop +
+				(elRect.top - scrollerRect.top) -
+				(scrollerRect.height - elRect.height) / 2;
+			scroller.scrollTo({ top, behavior: "smooth" });
 		}
 	}, [searchActiveMessageId]);
 
@@ -676,4 +690,4 @@ export function MessageList({
 			})}
 		</div>
 	);
-}
+});

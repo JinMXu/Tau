@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { MessageCatalog } from "../i18n";
+import { projectNameFromPath, type MessageCatalog } from "../i18n";
 import { usageStats, type PiUsageEntry } from "../pi";
 
 /** 1234 → "1.2k", 1234567 → "1.23M" */
@@ -23,13 +23,6 @@ function localDayKey(utcDate: string): string {
 	const d = new Date(`${utcDate}T00:00:00Z`);
 	if (Number.isNaN(d.getTime())) return utcDate;
 	return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-
-function projectLabel(path: string | null): string {
-	if (!path) return "—";
-	const normalized = path.replace(/[\\/]+$/, "");
-	const parts = normalized.split(/[\\/]/);
-	return parts[parts.length - 1] || normalized;
 }
 
 export function UsageStats({ t }: { t: MessageCatalog }) {
@@ -184,7 +177,7 @@ export function UsageStats({ t }: { t: MessageCatalog }) {
 				{agg.byProject.map(([name, v]) => (
 					<div className="usage-row" key={name}>
 						<span className="usage-row-name" title={name}>
-							{projectLabel(name)}
+							{projectNameFromPath(name) || "—"}
 						</span>
 						<div className="usage-row-track">
 							<div

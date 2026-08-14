@@ -33,12 +33,7 @@ pub struct PiProviderInfo {
 }
 
 fn pi_agent_dir() -> PathBuf {
-	if let Some(dir) = std::env::var_os("PI_AGENT_DIR") {
-		return PathBuf::from(dir);
-	}
-	pi::home_dir()
-		.map(|h| h.join(".pi").join("agent"))
-		.unwrap_or_else(|| PathBuf::from(".pi/agent"))
+	pi::agent_dir()
 }
 
 fn auth_file_path() -> PathBuf {
@@ -52,8 +47,7 @@ fn auth_file_path() -> PathBuf {
 /// and `/logout` dialogs enumerate.
 #[tauri::command]
 pub fn pi_providers() -> Result<Vec<PiProviderInfo>, String> {
-	let mut merged: std::collections::BTreeMap<String, bool> =
-		std::collections::BTreeMap::new();
+	let mut merged: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
 
 	// 1) Built-in catalog: pi-ai ships one JSON file per provider.
 	if let Some(dir) = pi_ai_providers_data_dir() {
@@ -107,7 +101,9 @@ fn pi_ai_providers_data_dir() -> Option<PathBuf> {
 	if let Some(prefix) = pkg.parent().and_then(Path::parent) {
 		candidates.push(data(prefix));
 	}
-	candidates.into_iter().find(|d| d.join(".manifest.json").is_file())
+	candidates
+		.into_iter()
+		.find(|d| d.join(".manifest.json").is_file())
 }
 
 /// Provider ids from the catalog: the manifest's `files` map (file name minus
@@ -192,7 +188,11 @@ pub fn pi_auth_status() -> Result<Vec<AuthProviderStatus>, String> {
 					.get("access")
 					.map(|v| v.as_str().is_some_and(|s| !s.is_empty()))
 					.unwrap_or(false);
-			AuthProviderStatus { provider: provider.clone(), has_key, kind }
+			AuthProviderStatus {
+				provider: provider.clone(),
+				has_key,
+				kind,
+			}
 		})
 		.collect())
 }
@@ -208,7 +208,10 @@ pub fn pi_auth_set_key(provider: String, key: String) -> Result<(), String> {
 		.lock()
 		.map_err(|e| format!("auth lock poisoned: {e}"))?;
 	let mut map = read_auth_map();
-	map.insert(provider, serde_json::json!({ "type": "api_key", "key": key }));
+	map.insert(
+		provider,
+		serde_json::json!({ "type": "api_key", "key": key }),
+	);
 	write_auth_map(&map)
 }
 
@@ -256,7 +259,10 @@ fn run_git(project: &str, args: &[&str]) -> Result<String, String> {
 
 fn git_branch_state_sync(project: &str) -> Result<GitBranchState, String> {
 	let work_tree = run_git(project, &["rev-parse", "--is-inside-work-tree"]);
-	let is_repository = work_tree.as_deref().map(|s| s.trim() == "true").unwrap_or(false);
+	let is_repository = work_tree
+		.as_deref()
+		.map(|s| s.trim() == "true")
+		.unwrap_or(false);
 	if !is_repository {
 		return Ok(GitBranchState {
 			is_repository: false,
@@ -265,14 +271,17 @@ fn git_branch_state_sync(project: &str) -> Result<GitBranchState, String> {
 			dirty_file_count: 0,
 		});
 	}
-	let branches = run_git(project, &["for-each-ref", "--format=%(refname:short)", "refs/heads"])
-		.map(|s| {
-			s.lines()
-				.map(|l| l.trim().to_string())
-				.filter(|l| !l.is_empty())
-				.collect::<Vec<_>>()
-		})
-		.unwrap_or_default();
+	let branches = run_git(
+		project,
+		&["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+	)
+	.map(|s| {
+		s.lines()
+			.map(|l| l.trim().to_string())
+			.filter(|l| !l.is_empty())
+			.collect::<Vec<_>>()
+	})
+	.unwrap_or_default();
 	let current_branch = run_git(project, &["branch", "--show-current"])
 		.ok()
 		.map(|s| s.trim().to_string())
@@ -280,7 +289,12 @@ fn git_branch_state_sync(project: &str) -> Result<GitBranchState, String> {
 	let dirty_file_count = run_git(project, &["status", "--porcelain=v1"])
 		.map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
 		.unwrap_or(0);
-	Ok(GitBranchState { is_repository: true, branches, current_branch, dirty_file_count })
+	Ok(GitBranchState {
+		is_repository: true,
+		branches,
+		current_branch,
+		dirty_file_count,
+	})
 }
 
 #[tauri::command]
@@ -300,7 +314,10 @@ fn validate_branch_name(project: &str, branch: &str) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn git_checkout_branch(project: String, branch: String) -> Result<GitBranchState, String> {
+pub async fn git_checkout_branch(
+	project: String,
+	branch: String,
+) -> Result<GitBranchState, String> {
 	tauri::async_runtime::spawn_blocking(move || {
 		let name = validate_branch_name(&project, &branch)?;
 		run_git(&project, &["switch", &name])?;
@@ -360,7 +377,11 @@ fn run_pi_cli(args: &[&str]) -> Result<String, String> {
 	let stdout = String::from_utf8_lossy(&out.stdout).to_string();
 	if !out.status.success() {
 		let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-		return Err(if stderr.is_empty() { stdout.trim().to_string() } else { stderr });
+		return Err(if stderr.is_empty() {
+			stdout.trim().to_string()
+		} else {
+			stderr
+		});
 	}
 	Ok(stdout)
 }
@@ -505,7 +526,9 @@ fn scan_skill_dir_at(dir: &Path, location: &str, out: &mut Vec<PiSkillEntry>, de
 	if depth > 6 {
 		return;
 	}
-	let Ok(entries) = fs::read_dir(dir) else { return };
+	let Ok(entries) = fs::read_dir(dir) else {
+		return;
+	};
 	for entry in entries.flatten() {
 		let path = entry.path();
 		let Ok(ft) = entry.file_type() else { continue };
@@ -515,11 +538,21 @@ fn scan_skill_dir_at(dir: &Path, location: &str, out: &mut Vec<PiSkillEntry>, de
 				let description = fs::read_to_string(path.join("SKILL.md"))
 					.ok()
 					.and_then(|text| {
-						text.lines().find(|l| l.starts_with("description:"))
-							.map(|l| l.trim_start_matches("description:").trim().trim_matches('"').to_string())
+						text.lines()
+							.find(|l| l.starts_with("description:"))
+							.map(|l| {
+								l.trim_start_matches("description:")
+									.trim()
+									.trim_matches('"')
+									.to_string()
+							})
 					})
 					.filter(|d| !d.is_empty());
-				out.push(PiSkillEntry { name, description, location: location.to_string() });
+				out.push(PiSkillEntry {
+					name,
+					description,
+					location: location.to_string(),
+				});
 			} else if entry.file_name() != "node_modules" {
 				scan_skill_dir_at(&path, location, out, depth + 1);
 			}
@@ -547,7 +580,9 @@ fn scan_skill_dir_at(dir: &Path, location: &str, out: &mut Vec<PiSkillEntry>, de
 /// Takes the package list as an argument so the frontend only needs to run
 /// `pi list` once instead of twice when opening the settings panel.
 #[tauri::command]
-pub async fn pi_installed_skills(packages: Vec<PiPackageEntry>) -> Result<Vec<PiSkillEntry>, String> {
+pub async fn pi_installed_skills(
+	packages: Vec<PiPackageEntry>,
+) -> Result<Vec<PiSkillEntry>, String> {
 	run_blocking(move || {
 		let mut out: Vec<PiSkillEntry> = Vec::new();
 		let agent_dir = pi_agent_dir();
@@ -581,17 +616,16 @@ pub async fn pi_move_session(
 	if new_project.is_empty() {
 		return Err("target directory must not be empty".into());
 	}
-	let canonical = fs::canonicalize(&new_project)
-		.map_err(|e| format!("invalid target directory: {e}"))?;
+	let canonical =
+		fs::canonicalize(&new_project).map_err(|e| format!("invalid target directory: {e}"))?;
 	// Rewriting a large session file (with big base64 image lines) takes a
 	// moment; keep it off the UI thread. Lines are streamed with a size cap:
 	// oversized lines are copied through verbatim so memory stays bounded
 	// and the file is never corrupted.
 	run_blocking(move || {
-		let file = fs::File::open(&path)
-			.map_err(|e| format!("failed to read session: {e}"))?;
+		let file = fs::File::open(&path).map_err(|e| format!("failed to read session: {e}"))?;
 		let mut reader = BufReader::new(file);
-		let tmp = path.with_extension("jsonl.tmp");
+		let tmp = path.with_extension(format!("jsonl.{}.tmp", pi::unique_suffix()));
 		let mut writer = BufWriter::new(
 			fs::File::create(&tmp).map_err(|e| format!("failed to write session: {e}"))?,
 		);
@@ -659,13 +693,14 @@ pub async fn pi_move_session(
 		if !changed {
 			return Err("session header not found in file".into());
 		}
-		writer.flush().map_err(|e| format!("failed to write session: {e}"))?;
+		writer
+			.flush()
+			.map_err(|e| format!("failed to write session: {e}"))?;
 		fs::rename(&tmp, &path).map_err(|e| format!("failed to persist session: {e}"))?;
 		Ok(())
 	})
 	.await
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -673,8 +708,7 @@ mod tests {
 
 	#[test]
 	fn catalog_ids_from_manifest_and_fallback() {
-		let dir =
-			std::env::temp_dir().join(format!("pi-gui-catalog-test-{}", std::process::id()));
+		let dir = std::env::temp_dir().join(format!("pi-gui-catalog-test-{}", std::process::id()));
 		std::fs::create_dir_all(&dir).unwrap();
 		// Manifest path: ids come from the `files` map (no .json suffix).
 		std::fs::write(
@@ -708,10 +742,8 @@ mod tests {
 		let _ = pi_auth_set_key("anthropic".into(), "sk-ant-test".into());
 
 		let providers = pi_providers().unwrap();
-		let by_id: std::collections::HashMap<&str, bool> = providers
-			.iter()
-			.map(|p| (p.id.as_str(), p.known))
-			.collect();
+		let by_id: std::collections::HashMap<&str, bool> =
+			providers.iter().map(|p| (p.id.as_str(), p.known)).collect();
 		// Custom provider from models.json is present and marked unknown.
 		assert_eq!(by_id.get("ollama"), Some(&false));
 		// Stored credential is present even without a catalog entry.
@@ -776,8 +808,7 @@ mod tests {
 		let _guard = crate::pi::ENV_GUARD.lock().unwrap();
 		let old_agent_dir = std::env::var_os("PI_AGENT_DIR");
 		// Point the agent dir at a temp folder so the real auth.json is untouched.
-		let dir =
-			std::env::temp_dir().join(format!("pi-gui-auth-test-{}", std::process::id()));
+		let dir = std::env::temp_dir().join(format!("pi-gui-auth-test-{}", std::process::id()));
 		std::fs::create_dir_all(&dir).unwrap();
 		std::env::set_var("PI_AGENT_DIR", &dir);
 
@@ -785,11 +816,9 @@ mod tests {
 		let _ = pi_auth_set_key("openai".into(), "sk-openai-test".into());
 		let statuses = pi_auth_status().unwrap();
 		assert_eq!(statuses.len(), 2);
-		assert!(
-			statuses
-				.iter()
-				.any(|s| s.provider == "anthropic" && s.has_key)
-		);
+		assert!(statuses
+			.iter()
+			.any(|s| s.provider == "anthropic" && s.has_key));
 		assert!(statuses.iter().any(|s| s.provider == "openai" && s.has_key));
 
 		let _ = pi_auth_remove("anthropic".into());
@@ -819,7 +848,9 @@ mod tests {
 
 		let mut out = Vec::new();
 		scan_skill_dir(&dir.join("skills"), "user", &mut out);
-		assert!(out.iter().any(|s| s.name == "my-skill" && s.description.as_deref() == Some("A test skill")));
+		assert!(out
+			.iter()
+			.any(|s| s.name == "my-skill" && s.description.as_deref() == Some("A test skill")));
 		assert!(out.iter().any(|s| s.name == "notes.md"));
 
 		std::fs::remove_dir_all(&dir).ok();
@@ -830,7 +861,8 @@ mod tests {
 		let dir = std::env::temp_dir().join(format!("pi-gui-git-test-{}", std::process::id()));
 		std::fs::create_dir_all(&dir).unwrap();
 		let state =
-		tauri::async_runtime::block_on(git_branch_state(dir.to_string_lossy().into_owned())).unwrap();
+			tauri::async_runtime::block_on(git_branch_state(dir.to_string_lossy().into_owned()))
+				.unwrap();
 		assert!(!state.is_repository);
 		assert!(state.branches.is_empty());
 		std::fs::remove_dir_all(&dir).ok();

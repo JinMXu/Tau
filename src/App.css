@@ -327,6 +327,18 @@ textarea {
 	min-height: 0;
 }
 
+/* Chat panel stays mounted while the settings view is open so the composer
+ * draft (text + attachments) survives the round-trip. */
+.chat-area-shell {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+}
+
+.chat-area-shell.hidden {
+	display: none;
+}
+
 /* ============================ Sidebar ============================ */
 .sidebar-shell {
 	flex-shrink: 0;
@@ -2678,14 +2690,14 @@ textarea {
 .composer-chip {
 	display: inline-flex;
 	align-items: center;
-	gap: 5px;
+	gap: 6px;
 	background: transparent;
 	border: none;
 	border-radius: var(--r-md);
-	padding: 3px 6px;
-	font-size: var(--fs-xs);
+	padding: 4px 8px;
+	font-size: var(--fs-sm);
 	color: var(--text-2);
-	max-width: 220px;
+	max-width: 240px;
 	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
@@ -3395,29 +3407,18 @@ textarea {
 
 .context-ring .ring-fg {
 	fill: none;
+	stroke: var(--text-1);
 	stroke-width: 3.2;
 	stroke-linecap: round;
 	transition: stroke var(--dur) var(--ease);
 }
 
-.context-ring-wrap.ok .ring-fg {
-	stroke: var(--status-ok);
-}
-
-.context-ring-wrap.warn .ring-fg {
-	stroke: var(--status-warn);
-}
-
-.context-ring-wrap.danger .ring-fg {
-	stroke: var(--status-err);
-}
-
 .context-tooltip {
 	position: absolute;
-	bottom: calc(100% + 10px);
+	bottom: calc(100% + 8px);
 	right: -4px;
-	width: 230px;
-	padding: 10px 12px;
+	width: 248px;
+	padding: 12px 14px;
 	background: var(--menu-bg);
 	border: 1px solid var(--menu-border);
 	border-radius: var(--r-lg);
@@ -3433,18 +3434,73 @@ textarea {
 	opacity: 1;
 }
 
-.context-tooltip-title {
+.context-tooltip-header {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	margin-bottom: 8px;
+}
+
+.context-tooltip-label {
 	font-size: var(--fs-sm);
 	font-weight: 600;
 	color: var(--text-1);
-	margin-bottom: 5px;
+}
+
+.context-tooltip-pct {
+	font-size: var(--fs-sm);
+	font-weight: 700;
+	font-family: var(--font-mono);
+	color: var(--text-1);
+}
+
+.context-tooltip-bar {
+	height: 4px;
+	border-radius: 2px;
+	background: var(--hover);
+	overflow: hidden;
+	margin-bottom: 10px;
+}
+
+.context-tooltip-bar-fill {
+	height: 100%;
+	border-radius: 2px;
+	background: var(--text-1);
+	transition: width 0.3s ease;
+}
+
+.context-tooltip-rows {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
 }
 
 .context-tooltip-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
 	font-size: var(--fs-xs);
+	line-height: 1.6;
+}
+
+.context-tooltip-row .ct-label {
+	color: var(--text-3);
+}
+
+.context-tooltip-row .ct-value {
 	font-family: var(--font-mono);
 	color: var(--text-2);
-	line-height: 1.7;
+}
+
+.context-tooltip-row .ct-cost {
+	color: var(--text-1);
+	font-weight: 600;
+}
+
+.context-tooltip-divider {
+	height: 1px;
+	background: var(--border-1);
+	margin: 8px 0;
 }
 
 .message {
@@ -4117,6 +4173,11 @@ textarea {
 	opacity: 0;
 	width: 0;
 	height: 0;
+}
+
+.switch-row input:focus-visible + .switch-track {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
 }
 
 .switch-track {

@@ -35,7 +35,7 @@ type MenuEntry =
  * Clipboard API when execCommand reports failure.
  */
 function editCmd(cmd: string) {
-	let ok = false;
+	let ok: boolean;
 	try {
 		ok = document.execCommand(cmd);
 	} catch {

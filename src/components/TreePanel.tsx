@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	type KeyboardEvent,
+} from "react";
 import type { MessageCatalog } from "../i18n";
 import {
 	BranchIcon,
@@ -144,6 +150,8 @@ export function TreePanel({
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [copied, setCopied] = useState(false);
 	const listRef = useRef<HTMLDivElement>(null);
+	const copyTimerRef = useRef<number>(0);
+	useEffect(() => () => window.clearTimeout(copyTimerRef.current), []);
 
 	useEffect(() => {
 		if (open) {
@@ -188,6 +196,31 @@ export function TreePanel({
 		return null;
 	}, [flat, selectedId]);
 
+	// Keyboard navigation: move the selection among visible nodes.
+	const visibleIds = useMemo(
+		() => flat.filter((f) => f.visible).map((f) => f.node.entry.id),
+		[flat],
+	);
+	const handleTreeKey = (e: KeyboardEvent<HTMLDivElement>) => {
+		if (visibleIds.length === 0) return;
+		const idx = selectedId ? visibleIds.indexOf(selectedId) : -1;
+		if (e.key === "ArrowDown") {
+			e.preventDefault();
+			setSelectedId(
+				idx < 0 ? visibleIds[0] : visibleIds[Math.min(idx + 1, visibleIds.length - 1)],
+			);
+		} else if (e.key === "ArrowUp") {
+			e.preventDefault();
+			setSelectedId(idx < 0 ? visibleIds[0] : visibleIds[Math.max(idx - 1, 0)]);
+		} else if (e.key === "Home") {
+			e.preventDefault();
+			setSelectedId(visibleIds[0]);
+		} else if (e.key === "End") {
+			e.preventDefault();
+			setSelectedId(visibleIds[visibleIds.length - 1]);
+		}
+	};
+
 	// Keep the selected node visible while navigating.
 	useEffect(() => {
 		const list = listRef.current;
@@ -220,7 +253,8 @@ export function TreePanel({
 		try {
 			await navigator.clipboard.writeText(text);
 			setCopied(true);
-			setTimeout(() => setCopied(false), 1500);
+			window.clearTimeout(copyTimerRef.current);
+			copyTimerRef.current = window.setTimeout(() => setCopied(false), 1500);
 		} catch {
 			/* ignore */
 		}
@@ -235,7 +269,7 @@ export function TreePanel({
 			<div className="extension-dialog tree-dialog">
 				<div className="tree-dialog-header">
 					<h3>{t.chat.tree}</h3>
-					<button className="icon-btn" title={t.app.close} onClick={onClose}>
+					<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={onClose}>
 						<XIcon size={15} />
 					</button>
 				</div>
@@ -273,7 +307,12 @@ export function TreePanel({
 						<option value="all">{t.tree.filterAll}</option>
 					</select>
 				</div>
-				<div className="tree-list" ref={listRef}>
+				<div
+					className="tree-list"
+					ref={listRef}
+					tabIndex={0}
+					onKeyDown={handleTreeKey}
+				>
 					{flat.length === 0 && (
 						<div className="tree-empty">{t.tree.empty}</div>
 					)}
@@ -283,6 +322,7 @@ export function TreePanel({
 						const hasChildren = node.children.length > 0;
 						const isCollapsed = collapsed.has(id);
 						const role = entryRole(node.entry);
+						const label = entryLabel(node.entry, t);
 						const isSel = id === selectedId;
 						return (
 							<div
@@ -316,8 +356,8 @@ export function TreePanel({
 										<BranchIcon size={12} />
 									)}
 								</span>
-								<span className="tree-node-label" title={entryLabel(node.entry, t)}>
-									{entryLabel(node.entry, t)}
+								<span className="tree-node-label" title={label}>
+									{label}
 								</span>
 								{node.label && (
 									<span className="tree-node-tag">{node.label}</span>

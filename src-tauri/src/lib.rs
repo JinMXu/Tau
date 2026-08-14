@@ -19,80 +19,80 @@ fn build_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
 	#[cfg(not(target_os = "macos"))]
 	{
 		let _ = (app, lang);
-		return Ok(());
+		Ok(())
 	}
 	#[cfg(target_os = "macos")]
 	{
 		let zh = lang == "zh";
-	let (
-		app_menu_label,
-		about_label,
-		edit_label,
-		undo_label,
-		redo_label,
-		cut_label,
-		copy_label,
-		paste_label,
-		select_all_label,
-		view_label,
-		fullscreen_label,
-	) = if zh {
-		(
-			"应用",
-			"关于 Tau",
-			"编辑",
-			"撤销",
-			"重做",
-			"剪切",
-			"复制",
-			"粘贴",
-			"全选",
-			"视图",
-			"切换全屏",
-		)
-	} else {
-		(
-			"App",
-			"About Tau",
-			"Edit",
-			"Undo",
-			"Redo",
-			"Cut",
-			"Copy",
-			"Paste",
-			"Select All",
-			"View",
-			"Toggle Fullscreen",
-		)
-	};
-	let edit_menu = Submenu::with_items(
-		app,
-		edit_label,
-		true,
-		&[
-			&PredefinedMenuItem::undo(app, Some(undo_label))?,
-			&PredefinedMenuItem::redo(app, Some(redo_label))?,
-			&PredefinedMenuItem::separator(app)?,
-			&PredefinedMenuItem::cut(app, Some(cut_label))?,
-			&PredefinedMenuItem::copy(app, Some(copy_label))?,
-			&PredefinedMenuItem::paste(app, Some(paste_label))?,
-			&PredefinedMenuItem::select_all(app, Some(select_all_label))?,
-		],
-	)?;
-	let view_menu = Submenu::with_items(
-		app,
-		view_label,
-		true,
-		&[
-			&PredefinedMenuItem::separator(app)?,
-			&PredefinedMenuItem::fullscreen(app, Some(fullscreen_label))?,
-		],
-	)?;
-	let app_item = MenuItem::with_id(app, "about", about_label, true, None::<&str>)?;
-	let app_menu = Submenu::with_items(app, app_menu_label, true, &[&app_item])?;
-	let menu = Menu::with_items(app, &[&app_menu, &edit_menu, &view_menu])?;
-	app.set_menu(menu)?;
-	Ok(())
+		let (
+			app_menu_label,
+			about_label,
+			edit_label,
+			undo_label,
+			redo_label,
+			cut_label,
+			copy_label,
+			paste_label,
+			select_all_label,
+			view_label,
+			fullscreen_label,
+		) = if zh {
+			(
+				"应用",
+				"关于 Tau",
+				"编辑",
+				"撤销",
+				"重做",
+				"剪切",
+				"复制",
+				"粘贴",
+				"全选",
+				"视图",
+				"切换全屏",
+			)
+		} else {
+			(
+				"App",
+				"About Tau",
+				"Edit",
+				"Undo",
+				"Redo",
+				"Cut",
+				"Copy",
+				"Paste",
+				"Select All",
+				"View",
+				"Toggle Fullscreen",
+			)
+		};
+		let edit_menu = Submenu::with_items(
+			app,
+			edit_label,
+			true,
+			&[
+				&PredefinedMenuItem::undo(app, Some(undo_label))?,
+				&PredefinedMenuItem::redo(app, Some(redo_label))?,
+				&PredefinedMenuItem::separator(app)?,
+				&PredefinedMenuItem::cut(app, Some(cut_label))?,
+				&PredefinedMenuItem::copy(app, Some(copy_label))?,
+				&PredefinedMenuItem::paste(app, Some(paste_label))?,
+				&PredefinedMenuItem::select_all(app, Some(select_all_label))?,
+			],
+		)?;
+		let view_menu = Submenu::with_items(
+			app,
+			view_label,
+			true,
+			&[
+				&PredefinedMenuItem::separator(app)?,
+				&PredefinedMenuItem::fullscreen(app, Some(fullscreen_label))?,
+			],
+		)?;
+		let app_item = MenuItem::with_id(app, "about", about_label, true, None::<&str>)?;
+		let app_menu = Submenu::with_items(app, app_menu_label, true, &[&app_item])?;
+		let menu = Menu::with_items(app, &[&app_menu, &edit_menu, &view_menu])?;
+		app.set_menu(menu)?;
+		Ok(())
 	}
 }
 
@@ -146,7 +146,7 @@ pub fn run() {
 				// Kill the main window's pi process when the window closes
 				// (other windows may keep the app alive).
 				let inner = app.state::<crate::pi::PiState>().handle();
-				let _ = win.on_window_event(move |event| {
+				win.on_window_event(move |event| {
 					if let tauri::WindowEvent::Destroyed = event {
 						crate::pi::kill_window_process_inner(&inner, "main");
 					}

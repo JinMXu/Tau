@@ -21,18 +21,35 @@ const CONTROLS = {
 	mermaid: false,
 } as const;
 
-function subscribeTheme(onStoreChange: () => void): () => void {
-	const element = document.documentElement;
-	const observer = new MutationObserver(onStoreChange);
-	observer.observe(element, {
-		attributes: true,
-		attributeFilter: ["data-theme"],
-	});
-	return () => observer.disconnect();
-}
+// A single shared theme store: every <Markdown> block subscribes to one
+// MutationObserver on <html> instead of each creating its own (a session with
+// dozens of messages used to create dozens of observers, and a theme switch
+// fired all of them at once).
+const themeListeners = new Set<() => void>();
+let themeObserver: MutationObserver | null = null;
 
 function getThemeSnapshot(): "light" | "dark" {
 	return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+function subscribeTheme(onStoreChange: () => void): () => void {
+	themeListeners.add(onStoreChange);
+	if (!themeObserver) {
+		themeObserver = new MutationObserver(() => {
+			for (const listener of themeListeners) listener();
+		});
+		themeObserver.observe(document.documentElement, {
+			attributes: true,
+			attributeFilter: ["data-theme"],
+		});
+	}
+	return () => {
+		themeListeners.delete(onStoreChange);
+		if (themeListeners.size === 0 && themeObserver) {
+			themeObserver.disconnect();
+			themeObserver = null;
+		}
+	};
 }
 
 /**

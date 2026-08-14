@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import type { PiBinaryInfo, PiSessionInfo } from "../pi";
 import type { MessageCatalog } from "../i18n";
 import {
@@ -38,7 +38,7 @@ function timeAgo(ms: number, lang: "zh" | "en"): string {
 	});
 }
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
 	t,
 	lang,
 	sessions,
@@ -89,6 +89,22 @@ export function Sidebar({
 }) {
 	const [menuPath, setMenuPath] = useState<string | null>(null);
 	const [dragPath, setDragPath] = useState<string | null>(null);
+
+	// Close the "move to project" popup on outside click or Escape (the popup
+	// and its toggle button stop mousedown propagation so they keep working).
+	useEffect(() => {
+		if (!menuPath) return;
+		const onDown = () => setMenuPath(null);
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setMenuPath(null);
+		};
+		document.addEventListener("mousedown", onDown);
+		document.addEventListener("keydown", onKey);
+		return () => {
+			document.removeEventListener("mousedown", onDown);
+			document.removeEventListener("keydown", onKey);
+		};
+	}, [menuPath]);
 
 	const orderedList = useCallback(
 		(list: PiSessionInfo[]) => {
@@ -166,7 +182,7 @@ export function Sidebar({
 			<div className="sidebar-scroll">
 				<div className="sidebar-section-header">
 					<span>{t.sidebar.projects}</span>
-					<button className="icon-btn" onClick={onOpenWorkspace} title={t.sidebar.addProject}>
+					<button className="icon-btn" onClick={onOpenWorkspace} title={t.sidebar.addProject} aria-label={t.sidebar.addProject}>
 						<PlusIcon size={14} />
 					</button>
 				</div>
@@ -271,7 +287,7 @@ export function Sidebar({
 													</button>
 													<button
 														className="icon-btn"
-														title={t.sidebar.moveToProject}
+														title={t.sidebar.moveToProject} onMouseDown={(e) => e.stopPropagation()}
 														onClick={() =>
 																setMenuPath(menuPath === s.path ? null : s.path)
 															}
@@ -279,7 +295,7 @@ export function Sidebar({
 														<MoreIcon size={13} />
 													</button>
 													{menuPath === s.path && (
-														<div className="session-pop">
+														<div className="session-pop" onMouseDown={(e) => e.stopPropagation()}>
 															<button
 																onClick={() => {
 																	onMoveSession(s.path);
@@ -313,4 +329,4 @@ export function Sidebar({
 			</div>
 		</aside>
 	);
-}
+});

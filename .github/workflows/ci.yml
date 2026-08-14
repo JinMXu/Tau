@@ -7,7 +7,7 @@ on:
 
 jobs:
   frontend:
-    name: Frontend (tsc + vitest + build)
+    name: Frontend (tsc + lint + vitest + build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,18 +17,23 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx tsc --noEmit
+      - run: npm run lint
       - run: npm test
       - run: npm run build
 
   backend:
-    name: Backend (cargo test)
+    name: Backend (fmt + clippy + cargo test)
     # Windows avoids the webkit2gtk system packages tauri needs on Linux;
     # the lib tests are hermetic (temp dirs only, no pi binary required).
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --lib

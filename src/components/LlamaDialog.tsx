@@ -102,7 +102,7 @@ export function LlamaDialog({
 						>
 							<RefreshIcon size={14} />
 						</button>
-						<button className="icon-btn" title={t.app.close} onClick={onClose}>
+						<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={onClose}>
 							<XIcon size={15} />
 						</button>
 					</div>

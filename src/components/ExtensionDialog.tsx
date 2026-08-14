@@ -43,7 +43,7 @@ export function ExtensionDialog({
 
 	return (
 		<div className="overlay-backdrop">
-			<div className="extension-dialog">
+			<div className="extension-dialog" role="dialog" aria-modal="true">
 				<h3>{title}</h3>
 				{request.method === "confirm" && (
 					<p className="extension-message">{request.message}</p>

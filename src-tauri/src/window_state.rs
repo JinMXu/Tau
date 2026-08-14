@@ -2,9 +2,8 @@ use std::{
 	fs,
 	path::PathBuf,
 	sync::{
-		Arc,
 		atomic::{AtomicBool, Ordering},
-		Mutex,
+		Arc, Mutex,
 	},
 	thread,
 	time::Duration,
@@ -43,6 +42,7 @@ fn state_path<R: tauri::Runtime>(app: &AppHandle<R>, label: &str) -> PathBuf {
 /// area (the monitor's screen minus the taskbar). Returns the corrected
 /// position when the window would otherwise end up hidden behind the taskbar
 /// or past another screen edge; returns None when the position already fits.
+#[allow(clippy::too_many_arguments)]
 fn clamp_position(
 	wa_x: i32,
 	wa_y: i32,
@@ -104,9 +104,15 @@ fn clamp_to_work_area<R: tauri::Runtime>(
 /// Guards against restoring a window onto a display that has been unplugged
 /// (which would leave it unreachable off-screen).
 fn on_screen<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
-	let Ok(size) = window.outer_size() else { return true };
-	let Ok(pos) = window.outer_position() else { return true };
-	let Ok(monitors) = window.available_monitors() else { return true };
+	let Ok(size) = window.outer_size() else {
+		return true;
+	};
+	let Ok(pos) = window.outer_position() else {
+		return true;
+	};
+	let Ok(monitors) = window.available_monitors() else {
+		return true;
+	};
 	monitors.iter().any(|m| {
 		let mp = m.position();
 		let ms = m.size();
@@ -123,7 +129,9 @@ fn on_screen<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) -> bool {
 /// Restore the window size/position saved from the previous run.
 pub fn restore<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 	let path = state_path(window.app_handle(), window.label());
-	let Ok(raw) = fs::read_to_string(&path) else { return };
+	let Ok(raw) = fs::read_to_string(&path) else {
+		return;
+	};
 	let Ok(state) = serde_json::from_str::<WindowState>(&raw) else {
 		return;
 	};
@@ -146,7 +154,7 @@ pub fn restore<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 				let y = mp.y + ((ms.height as i32 - h as i32) / 2).max(0);
 				let _ = window.set_position(PhysicalPosition::new(x, y));
 			}
-		} else if let Some((x, y)) = clamp_to_work_area(&window, state.x, state.y) {
+		} else if let Some((x, y)) = clamp_to_work_area(window, state.x, state.y) {
 			// A previous session may have parked the window so its bottom (the
 			// composer with the project/branch pickers) sits behind the
 			// taskbar — pull it back into the visible desktop area.
@@ -204,12 +212,16 @@ pub fn attach<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 		if saving.swap(true, Ordering::SeqCst) {
 			return;
 		}
-		let snapshot = s.clone();
+		let state_arc = state.clone();
 		let path = path.clone();
 		let saving = saving.clone();
 		thread::spawn(move || {
 			thread::sleep(Duration::from_millis(400));
-			let _ = fs::write(&path, serde_json::to_string(&snapshot).unwrap_or_default());
+			// Write the LATEST state, not the snapshot captured at spawn: an
+			// event arriving during the sleep mutates `state` under the lock
+			// and would otherwise be lost if no further event re-triggers.
+			let latest = state_arc.lock().unwrap().clone();
+			let _ = fs::write(&path, serde_json::to_string(&latest).unwrap_or_default());
 			saving.store(false, Ordering::SeqCst);
 		});
 	});
@@ -224,7 +236,10 @@ mod tests {
 
 	#[test]
 	fn position_inside_work_area_is_untouched() {
-		assert_eq!(clamp_position(WA.0, WA.1, WA.2, WA.3, 800, 600, 100, 100), None);
+		assert_eq!(
+			clamp_position(WA.0, WA.1, WA.2, WA.3, 800, 600, 100, 100),
+			None
+		);
 		assert_eq!(clamp_position(WA.0, WA.1, WA.2, WA.3, 800, 600, 0, 0), None);
 		assert_eq!(
 			clamp_position(WA.0, WA.1, WA.2, WA.3, 800, 600, 1120, 432),
@@ -235,7 +250,10 @@ mod tests {
 	#[test]
 	fn bottom_edge_cannot_slide_under_the_taskbar() {
 		// Window flush with the work-area bottom is fine…
-		assert_eq!(clamp_position(WA.0, WA.1, WA.2, WA.3, 800, 600, 0, 432), None);
+		assert_eq!(
+			clamp_position(WA.0, WA.1, WA.2, WA.3, 800, 600, 0, 432),
+			None
+		);
 		// …but one pixel lower must be pulled back up.
 		assert_eq!(
 			clamp_position(WA.0, WA.1, WA.2, WA.3, 800, 600, 0, 433),

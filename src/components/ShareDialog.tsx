@@ -31,7 +31,7 @@ export function ShareDialog({
 			<div className="extension-dialog">
 				<div className="tree-dialog-header">
 					<h3>{t.share.title}</h3>
-					<button className="icon-btn" title={t.app.close} onClick={onClose}>
+					<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={onClose}>
 						<XIcon size={15} />
 					</button>
 				</div>

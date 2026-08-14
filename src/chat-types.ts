@@ -57,4 +57,9 @@ export interface SessionStats {
 		contextWindow: number;
 		percent: number;
 	};
+	perf?: {
+		cacheHitRate?: number;
+		avgTTFT?: number;
+		tokensPerSec?: number;
+	};
 }

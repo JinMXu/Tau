@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PiArchivedSession, PiBinaryInfo } from "../pi";
 import {
 	authRemove,
@@ -171,12 +171,15 @@ function ProviderRow({
 	const [copiedCmd, setCopiedCmd] = useState(false);
 	const configured = Boolean(status?.hasKey);
 	const isOAuth = status?.kind === "oauth";
+	const copyTimerRef = useRef<number>(0);
+	useEffect(() => () => window.clearTimeout(copyTimerRef.current), []);
 
 	const copyLoginCmd = async () => {
 		try {
 			await navigator.clipboard.writeText(`pi\n/login ${provider}`);
 			setCopiedCmd(true);
-			setTimeout(() => setCopiedCmd(false), 1500);
+			window.clearTimeout(copyTimerRef.current);
+			copyTimerRef.current = window.setTimeout(() => setCopiedCmd(false), 1500);
 		} catch {
 			/* ignore */
 		}
@@ -280,7 +283,7 @@ function ProviderRow({
 						<span>pi</span>
 						<span className="oauth-help-arrow">→</span>
 						<span>/login {provider}</span>
-						<button className="icon-btn" title={t.chat.copy} onClick={() => void copyLoginCmd()}>
+						<button className="icon-btn" title={t.chat.copy} aria-label={t.chat.copy} onClick={() => void copyLoginCmd()}>
 							{copiedCmd ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
 						</button>
 					</div>
@@ -397,6 +400,15 @@ export function SettingsPanel({
 	const [auth, setAuth] = useState<AuthProviderStatus[]>([]);
 	const [toastMsg, setToastMsg] = useState<string | null>(null);
 	const [errorMsg, setErrorMsg] = useState<string | null>(null);
+	const toastTimerRef = useRef<number>(0);
+	const errorTimerRef = useRef<number>(0);
+	useEffect(
+		() => () => {
+			window.clearTimeout(toastTimerRef.current);
+			window.clearTimeout(errorTimerRef.current);
+		},
+		[],
+	);
 
 	// Provider list mirrors the TUI: whatever the installed pi can configure
 	// (built-in catalog + models.json customs + providers with stored keys).
@@ -439,11 +451,13 @@ export function SettingsPanel({
 
 	const notify = useCallback((msg: string) => {
 		setToastMsg(msg);
-		setTimeout(() => setToastMsg(null), 2200);
+		window.clearTimeout(toastTimerRef.current);
+		toastTimerRef.current = window.setTimeout(() => setToastMsg(null), 2200);
 	}, []);
 	const notifyError = useCallback((msg: string) => {
 		setErrorMsg(msg);
-		setTimeout(() => setErrorMsg(null), 4000);
+		window.clearTimeout(errorTimerRef.current);
+		errorTimerRef.current = window.setTimeout(() => setErrorMsg(null), 4000);
 	}, []);
 
 	// ---- packages & skills ----

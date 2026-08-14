@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, ChatMessage, QueuedChatMessage, SendBehavior, SessionStats } from "../chat-types";
 import type { AgentToolName } from "../settings";
 import type { PiCommand } from "../pi";
@@ -33,7 +33,7 @@ function greeting(t: MessageCatalog): string {
 	return t.chat.greetingEvening;
 }
 
-export function ChatArea({
+export const ChatArea = memo(function ChatArea({
 	t,
 	session,
 	messages,
@@ -117,7 +117,7 @@ export function ChatArea({
 		attachments: Attachment[],
 		behavior: SendBehavior,
 		editingQueueId?: string | null,
-	) => void;
+	) => Promise<boolean>;
 	onAbort: () => void;
 	aborting: boolean;
 	onCompact: () => void;
@@ -504,7 +504,7 @@ export function ChatArea({
 					>
 						<ChevronDownIcon size={14} />
 					</button>
-					<button className="icon-btn" title={t.app.close} onClick={closeSearch}>
+					<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={closeSearch}>
 						<XIcon size={14} />
 					</button>
 				</div>
@@ -553,4 +553,4 @@ export function ChatArea({
 				))}
 		</main>
 	);
-}
+});

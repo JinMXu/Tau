@@ -91,8 +91,16 @@ import { LlamaDialog } from "./components/LlamaDialog";
 import type { ModelEntry } from "./components/Composer";
 import "./App.css";
 import { TitleBar } from "./components/TitleBar";
+import { formatBytes } from "./format";
 
 let nextId = 1;
+
+type ConnectOpts = {
+	sessionFile?: string | null;
+	forkOf?: string | null;
+	sessionName?: string | null;
+	workspace?: string | null;
+};
 
 const STORAGE_KEYS = {
 	expanded: "pi-gui.sidebar.expanded.v1",
@@ -141,12 +149,6 @@ function loadExpanded(): Set<string> {
 	} catch {
 		return new Set(["__default__"]);
 	}
-}
-
-function formatBytes(n: number): string {
-	if (n >= 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-	if (n >= 1024) return `${(n / 1024).toFixed(0)} KB`;
-	return `${n} B`;
 }
 
 interface ConfirmState {
@@ -211,6 +213,22 @@ export default function App() {
 			(settings.sendDuringRunMode === "queue" ? "followUp" : "steer"),
 	);
 	const [stderr, setStderr] = useState<string[]>([]);
+	// Buffer stderr lines and flush once per animation frame: pi tools that
+	// print progress/spinners can emit dozens of lines per second, and each
+	// `setStderr` re-renders the whole App (stderr lives in the root state).
+	const pendingStderrRef = useRef<string[]>([]);
+	const stderrFlushRef = useRef<number | null>(null);
+	const pushStderr = useCallback((line: string) => {
+		pendingStderrRef.current.push(line);
+		if (stderrFlushRef.current !== null) return;
+		stderrFlushRef.current = requestAnimationFrame(() => {
+			stderrFlushRef.current = null;
+			const lines = pendingStderrRef.current;
+			pendingStderrRef.current = [];
+			if (lines.length === 0) return;
+			setStderr((prev) => [...prev, ...lines].slice(-200));
+		});
+	}, []);
 	const [error, setError] = useState<string | null>(null);
 	const [aborting, setAborting] = useState(false);
 	const [searchOpen, setSearchOpen] = useState(false);
@@ -252,6 +270,10 @@ export default function App() {
 	const [stats, setStats] = useState<SessionStats | null>(null);
 	const [extensionRequest, setExtensionRequest] =
 		useState<ExtensionRequest | null>(null);
+	// Mirrors `extensionRequest` for the event handler (a ref, so handleEvent
+	// doesn't re-subscribe when the dialog changes). Used to cancel a pending
+	// request before it is overwritten by a newer one.
+	const extensionRequestRef = useRef<ExtensionRequest | null>(null);
 	const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 	const [renameState, setRenameState] = useState<RenameState | null>(null);
 	const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
@@ -306,13 +328,27 @@ export default function App() {
 	// force-kills when the epoch is unchanged — so a run started after the
 	// abort can never be killed by the leftover watchdog.
 	const runEpochRef = useRef(0);
+	// Bumped whenever the user navigates to a different session (connect /
+	// disconnect / new task). discoverNewSession() captures it so a polling
+	// loop for a just-created session can detect the user switching away and
+	// stop clobbering the new selection.
+	const navEpochRef = useRef(0);
+
+	// ---- perf tracking: TTFT, generation speed, cache hit rate ----
+	const turnStartRef = useRef<number | null>(null);
+	const firstTokenRef = useRef<number | null>(null);
+	const msgGenStartRef = useRef<number | null>(null);
+	const totalGenTimeRef = useRef(0);
+	const prevOutputTokensRef = useRef(0);
+	const ttftHistoryRef = useRef<number[]>([]);
+	const statsRef = useRef<SessionStats | null>(null);
 
 	// ---- provider API-key gate (chat-time key dialog) ----
-	const [authProviders, setAuthProviders] = useState<AuthProviderStatus[]>([]);
+	const [, setAuthProviders] = useState<AuthProviderStatus[]>([]);
 	const [apiKeyDialog, setApiKeyDialog] = useState<{ provider: string } | null>(
 		null,
 	);
-	const apiKeyResolveRef = useRef<((saved: boolean) => void) | null>(null);
+	const apiKeyResolversRef = useRef<((saved: boolean) => void)[]>([]);
 
 	useEffect(() => {
 		queuedRef.current = queuedMessages;
@@ -329,6 +365,9 @@ export default function App() {
 	useEffect(() => {
 		settingsRef.current = settings;
 	}, [settings]);
+	useEffect(() => {
+		statsRef.current = stats;
+	}, [stats]);
 
 	// Hot-apply the auto-retry toggle without reconnecting.
 	useEffect(() => {
@@ -447,6 +486,9 @@ export default function App() {
 	// Guards against overlapping connect() calls (double clicks, racing
 	// auto-connect effects): the second caller awaits the in-flight attempt.
 	const connectInFlightRef = useRef<Promise<boolean> | null>(null);
+	// Latest connect target requested while another connect was in flight;
+	// re-run after the in-flight attempt settles so the click isn't dropped.
+	const connectPendingRef = useRef<ConnectOpts | null>(null);
 	// Cooldown/failure tracking for the auto-connect effect so a broken pi
 	// binary doesn't produce a reconnect loop.
 	const autoConnectStateRef = useRef({ failures: 0 });
@@ -498,8 +540,25 @@ export default function App() {
 		};
 		apply();
 		mq.addEventListener("change", apply);
-		saveSettings(settings);
 		return () => mq.removeEventListener("change", apply);
+	}, [
+		settings.theme,
+		settings.colorScale,
+		settings.density,
+		settings.language,
+		settings.fontSize,
+		settings.chatContentWidth,
+		settings.chatLineSpacing,
+		settings.chatFontFamily,
+	]);
+
+	// Persist settings separately, debounced: typing in a settings editor
+	// (system prompt, append prompt, llama key) must not JSON-serialize the
+	// whole object — including the plaintext llama API key — to localStorage
+	// on every keystroke.
+	useEffect(() => {
+		const id = window.setTimeout(() => saveSettings(settings), 250);
+		return () => window.clearTimeout(id);
 	}, [settings]);
 
 	// Settings-page changes to the default send mode also update the live
@@ -647,8 +706,12 @@ export default function App() {
 	// Poll for the on-disk session file of a just-created task so the sidebar
 	// can promote its optimistic placeholder to the real session as soon as pi
 	// flushes the file (usually within a second of the first prompt).
-	const discoverNewSession = useCallback(async () => {
+	const discoverNewSession = useCallback(async (navEpoch: number) => {
 		for (let i = 0; i < 20; i++) {
+			// The user switched sessions / disconnected / started a new task
+			// while we were polling — stop promoting the just-created session
+			// over their new selection.
+			if (navEpochRef.current !== navEpoch) return;
 			await new Promise((r) => setTimeout(r, 350));
 			let file: string | null = null;
 			try {
@@ -674,14 +737,50 @@ export default function App() {
 		}
 	}, [handleResponse, refreshSessions]);
 
-	const refreshStats = useCallback(async () => {
-		try {
-			const r = await handleResponse({ type: "get_session_stats" });
-			setStats(r.data as SessionStats);
-		} catch {
-			/* older pi or no session */
-		}
-	}, [handleResponse]);
+	const refreshStats = useCallback(
+		async (withPerf = false) => {
+			try {
+				const r = await handleResponse({ type: "get_session_stats" });
+				const newStats = r.data as SessionStats;
+				if (withPerf && newStats.tokens) {
+					const tk = newStats.tokens;
+					const totalInput = tk.input + tk.cacheRead;
+					const ttft =
+						firstTokenRef.current != null && turnStartRef.current != null
+							? firstTokenRef.current - turnStartRef.current
+							: null;
+					if (ttft != null && ttft > 0) {
+						ttftHistoryRef.current = [...ttftHistoryRef.current, ttft].slice(
+							-20,
+						);
+					}
+					const avgTTFT =
+						ttftHistoryRef.current.length > 0
+							? ttftHistoryRef.current.reduce((a, b) => a + b, 0) /
+								ttftHistoryRef.current.length
+							: undefined;
+					const outputDelta = tk.output - prevOutputTokensRef.current;
+					const genTimeSec = totalGenTimeRef.current / 1000;
+					const tokensPerSec =
+						genTimeSec > 0 && outputDelta > 0
+							? outputDelta / genTimeSec
+							: undefined;
+					newStats.perf = {
+						cacheHitRate:
+							totalInput > 0
+								? (tk.cacheRead / totalInput) * 100
+								: undefined,
+						avgTTFT,
+						tokensPerSec,
+					};
+				}
+				setStats(newStats);
+			} catch {
+				/* older pi or no session */
+			}
+		},
+		[handleResponse],
+	);
 
 	// Serialize attachments into pi's ImageContent format.
 	const attachmentsToImages = useCallback((attachments: Attachment[]) => {
@@ -711,6 +810,50 @@ export default function App() {
 		return fullText;
 	}, []);
 
+	// Send one already-dequeued message: push the optimistic user message,
+	// bump the run epoch, mark working, and dispatch the RPC. On failure the
+	// optimistic message is marked with an error (never left as a silent
+	// ghost). Shared by deliverQueuedNext and queueSendNow.
+	const sendQueuedMessage = useCallback(
+		async (item: QueuedChatMessage, sender: "steer" | "prompt") => {
+			const message = item.text + attachmentsToText(item.attachments);
+			const images = attachmentsToImages(item.attachments);
+			turnStartRef.current = Date.now();
+			firstTokenRef.current = null;
+			msgGenStartRef.current = null;
+			totalGenTimeRef.current = 0;
+			prevOutputTokensRef.current = statsRef.current?.tokens?.output ?? 0;
+			setMessages((prev) => [
+				...prev,
+				{
+					id: nextId++,
+					role: "user",
+					blocks: [{ kind: "text", text: message }],
+					streaming: false,
+				},
+			]);
+			runEpochRef.current += 1;
+			setWorking(true);
+			try {
+				await send({ type: sender, message, images });
+			} catch (e) {
+				setError(String(e));
+				setMessages((prev) => {
+					const next = [...prev];
+					for (let i = next.length - 1; i >= 0; i--) {
+						if (next[i].role === "user") {
+							next[i] = { ...next[i], error: String(e) };
+							break;
+						}
+					}
+					return next;
+				});
+				setWorking(false);
+			}
+		},
+		[attachmentsToImages, attachmentsToText],
+	);
+
 	// Take the first queued message and send it to pi. `sender` picks the RPC
 	// command: "steer" when the agent is mid-turn (delivered after the current
 	// tool call), "prompt" when it is idle. The queue ref is updated
@@ -723,33 +866,13 @@ export default function App() {
 			queuedRef.current = queuedRef.current.slice(1);
 			setQueuedMessages(queuedRef.current);
 			if (editingQueueId === next.id) setEditingQueueId(null);
-			const message = next.text + attachmentsToText(next.attachments);
-			const images = attachmentsToImages(next.attachments);
-			// Optimistic user message (pi's message_start echo only attaches the
-			// entry id to the latest user message, it doesn't render one).
-			setMessages((prev) => [
-				...prev,
-				{
-					id: nextId++,
-					role: "user",
-					blocks: [{ kind: "text", text: message }],
-					streaming: false,
-				},
-			]);
-			runEpochRef.current += 1;
-			setWorking(true);
-			try {
-				if (sender === "steer" && workingRef.current) {
-					await send({ type: "steer", message, images });
-				} else {
-					await send({ type: "prompt", message, images });
-				}
-			} catch (e) {
-				setError(String(e));
-				setWorking(false);
-			}
+			// Resolve the effective sender BEFORE sendQueuedMessage sets
+			// working=true: workingRef still reflects the pre-delivery state.
+			const effective =
+				sender === "steer" && workingRef.current ? "steer" : "prompt";
+			await sendQueuedMessage(next, effective);
 		},
-		[attachmentsToImages, attachmentsToText, editingQueueId],
+		[editingQueueId, sendQueuedMessage],
 	);
 
 	// Queue operations exposed to the composer.
@@ -761,31 +884,10 @@ export default function App() {
 			setQueuedMessages(queuedRef.current);
 			setQueuePaused(false);
 			setEditingQueueId((cur) => (cur === id ? null : cur));
-			const message = item.text + attachmentsToText(item.attachments);
-			const images = attachmentsToImages(item.attachments);
-			setMessages((prev) => [
-				...prev,
-				{
-					id: nextId++,
-					role: "user",
-					blocks: [{ kind: "text", text: message }],
-					streaming: false,
-				},
-			]);
-			runEpochRef.current += 1;
-			setWorking(true);
-			try {
-				if (workingRef.current) {
-					await send({ type: "steer", message, images });
-				} else {
-					await send({ type: "prompt", message, images });
-				}
-			} catch (e) {
-				setError(String(e));
-				setWorking(false);
-			}
+			const effective = workingRef.current ? "steer" : "prompt";
+			await sendQueuedMessage(item, effective);
 		},
-		[attachmentsToImages, attachmentsToText],
+		[sendQueuedMessage],
 	);
 
 	const queueEdit = useCallback((id: string) => {
@@ -828,7 +930,22 @@ export default function App() {
 					return;
 				}
 				if (method === "select" || method === "confirm" || method === "input" || method === "editor") {
-					setExtensionRequest({
+					// A newer request overwrites the dialog; explicitly cancel the
+					// still-pending one so its extension doesn't hang waiting for a
+					// response that will never come.
+					const previous = extensionRequestRef.current;
+					if (previous) {
+						const payload =
+							previous.method === "confirm"
+								? { confirmed: false }
+								: { cancelled: true };
+						void send({
+							type: "extension_ui_response",
+							id: previous.id,
+							...payload,
+						}).catch(() => {});
+					}
+					const next: ExtensionRequest = {
 						id: String(event.id),
 						method,
 						title: event.title as string | undefined,
@@ -836,7 +953,9 @@ export default function App() {
 						options: (event.options as string[] | undefined) ?? [],
 						placeholder: event.placeholder as string | undefined,
 						prefill: event.prefill as string | undefined,
-					});
+					};
+					extensionRequestRef.current = next;
+					setExtensionRequest(next);
 					return;
 				}
 				// Fire-and-forget UI methods.
@@ -975,6 +1094,10 @@ export default function App() {
 					  }
 					| undefined;
 				if (message?.role === "assistant") {
+					if (msgGenStartRef.current !== null) {
+						totalGenTimeRef.current += Date.now() - msgGenStartRef.current;
+						msgGenStartRef.current = null;
+					}
 					const blocks: Block[] = (message.content ?? [])
 						.map((item): Block | null => {
 							if (item.type === "text")
@@ -1037,6 +1160,10 @@ export default function App() {
 						}));
 						break;
 					case "text_delta":
+						if (firstTokenRef.current === null)
+							firstTokenRef.current = Date.now();
+						if (msgGenStartRef.current === null)
+							msgGenStartRef.current = Date.now();
 						pendingDeltaRef.current = {
 							...(pendingDeltaRef.current ?? {}),
 							text: (pendingDeltaRef.current?.text ?? "") + (ame.delta ?? ""),
@@ -1132,7 +1259,7 @@ export default function App() {
 				setPendingSession(null);
 				setAborting(false);
 				void refreshSessions();
-				void refreshStats();
+				void refreshStats(true);
 				// agent_settled is emitted in a `finally` block after every run
 				// (success, error, abort or compaction) — the only reliable point
 				// where pi is truly idle, so deliver the next queued message.
@@ -1163,13 +1290,17 @@ export default function App() {
 		(async () => {
 			unlisteners.push(
 				listen<PiEvent>("pi://event", (e) => handleEvent(e.payload)),
-				listen<string>("pi://stderr", (e) =>
-					setStderr((prev) => [...prev.slice(-200), e.payload]),
-				),
+				listen<string>("pi://stderr", (e) => pushStderr(e.payload)),
 				listen<unknown>("pi://exit", () => {
 					setConnected(false);
-					setStreaming(false);
-					setWorking(false);
+			setStreaming(false);
+				setWorking(false);
+				turnStartRef.current = null;
+				firstTokenRef.current = null;
+				msgGenStartRef.current = null;
+				totalGenTimeRef.current = 0;
+				prevOutputTokensRef.current = 0;
+				ttftHistoryRef.current = [];
 					setPendingSession(null);
 					// The backend only emits this on real crashes (deliberate
 					// stops are flagged), so surface it; the auto-connect effect
@@ -1199,7 +1330,7 @@ export default function App() {
 		return () => {
 			unlisteners.forEach((p) => p.then((fn) => fn()));
 		};
-	}, [handleEvent, refreshSessions]);
+	}, [handleEvent, refreshSessions, pushStderr, toast]);
 
 	// ---- connection ----
 	const loadHistory = useCallback(async (path: string) => {
@@ -1262,18 +1393,16 @@ export default function App() {
 	}, []);
 
 	const connect = useCallback(
-		async (
-			opts?: {
-				sessionFile?: string | null;
-				forkOf?: string | null;
-				sessionName?: string | null;
-				workspace?: string | null;
-			},
-		): Promise<boolean> => {
+		async (opts?: ConnectOpts): Promise<boolean> => {
 			// Reuse the in-flight attempt instead of killing the pi process the
 			// previous connect just spawned (that race wedged the UI on a
-			// spurious pi://exit event).
-			if (connectInFlightRef.current) return connectInFlightRef.current;
+			// spurious pi://exit event). Remember the latest requested target so
+			// it can be re-run once the in-flight attempt settles — a second
+			// click must not be silently dropped.
+			if (connectInFlightRef.current) {
+				connectPendingRef.current = opts ?? {};
+				return connectInFlightRef.current;
+			}
 			const task = (async () => {
 				setBusy(true);
 				setError(null);
@@ -1314,6 +1443,7 @@ export default function App() {
 						}
 					}
 					if (sessionFile) setPendingSession(null);
+					navEpochRef.current += 1;
 					sessionPathRef.current = sessionFile;
 					setSelectedSessionPath(sessionFile);
 					isNewSessionRef.current = !sessionFile;
@@ -1351,6 +1481,7 @@ export default function App() {
 							String(e).includes("already open in another window")
 						) {
 							localStorage.removeItem(STORAGE_KEYS.lastSession);
+							navEpochRef.current += 1;
 							sessionPathRef.current = null;
 							setSelectedSessionPath(null);
 							isNewSessionRef.current = true;
@@ -1387,6 +1518,12 @@ export default function App() {
 			} finally {
 				if (connectInFlightRef.current === task) {
 					connectInFlightRef.current = null;
+					// A connect arrived while this one was in flight: run it now.
+					const pending = connectPendingRef.current;
+					connectPendingRef.current = null;
+					if (pending) {
+						void connect(pending);
+					}
 				}
 			}
 		},
@@ -1404,7 +1541,14 @@ export default function App() {
 	);
 
 	const disconnect = useCallback(async () => {
-		await stop();
+		// pi_stop can reject if the process already exited (crash, external
+		// kill). disconnect must never throw — several callers fire-and-forget
+		// it — so swallow the stop failure and still reset the local state.
+		try {
+			await stop();
+		} catch {
+			/* pi already dead; proceed with the local reset */
+		}
 		setConnected(false);
 		setStreaming(false);
 		setWorking(false);
@@ -1570,7 +1714,20 @@ export default function App() {
 			}
 			try {
 				const statsResp = await handleResponse({ type: "get_session_stats" });
-				if (!cancelled) setStats(statsResp.data as SessionStats);
+				if (!cancelled) {
+					const loaded = statsResp.data as SessionStats;
+					const tk = loaded.tokens;
+					if (tk && tk.cacheRead > 0) {
+						loaded.perf = {
+							...(loaded.perf ?? {}),
+							cacheHitRate:
+								tk.input + tk.cacheRead > 0
+									? (tk.cacheRead / (tk.input + tk.cacheRead)) * 100
+									: undefined,
+						};
+					}
+					setStats(loaded);
+				}
 			} catch {
 				/* older pi */
 			}
@@ -1682,7 +1839,7 @@ export default function App() {
 		const slash = model.indexOf("/");
 		const provider = slash > 0 ? model.slice(0, slash) : "";
 		if (!provider) return true;
-		let statuses = authProviders;
+		let statuses: AuthProviderStatus[];
 		try {
 			statuses = await authStatus();
 			setAuthProviders(statuses);
@@ -1693,17 +1850,22 @@ export default function App() {
 			return true;
 		}
 		return new Promise<boolean>((resolve) => {
-			apiKeyResolveRef.current = resolve;
+			// Queue the resolver instead of storing a single slot: two
+			// overlapping sends (Enter + click, queued delivery racing a manual
+			// send) each push a resolver, and save/cancel resolves all of them —
+			// the first send can no longer hang forever.
+			apiKeyResolversRef.current.push(resolve);
 			setApiKeyDialog({ provider });
 		});
-	}, [model, authProviders]);
+	}, [model]);
 
 	const handleApiKeySave = useCallback(
 		async (provider: string, key: string) => {
 			await authSetKey(provider, key); // throws on failure
 			setAuthProviders(await authStatus());
-			apiKeyResolveRef.current?.(true);
-			apiKeyResolveRef.current = null;
+			const resolvers = apiKeyResolversRef.current;
+			apiKeyResolversRef.current = [];
+			for (const r of resolvers) r(true);
 			setApiKeyDialog(null);
 			toast(t.keyDialog.saved);
 		},
@@ -1711,8 +1873,9 @@ export default function App() {
 	);
 
 	const handleApiKeyCancel = useCallback(() => {
-		apiKeyResolveRef.current?.(false);
-		apiKeyResolveRef.current = null;
+		const resolvers = apiKeyResolversRef.current;
+		apiKeyResolversRef.current = [];
+		for (const r of resolvers) r(false);
 		setApiKeyDialog(null);
 	}, []);
 
@@ -1849,8 +2012,8 @@ export default function App() {
 			attachments: Attachment[],
 			behavior: SendBehavior,
 			editingQueueIdArg?: string | null,
-		) => {
-			if (!text.trim() && attachments.length === 0) return;
+		): Promise<boolean> => {
+			if (!text.trim() && attachments.length === 0) return false;
 
 			// Editing a queued message: save the draft back into the queue.
 			if (editingQueueIdArg) {
@@ -1861,15 +2024,15 @@ export default function App() {
 				setQueuedMessages(next);
 				setEditingQueueId(null);
 				setQueuePaused(false);
-				return;
+				return true;
 			}
 
 			// Allow composing as soon as a workspace is chosen: lazily spin up a
 			// fresh session on the first send instead of forcing "New task".
 			if (!connected) {
-				if (!workspace) return;
+				if (!workspace) return false;
 				const ok = await connect({ sessionFile: null });
-				if (!ok) return;
+				if (!ok) return false;
 			}
 			setError(null);
 
@@ -1884,12 +2047,12 @@ export default function App() {
 				const command = fullText.replace(/^!+/, "").trim();
 				if (command) {
 					await runBash(command, excludeFromContext);
-					return;
+					return true;
 				}
 			}
 
 			// Provider API-key gate: ask inline before sending when missing.
-			if (!(await ensureProviderKey())) return;
+			if (!(await ensureProviderKey())) return false;
 
 			// While the agent is running, every message is queued locally
 			// (editable, reorderable, send-now) and delivered one at a time —
@@ -1910,7 +2073,7 @@ export default function App() {
 					queuedRef.current = next;
 					setQueuedMessages(next);
 					setQueuePaused(false);
-					return;
+					return true;
 				}
 			}
 
@@ -1925,11 +2088,21 @@ export default function App() {
 			]);
 			runEpochRef.current += 1;
 			setWorking(true);
+			turnStartRef.current = Date.now();
+			firstTokenRef.current = null;
+			msgGenStartRef.current = null;
+			totalGenTimeRef.current = 0;
+			prevOutputTokensRef.current = statsRef.current?.tokens?.output ?? 0;
 
 			// New task: show it in the sidebar immediately instead of waiting
 			// for pi to flush the session file. discoverNewSession() promotes
 			// this placeholder to the real entry once the file exists.
 			const isNew = isNewSessionRef.current;
+			// Capture the navigation epoch before sending: if the user switches
+			// sessions while the prompt is in flight (or while discoverNewSession
+			// polls), the epoch changes and the poll aborts instead of yanking
+			// the selection back to this session.
+			const navEpoch = navEpochRef.current;
 			const title =
 				text.trim().slice(0, 60) || (attachments[0]?.name ?? "New session");
 			if (isNew && !sessionPathRef.current) {
@@ -1960,7 +2133,7 @@ export default function App() {
 					} catch {
 						/* ignore */
 					}
-					void discoverNewSession();
+					void discoverNewSession(navEpoch);
 				}
 			} catch (e) {
 				setError(String(e));
@@ -1977,9 +2150,12 @@ export default function App() {
 				setWorking(false);
 				setPendingSession(null);
 			}
+			return true;
 		},
-		[connected, workspace, connect, refreshSessions, discoverNewSession, ensureProviderKey, attachmentsToImages, attachmentsToText, working, sendDuringRun, runBash],
+		[connected, workspace, connect, discoverNewSession, ensureProviderKey, attachmentsToImages, attachmentsToText, working, sendDuringRun, runBash],
 	);
+
+	const abortWatchdogRef = useRef<number>(0);
 
 	const abort = useCallback(async () => {
 		// After an interrupt, pause auto-delivery of the queue unless the
@@ -2005,7 +2181,8 @@ export default function App() {
 		// sure a run the user started after aborting is never killed by the
 		// leftover watchdog.
 		const epoch = runEpochRef.current;
-		window.setTimeout(() => {
+		window.clearTimeout(abortWatchdogRef.current);
+		abortWatchdogRef.current = window.setTimeout(() => {
 			if (
 				runEpochRef.current !== epoch ||
 				(!workingRef.current && !streamingRef.current)
@@ -2372,6 +2549,7 @@ export default function App() {
 
 	const handleExtensionRespond = useCallback(
 		async (id: string, payload: Record<string, unknown>) => {
+			extensionRequestRef.current = null;
 			setExtensionRequest(null);
 			try {
 				await send({ type: "extension_ui_response", id, ...payload });
@@ -2667,6 +2845,18 @@ export default function App() {
 	// ---- keyboard shortcuts ----
 	useEffect(() => {
 		const onKeyDown = (e: KeyboardEvent) => {
+			// Don't fire app-level shortcuts while typing in an input/textarea
+			// (composer, settings editors, menu search boxes) — Ctrl+N would
+			// otherwise tear down the current session and draft mid-keystroke.
+			const el = e.target as HTMLElement | null;
+			if (
+				el &&
+				(el.tagName === "INPUT" ||
+					el.tagName === "TEXTAREA" ||
+					el.isContentEditable)
+			) {
+				return;
+			}
 			const mod = e.metaKey || e.ctrlKey;
 			if (!mod) return;
 			const key = e.key.toLowerCase();
@@ -2712,15 +2902,25 @@ export default function App() {
 	const resizeRef = useRef<{ startX: number; startW: number } | null>(null);
 	const startResize = useCallback((e: React.PointerEvent) => {
 		resizeRef.current = { startX: e.clientX, startW: sidebarWidth };
+		// Throttle to one update per animation frame: pointermove can fire far
+		// faster than a frame, and each setSidebarWidth re-renders the whole
+		// App (the memoized children skip, but the shell still runs).
+		let raf = 0;
+		let pendingW = 0;
 		const onMove = (ev: PointerEvent) => {
 			if (!resizeRef.current) return;
-			const w = Math.min(
+			pendingW = Math.min(
 				340,
 				Math.max(200, resizeRef.current.startW + ev.clientX - resizeRef.current.startX),
 			);
-			setSidebarWidth(w);
+			if (raf) return;
+			raf = requestAnimationFrame(() => {
+				raf = 0;
+				setSidebarWidth(pendingW);
+			});
 		};
 		const onUp = () => {
+			if (raf) cancelAnimationFrame(raf);
 			resizeRef.current = null;
 			window.removeEventListener("pointermove", onMove);
 			window.removeEventListener("pointerup", onUp);
@@ -2827,31 +3027,7 @@ export default function App() {
 					</>
 				)}
 
-				{settingsOpen ? (
-					<SettingsPanel
-						t={t}
-						settings={settings}
-						onChange={setSettings}
-						binary={binary}
-						sessionDir={sessionDirRef.current}
-						archived={archived}
-						onRestore={handleRestore}
-						onPurge={handlePurge}
-						onRestoreAll={handleRestoreAll}
-						onViewArchived={openArchivedPreview}
-						onCompactArchived={handleCompactArchived}
-						onClose={() => setSettingsOpen(false)}
-						onOpenSessionDir={openSessionDir}
-						onOpenScopedModels={() => setScopedModelsOpen(true)}
-						onReload={reload}
-						onOpenLlama={() => setLlamaOpen(true)}
-						workspace={workspace}
-						trustDecision={trustDecision}
-						trustDefault={trustDefault}
-						onSetProjectTrust={(d) => void setProjectTrust(d)}
-						onSetDefaultTrust={(v) => void setDefaultTrust(v)}
-					/>
-				) : (
+				<div className={`chat-area-shell${settingsOpen ? " hidden" : ""}`}>
 					<ChatArea
 						t={t}
 						session={selectedSession}
@@ -2917,6 +3093,31 @@ export default function App() {
 						onExternalDraftConsumed={() => setExternalDraft(null)}
 						onCycleThinking={cycleThinkingLevel}
 					/>
+				</div>
+				{settingsOpen && (
+					<SettingsPanel
+						t={t}
+						settings={settings}
+						onChange={setSettings}
+						binary={binary}
+						sessionDir={sessionDirRef.current}
+						archived={archived}
+						onRestore={handleRestore}
+						onPurge={handlePurge}
+						onRestoreAll={handleRestoreAll}
+						onViewArchived={openArchivedPreview}
+						onCompactArchived={handleCompactArchived}
+						onClose={() => setSettingsOpen(false)}
+						onOpenSessionDir={openSessionDir}
+						onOpenScopedModels={() => setScopedModelsOpen(true)}
+						onReload={reload}
+						onOpenLlama={() => setLlamaOpen(true)}
+						workspace={workspace}
+						trustDecision={trustDecision}
+						trustDefault={trustDefault}
+						onSetProjectTrust={(d) => void setProjectTrust(d)}
+						onSetDefaultTrust={(v) => void setDefaultTrust(v)}
+					/>
 				)}
 			</div>
 
@@ -2946,12 +3147,20 @@ export default function App() {
 
 			{confirmState && (
 				<div className="overlay-backdrop">
-					<div className="extension-dialog confirm-dialog">
+					<div
+						className="extension-dialog confirm-dialog"
+						role="dialog"
+						aria-modal="true"
+						onKeyDown={(e) => {
+							if (e.key === "Escape") setConfirmState(null);
+						}}
+					>
 						<h3>{confirmState.title}</h3>
 						<p className="extension-message">{confirmState.body}</p>
 						<div className="extension-dialog-actions">
 							<button
 								className="btn secondary"
+								autoFocus
 								onClick={() => setConfirmState(null)}
 							>
 								{t.app.cancel}
@@ -3093,9 +3302,6 @@ function ApiKeyDialog({
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
-	useEffect(() => {
-		setTimeout(() => inputRef.current?.focus(), 30);
-	}, []);
 	const save = async () => {
 		if (!key.trim() || busy) return;
 		setBusy(true);
@@ -3109,7 +3315,7 @@ function ApiKeyDialog({
 	};
 	return (
 		<div className="overlay-backdrop">
-			<div className="extension-dialog">
+			<div className="extension-dialog" role="dialog" aria-modal="true">
 				<h3>{t.keyDialog.title}</h3>
 				<p className="extension-message">
 					{t.keyDialog.body.replace("{provider}", provider)}
@@ -3117,6 +3323,7 @@ function ApiKeyDialog({
 				<input
 					ref={inputRef}
 					type="password"
+					autoFocus
 					value={key}
 					placeholder={t.keyDialog.placeholder}
 					onChange={(e) => setKey(e.target.value)}
@@ -3156,18 +3363,14 @@ function RenameDialog({
 }) {
 	const [value, setValue] = useState(state.initial);
 	const inputRef = useRef<HTMLInputElement>(null);
-	useEffect(() => {
-		setTimeout(() => {
-			inputRef.current?.focus();
-			inputRef.current?.select();
-		}, 30);
-	}, []);
 	return (
 		<div className="overlay-backdrop">
-			<div className="extension-dialog">
+			<div className="extension-dialog" role="dialog" aria-modal="true">
 				<h3>{state.title}</h3>
 				<input
 					ref={inputRef}
+					autoFocus
+					onFocus={(e) => e.currentTarget.select()}
 					value={value}
 					onChange={(e) => setValue(e.target.value)}
 					onKeyDown={(e) => {

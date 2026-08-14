@@ -10,6 +10,7 @@ import {
 	type DragEvent,
 } from "react";
 import type { Attachment, SendBehavior } from "../chat-types";
+import { formatBytes } from "../format";
 import { projectNameFromPath, type MessageCatalog } from "../i18n";
 import type { GitBranchState, PiCommand } from "../pi";
 import { externalEdit, projectFiles } from "../pi";
@@ -56,12 +57,6 @@ function readFileAsDataUrl(file: File): Promise<string> {
 	});
 }
 
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-	return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
 function AttachmentChip({
 	attachment,
 	onRemove,
@@ -98,17 +93,22 @@ function ContextUsageRing({
 }) {
 	const usage = stats.contextUsage;
 	if (!usage) return null;
-	const pct = Math.max(0, Math.min(100, usage.percent));
+	const pct = Math.round(Math.max(0, Math.min(100, usage.percent)));
 	const R = 15.5;
 	const C = 2 * Math.PI * R;
 	const tone = pct >= 80 ? "danger" : pct >= 55 ? "warn" : "ok";
+	const remaining = Math.max(0, usage.contextWindow - usage.tokens);
+	const fmt = (n: number) => n.toLocaleString();
+	const perf = stats.perf;
+	const fmtTTFT = (ms: number) =>
+		ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 	return (
 		<div className={`context-ring-wrap ${tone}`}>
 			<svg
 				viewBox="0 0 36 36"
 				className="context-ring"
-				width="20"
-				height="20"
+				width="16"
+				height="16"
 				role="img"
 				aria-label={`${t.chat.contextUsage}: ${pct}%`}
 			>
@@ -124,26 +124,91 @@ function ContextUsageRing({
 				/>
 			</svg>
 			<div className="context-tooltip">
-				<div className="context-tooltip-title">
-					{t.chat.contextUsage} · {pct}%
+				<div className="context-tooltip-header">
+					<span className="context-tooltip-label">
+						{t.chat.contextUsage}
+					</span>
+					<span className="context-tooltip-pct">{pct}%</span>
 				</div>
-				<div className="context-tooltip-row">
-					{usage.tokens.toLocaleString()} /{" "}
-					{usage.contextWindow.toLocaleString()} tokens
+				<div className="context-tooltip-bar">
+					<div
+						className="context-tooltip-bar-fill"
+						style={{ width: `${pct}%` }}
+					/>
 				</div>
-				{stats.cost != null && (
+				<div className="context-tooltip-rows">
 					<div className="context-tooltip-row">
-						{t.chat.cost}: ${stats.cost.toFixed(4)}
+						<span className="ct-label">{t.chat.contextWindow}</span>
+						<span className="ct-value">
+							{fmt(usage.tokens)} / {fmt(usage.contextWindow)}
+						</span>
 					</div>
-				)}
+					<div className="context-tooltip-row">
+						<span className="ct-label">{t.chat.remaining}</span>
+						<span className="ct-value">{fmt(remaining)}</span>
+					</div>
+				</div>
 				{stats.tokens && (
-					<div className="context-tooltip-row">
-						{t.chat.tokensIn} {stats.tokens.input.toLocaleString()} ·{" "}
-						{t.chat.tokensOut} {stats.tokens.output.toLocaleString()}
-						{stats.tokens.cacheRead > 0 &&
-							` · ${t.chat.tokensCache} ${stats.tokens.cacheRead.toLocaleString()}`}
-					</div>
+					<>
+						<div className="context-tooltip-divider" />
+						<div className="context-tooltip-rows">
+							<div className="context-tooltip-row">
+								<span className="ct-label">{t.chat.tokensIn}</span>
+								<span className="ct-value">{fmt(stats.tokens.input)}</span>
+							</div>
+							<div className="context-tooltip-row">
+								<span className="ct-label">{t.chat.tokensOut}</span>
+								<span className="ct-value">{fmt(stats.tokens.output)}</span>
+							</div>
+							{stats.tokens.cacheRead > 0 && (
+								<div className="context-tooltip-row">
+									<span className="ct-label">{t.chat.tokensCache}</span>
+									<span className="ct-value">
+										{fmt(stats.tokens.cacheRead)}
+									</span>
+								</div>
+							)}
+						</div>
+					</>
 				)}
+			{stats.cost != null && (
+				<>
+					<div className="context-tooltip-divider" />
+					<div className="context-tooltip-row">
+						<span className="ct-label">{t.chat.cost}</span>
+						<span className="ct-value ct-cost">
+							${stats.cost.toFixed(4)}
+						</span>
+					</div>
+				</>
+			)}
+			{perf && (perf.cacheHitRate != null || perf.avgTTFT != null || perf.tokensPerSec != null) && (
+				<>
+					<div className="context-tooltip-divider" />
+					<div className="context-tooltip-rows">
+						{perf.cacheHitRate != null && (
+							<div className="context-tooltip-row">
+								<span className="ct-label">{t.chat.cacheHitRate}</span>
+								<span className="ct-value">{perf.cacheHitRate.toFixed(1)}%</span>
+							</div>
+						)}
+						{perf.avgTTFT != null && (
+							<div className="context-tooltip-row">
+								<span className="ct-label">{t.chat.avgTTFT}</span>
+								<span className="ct-value">{fmtTTFT(perf.avgTTFT)}</span>
+							</div>
+						)}
+						{perf.tokensPerSec != null && (
+							<div className="context-tooltip-row">
+								<span className="ct-label">{t.chat.tokensPerSec}</span>
+								<span className="ct-value">
+									{perf.tokensPerSec.toFixed(1)} t/s
+								</span>
+							</div>
+						)}
+					</div>
+				</>
+			)}
 			</div>
 		</div>
 	);
@@ -210,7 +275,7 @@ export function Composer({
 		attachments: Attachment[],
 		behavior: SendBehavior,
 		editingQueueId?: string | null,
-	) => void;
+	) => Promise<boolean>;
 	onAbort: () => void;
 	aborting: boolean;
 	composerFocusRequest: number;
@@ -277,6 +342,7 @@ export function Composer({
 	const historyRef = useRef(history);
 	const historyIndexRef = useRef(-1);
 	const [extError, setExtError] = useState<string | null>(null);
+	const [attachError, setAttachError] = useState<string | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const modelMenuRef = useRef<HTMLDivElement>(null);
@@ -390,7 +456,7 @@ export function Composer({
 	}, [text, autoSize]);
 
 	const submit = useCallback(
-		(behavior?: SendBehavior) => {
+		async (behavior?: SendBehavior) => {
 			const trimmed = text.trim();
 			// While the agent is streaming, Enter sends via the active
 			// send-during-run mode (steer/followUp); App queues it and
@@ -401,7 +467,16 @@ export function Composer({
 				(!editingQueueId && !connected && !workspace)
 			)
 				return;
-			onSubmit(trimmed, attachments, behavior ?? "normal", editingQueueId);
+			// App.submit resolves `false` when it rejects the send (no
+			// workspace, connect canceled, API-key dialog canceled) — keep the
+			// draft so the user's text is never silently destroyed.
+			const accepted = await onSubmit(
+				trimmed,
+				attachments,
+				behavior ?? "normal",
+				editingQueueId,
+			).catch(() => false);
+			if (!accepted) return;
 			// Prompt history: remember what was actually sent.
 			if (trimmed) {
 				setHistory((prev) => [trimmed, ...prev.filter((h) => h !== trimmed)].slice(0, 100));
@@ -412,7 +487,7 @@ export function Composer({
 			requestAnimationFrame(autoSize);
 			textareaRef.current?.focus();
 		},
-		[text, attachments, connected, onSubmit, autoSize, editingQueueId],
+		[text, attachments, connected, workspace, onSubmit, autoSize, editingQueueId],
 	);
 
 	const startQueueEdit = useCallback(
@@ -451,39 +526,52 @@ export function Composer({
 		[customTools, onCustomToolsChange],
 	);
 
-	const addFiles = useCallback(async (files: File[]) => {
-		for (const file of files) {
-			if (file.size > MAX_ATTACHMENT_BYTES) continue;
-			const isImage = file.type.startsWith("image/");
-			let attachment: Attachment;
-			if (isImage) {
-				attachment = {
-					id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-					name: file.name,
-					kind: "image",
-					dataUrl: await readFileAsDataUrl(file),
-					size: file.size,
-				};
-			} else if (file.size <= MAX_TEXT_ATTACHMENT_BYTES) {
-				const textContent = await file.text();
-				attachment = {
-					id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-					name: file.name,
-					kind: "file",
-					text: textContent,
-					size: file.size,
-				};
-			} else {
-				attachment = {
-					id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-					name: file.name,
-					kind: "file",
-					size: file.size,
-				};
+	const addFiles = useCallback(
+		async (files: File[]) => {
+			for (const file of files) {
+				if (file.size > MAX_ATTACHMENT_BYTES) {
+					// Don't silently drop it — tell the user which file was skipped.
+					setAttachError(t.chat.attachTooLarge.replace("{name}", file.name));
+					continue;
+				}
+				const isImage = file.type.startsWith("image/");
+				try {
+					let attachment: Attachment;
+					if (isImage) {
+						attachment = {
+							id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+							name: file.name,
+							kind: "image",
+							dataUrl: await readFileAsDataUrl(file),
+							size: file.size,
+						};
+					} else if (file.size <= MAX_TEXT_ATTACHMENT_BYTES) {
+						const textContent = await file.text();
+						attachment = {
+							id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+							name: file.name,
+							kind: "file",
+							text: textContent,
+							size: file.size,
+						};
+					} else {
+						attachment = {
+							id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+							name: file.name,
+							kind: "file",
+							size: file.size,
+						};
+					}
+					setAttachments((prev) => [...prev, attachment]);
+				} catch {
+					// A FileReader/text() failure must not reject the whole batch
+					// (callers fire-and-forget it); surface it instead.
+					setAttachError(t.chat.attachFailed.replace("{name}", file.name));
+				}
 			}
-			setAttachments((prev) => [...prev, attachment]);
-		}
-	}, []);
+		},
+		[t],
+	);
 
 	const handlePaste = useCallback(
 		async (e: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -543,26 +631,28 @@ export function Composer({
 		: [];
 
 	const toggleWorkspaceMenu = useCallback(() => {
-		setWorkspaceMenuOpen((v) => {
-			if (v) return false;
+		if (workspaceMenuOpen) {
+			setWorkspaceMenuOpen(false);
+		} else {
+			// Side effects moved out of the state updater (StrictMode may
+			// double-invoke updater bodies).
 			setWorkspaceQuery("");
 			setBranchMenuOpen(false);
 			setBranchCreating(false);
-			return true;
-		});
-	}, []);
+			setWorkspaceMenuOpen(true);
+		}
+	}, [workspaceMenuOpen]);
 
 	const toggleBranchMenu = useCallback(() => {
-		setBranchMenuOpen((v) => {
-			if (v) {
-				setBranchCreating(false);
-				return false;
-			}
+		if (branchMenuOpen) {
+			setBranchCreating(false);
+			setBranchMenuOpen(false);
+		} else {
 			setBranchQuery("");
 			setWorkspaceMenuOpen(false);
-			return true;
-		});
-	}, []);
+			setBranchMenuOpen(true);
+		}
+	}, [branchMenuOpen]);
 
 	const toggleThinkingMenu = useCallback(() => {
 		setThinkingMenuOpen((v) => {
@@ -742,7 +832,7 @@ export function Composer({
 		const before = text.slice(0, caretRef.current);
 		const after = text.slice(caretRef.current);
 		const start = before.lastIndexOf(atMatch.token);
-		const replacement = path.endsWith("/") ? path : path;
+		const replacement = path;
 		setText(before.slice(0, start) + replacement + after);
 		setAtIndex(0);
 		requestAnimationFrame(() => {
@@ -888,7 +978,7 @@ export function Composer({
 					<div className="composer-select" ref={workspaceMenuRef}>
 						<button
 							className={`composer-chip ${workspaceMenuOpen ? "open" : ""}`}
-							onClick={toggleWorkspaceMenu}
+							onClick={toggleWorkspaceMenu} aria-expanded={workspaceMenuOpen}
 							title={workspace ?? t.sidebar.workspaceHint}
 						>
 							<FolderIcon size={13} />
@@ -962,7 +1052,7 @@ export function Composer({
 								className={`composer-chip ${branchMenuOpen ? "open" : ""}`}
 								disabled={!workspace}
 								title={`${t.chat.gitBranch}: ${gitState.currentBranch ?? ""}${gitState.dirtyFileCount > 0 ? ` · ${t.chat.gitDirty.replace("{count}", String(gitState.dirtyFileCount))}` : ""}`}
-								onClick={toggleBranchMenu}
+								onClick={toggleBranchMenu} aria-expanded={branchMenuOpen}
 							>
 								<BranchIcon size={13} />
 								<span className="composer-chip-name mono">
@@ -1133,6 +1223,14 @@ export function Composer({
 					<div className="ext-editor-error">
 						<span>{extError}</span>
 						<button className="link-btn" onClick={() => setExtError(null)}>
+							{t.app.close}
+						</button>
+					</div>
+				)}
+				{attachError && (
+					<div className="ext-editor-error">
+						<span>{attachError}</span>
+						<button className="link-btn" onClick={() => setAttachError(null)}>
 							{t.app.close}
 						</button>
 					</div>
@@ -1350,7 +1448,7 @@ export function Composer({
 									className={`composer-model-btn ${thinkingMenuOpen ? "open" : ""}`}
 									disabled={!connected}
 									title={t.app.thinking}
-									onClick={toggleThinkingMenu}
+									onClick={toggleThinkingMenu} aria-expanded={thinkingMenuOpen}
 								>
 									<BrainIcon size={14} />
 									<span className="composer-model-name">
@@ -1406,7 +1504,7 @@ export function Composer({
 						<div className="composer-select" ref={toolsMenuRef}>
 							<button
 								className={`composer-model-btn ${toolsMenuOpen ? "open" : ""}`}
-								title={t.chat.customTools}
+								title={t.chat.customTools} aria-expanded={toolsMenuOpen}
 								onClick={() => {
 									setToolsMenuOpen((v) => {
 										if (v) return false;
@@ -1460,7 +1558,7 @@ export function Composer({
 						<div className="composer-select" ref={modelMenuRef}>
 							<button
 								className="composer-model-btn"
-								onClick={() => setModelMenuOpen((v) => !v)}
+								onClick={() => setModelMenuOpen((v) => !v)} aria-expanded={modelMenuOpen}
 							>
 								<span className="model-dot" />
 								<span className="composer-model-name">
