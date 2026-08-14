@@ -111,6 +111,8 @@ export function TitleBar({
 	const [openMenu, setOpenMenu] = useState<string | null>(null);
 	const [maximized, setMaximized] = useState(false);
 	const [focused, setFocused] = useState(true);
+	const [fullscreen, setFullscreen] = useState(false);
+	const [titlebarPeek, setTitlebarPeek] = useState(false);
 	const rootRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
@@ -120,6 +122,38 @@ export function TitleBar({
 			void unlisten.then((f) => f());
 		};
 	}, []);
+
+	// Native fullscreen behavior: the title bar (and its traffic lights)
+	// hide while fullscreen and only slide back in when the cursor reaches
+	// the top edge — like the system menu bar in any fullscreen app.
+	useEffect(() => {
+		let mounted = true;
+		const refresh = () => {
+			void appWindow.isFullscreen().then((fs) => {
+				if (mounted) setFullscreen(fs);
+			});
+		};
+		refresh();
+		const unlisten = appWindow.onResized(refresh);
+		return () => {
+			mounted = false;
+			void unlisten.then((f) => f());
+		};
+	}, []);
+
+	useEffect(() => {
+		if (!fullscreen) {
+			setTitlebarPeek(false);
+			return;
+		}
+		function onMove(e: MouseEvent) {
+			// Title bar is 46px tall; keep it revealed while the cursor is on
+			// it or just below (native menu-bar feel), hide once it moves away.
+			setTitlebarPeek(e.clientY <= 64);
+		}
+		document.addEventListener("mousemove", onMove);
+		return () => document.removeEventListener("mousemove", onMove);
+	}, [fullscreen]);
 
 	useEffect(() => {
 		void appWindow.isMaximized().then(setMaximized);
@@ -217,17 +251,22 @@ export function TitleBar({
 
 	return (
 		<>
-			{RESIZE_EDGES.map((e) => (
-				<div
-					key={e.dir}
-					className="resize-edge"
-					style={e.style}
-					onMouseDown={(ev) => {
-						if (ev.button === 0) void appWindow.startResizeDragging(e.dir);
-					}}
-				/>
-			))}
-			<div className="titlebar" ref={rootRef}>
+			{RESIZE_EDGES.map((e) =>
+				fullscreen ? null : (
+					<div
+						key={e.dir}
+						className="resize-edge"
+						style={e.style}
+						onMouseDown={(ev) => {
+							if (ev.button === 0) void appWindow.startResizeDragging(e.dir);
+						}}
+					/>
+				),
+			)}
+			<div
+				className={`titlebar${fullscreen ? " fullscreen" : ""}${titlebarPeek ? " peek" : ""}`}
+				ref={rootRef}
+			>
 				<div className="titlebar-left">
 					{isMac && (
 						<div className={`traffic-lights${focused ? "" : " inactive"}`}>

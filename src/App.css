@@ -4084,6 +4084,28 @@ textarea {
 	user-select: none;
 }
 
+/* Fullscreen: hide like the native menu bar, slide back in on top-edge
+   hover. The app content stays full-bleed underneath; the bar overlays it
+   while peeking so the traffic lights remain usable (exit fullscreen). */
+.titlebar.fullscreen {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 100;
+	transform: translateY(-100%);
+	opacity: 0;
+	pointer-events: none;
+	transition:
+		transform 0.22s var(--ease),
+		opacity 0.22s var(--ease);
+}
+.titlebar.fullscreen.peek {
+	transform: translateY(0);
+	opacity: 1;
+	pointer-events: auto;
+}
+
 .titlebar-left {
 	display: flex;
 	align-items: center;
