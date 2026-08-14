@@ -870,14 +870,27 @@ fn pi_new_window<R: tauri::Runtime>(app: AppHandle<R>) -> Result<(), String> {
 		.unwrap_or(0);
 	let seq = WINDOW_SEQ.fetch_add(1, Ordering::Relaxed);
 	let label = format!("main-{stamp}-{seq}");
-	let win = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::default())
+	let mut builder = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::default())
 		.title("Tau")
 		.inner_size(1280.0, 800.0)
 		.min_inner_size(960.0, 640.0)
 		.center()
-		.decorations(false)
-		.build()
-		.map_err(|e| e.to_string())?;
+		.visible(false);
+	#[cfg(target_os = "macos")]
+	{
+		// Native traffic lights (like the main window).
+		builder = builder
+			.decorations(true)
+			.title_bar_style(tauri::TitleBarStyle::Overlay)
+			.hidden_title(true)
+			.traffic_light_position(tauri::LogicalPosition::new(20.0, 17.0));
+	}
+	#[cfg(not(target_os = "macos"))]
+	{
+		builder = builder.decorations(false);
+	}
+	let win = builder.build().map_err(|e| e.to_string())?;
+	let _ = win.show();
 	crate::window_state::restore(&win);
 	crate::window_state::attach(&win);
 	// Kill the window's pi process when its window closes (the app itself

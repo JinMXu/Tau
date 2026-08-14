@@ -17,36 +17,6 @@ type ResizeDirection =
 
 const appWindow = getCurrentWindow();
 
-/** macOS traffic-light glyphs (only visible while hovering). */
-const TRAFFIC_SVG = {
-	close: (
-		<svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
-			<path
-				d="M3.2 3.2l5.6 5.6M8.8 3.2l-5.6 5.6"
-				stroke="currentColor"
-				strokeWidth="1.3"
-				strokeLinecap="round"
-			/>
-		</svg>
-	),
-	minimize: (
-		<svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
-			<path d="M2.5 6h7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-		</svg>
-	),
-	zoom: (
-		<svg viewBox="0 0 12 12" width="9" height="9" aria-hidden="true">
-			<path
-				d="M2.5 2.5h7v7M3.3 8.7 8.7 3.3"
-				stroke="currentColor"
-				strokeWidth="1.15"
-				strokeLinecap="round"
-				strokeLinejoin="round"
-			/>
-		</svg>
-	),
-};
-
 type MenuEntry =
 	{ kind: "item"; label: string; shortcut?: string; action: () => void } | { kind: "sep" };
 
@@ -110,21 +80,11 @@ export function TitleBar({
 }) {
 	const [openMenu, setOpenMenu] = useState<string | null>(null);
 	const [maximized, setMaximized] = useState(false);
-	const [focused, setFocused] = useState(true);
 	const [fullscreen, setFullscreen] = useState(false);
 	const [titlebarPeek, setTitlebarPeek] = useState(false);
 	const rootRef = useRef<HTMLDivElement>(null);
 
-	useEffect(() => {
-		void appWindow.isFocused().then(setFocused);
-		const unlisten = appWindow.onFocusChanged(({ payload }) => setFocused(payload));
-		return () => {
-			void unlisten.then((f) => f());
-		};
-	}, []);
-
-	// Native fullscreen behavior: the title bar (and its traffic lights)
-	// hide while fullscreen and only slide back in when the cursor reaches
+	// Native fullscreen behavior: the title bar hides while fullscreen and only slide back in when the cursor reaches
 	// the top edge — like the system menu bar in any fullscreen app.
 	useEffect(() => {
 		let mounted = true;
@@ -264,44 +224,10 @@ export function TitleBar({
 				),
 			)}
 			<div
-				className={`titlebar${fullscreen ? " fullscreen" : ""}${titlebarPeek ? " peek" : ""}`}
+				className={`titlebar${isMac ? " mac" : ""}${fullscreen ? " fullscreen" : ""}${titlebarPeek ? " peek" : ""}`}
 				ref={rootRef}
 			>
 				<div className="titlebar-left">
-					{isMac && (
-						<div className={`traffic-lights${focused ? "" : " inactive"}`}>
-							<button
-								className="tl-btn tl-close"
-								title={t.menu.close}
-								aria-label={t.menu.close}
-								onClick={() => void appWindow.close()}
-							>
-								{TRAFFIC_SVG.close}
-							</button>
-							<button
-								className="tl-btn tl-min"
-								title={t.menu.minimize}
-								aria-label={t.menu.minimize}
-								onClick={() => void appWindow.minimize()}
-							>
-								{TRAFFIC_SVG.minimize}
-							</button>
-							<button
-								className="tl-btn tl-zoom"
-								title={t.menu.fullscreen}
-								aria-label={t.menu.fullscreen}
-								onClick={(e) => {
-									// macOS native green-button convention: click toggles
-									// fullscreen; Option+click zooms (fills the work area
-									// without the fullscreen space / menu bar).
-									if (e.altKey) void appWindow.toggleMaximize();
-									else void toggleFullscreen();
-								}}
-							>
-								{TRAFFIC_SVG.zoom}
-							</button>
-						</div>
-					)}
 					<button
 						className="titlebar-sidebar-btn"
 						title={sidebarCollapsed ? t.sidebar.expand : t.sidebar.collapse}

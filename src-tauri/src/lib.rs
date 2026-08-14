@@ -141,6 +141,21 @@ pub fn run() {
 				});
 			}
 			if let Some(win) = app.get_webview_window("main") {
+				// macOS: keep system decorations (titleBarStyle Overlay + traffic
+				// lights are configured in tauri.conf.json, native rendering).
+				// Windows/Linux: the config's decorations:true is only a
+				// macOS-friendly default; switch back to the borderless
+				// window with the custom title-bar buttons. The window is
+				// created hidden (visible:false) so nothing flashes.
+				#[cfg(target_os = "macos")]
+				{
+					let _ = win.set_title_bar_style(tauri::TitleBarStyle::Overlay);
+				}
+				#[cfg(not(target_os = "macos"))]
+				{
+					let _ = win.set_decorations(false);
+				}
+				let _ = win.show();
 				window_state::restore(&win);
 				window_state::attach(&win);
 				// Kill the main window's pi process when the window closes
