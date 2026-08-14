@@ -883,7 +883,7 @@ fn pi_new_window<R: tauri::Runtime>(app: AppHandle<R>) -> Result<(), String> {
 			.decorations(true)
 			.title_bar_style(tauri::TitleBarStyle::Overlay)
 			.hidden_title(true)
-			.traffic_light_position(tauri::LogicalPosition::new(20.0, 17.0));
+			.traffic_light_position(tauri::LogicalPosition::new(20.0, 25.0));
 	}
 	#[cfg(not(target_os = "macos"))]
 	{
