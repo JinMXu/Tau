@@ -240,32 +240,6 @@ export default function App() {
 		const w = Number(localStorage.getItem(STORAGE_KEYS.width));
 		return w >= 200 && w <= 340 ? w : 280;
 	});
-	// macOS fullscreen hides the traffic lights natively; the UI drops the
-	// light-clearance padding so buttons/logo move to the edge. The
-	// transition animates the window size and fires a burst of resize
-	// events, so the state check is debounced: polling on every frame both
-	// spams IPC and flips the layout class mid-animation (janky).
-	const [fullscreen, setFullscreen] = useState(false);
-	useEffect(() => {
-		let mounted = true;
-		let timer: number | null = null;
-		const sync = () => {
-			void getCurrentWindow().isFullscreen().then((fs) => {
-				if (mounted) setFullscreen(fs);
-			});
-		};
-		sync();
-		const onResize = () => {
-			if (timer !== null) window.clearTimeout(timer);
-			timer = window.setTimeout(sync, 150);
-		};
-		const unlisten = getCurrentWindow().onResized(onResize);
-		return () => {
-			mounted = false;
-			if (timer !== null) window.clearTimeout(timer);
-			void unlisten.then((f) => f());
-		};
-	}, []);
 	// ---- session navigation history (back / forward) ----
 	// Mirrored in refs so pushNav/navGo never read stale closures.
 	const [navHistory, setNavHistory] = useState<string[]>([]);
@@ -3092,7 +3066,7 @@ export default function App() {
 	);
 
 	return (
-		<div className={`app${fullscreen ? " fullscreen" : ""}`}>
+		<div className="app">
 			<div className={`shell${sidebarCollapsed ? " collapsed" : ""}`}>
 				{!sidebarCollapsed && !settingsOpen && (
 					<>
