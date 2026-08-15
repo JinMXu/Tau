@@ -437,6 +437,9 @@ textarea {
 	padding: 0 var(--sp-3) 0 var(--sp-4);
 	border-bottom: 1px solid var(--sidebar-border);
 	flex-shrink: 0;
+	/* Slide the buttons smoothly when fullscreen drops the traffic-light
+	   clearance (the flip is deferred until the transition settles). */
+	transition: padding-left 0.2s var(--ease);
 }
 
 /* back/forward pair sits as one group, collapse button stays separate */
@@ -798,6 +801,8 @@ textarea {
 	gap: 8px;
 	min-width: 0;
 	flex: 1;
+	/* Smooth transition for the collapsed/fullscreen padding change. */
+	transition: padding-left 0.2s var(--ease);
 }
 
 /* Collapsed sidebar: the expand / back / forward / new-task buttons move
@@ -835,6 +840,8 @@ html[data-platform="macos"] .shell.collapsed .collapsed-actions {
 	padding: 0 14px;
 	background: var(--dsh-bg-base);
 	border-bottom: 1px solid var(--dsh-border-l2);
+	/* Smooth transition for the fullscreen padding change. */
+	transition: padding-left 0.2s var(--ease);
 }
 
 html[data-platform="macos"] .collapsed-actions-bar {
@@ -4052,6 +4059,19 @@ html[data-platform="macos"] .sidebar-brand {
 	align-items: flex-start;
 	padding-left: 92px;
 	padding-top: 10px;
+}
+
+/* Fullscreen hides the traffic lights natively (and the menu bar until
+   hovered): drop their clearance so the buttons move flush to the edge
+   instead of leaving an empty gap. */
+html[data-platform="macos"] .app.fullscreen .sidebar-brand {
+	padding-left: var(--sp-4);
+}
+html[data-platform="macos"] .app.fullscreen .collapsed-actions-bar {
+	padding-left: 14px;
+}
+html[data-platform="macos"] .app.fullscreen .shell.collapsed .chat-header-left {
+	padding-left: 0;
 }
 
 /* ---------------------------------------------------------------------------
