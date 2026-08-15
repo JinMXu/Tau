@@ -241,34 +241,25 @@ export default function App() {
 		return w >= 200 && w <= 340 ? w : 280;
 	});
 	// Fullscreen: macOS hides the traffic lights natively, so the header
-	// buttons move into their spot (the padding change is in CSS via the
-	// `.app.fullscreen` class). The transition animates the window size and
-	// shows the old snapshot + new window simultaneously, so the buttons
-	// MUST NOT move during it (that produced two rows of duplicate buttons).
-	// Entering: wait for the transition to fully settle before flipping.
-	// Leaving: flip quickly so the buttons vacate the traffic-light zone
-	// before the lights reappear.
+	// buttons move into their spot (CSS via the `.app.fullscreen` class). The
+	// Rust side observes the native "did enter/exit fullscreen" notifications
+	// — posted when the transition animation finishes — and forwards them as
+	// `window://fullscreen` ("enter"/"exit"), so the layout flips exactly
+	// when the transition lands: no mid-animation move (duplicate rows), no
+	// lag behind it.
 	const [fullscreen, setFullscreen] = useState(false);
-	const fullscreenRef = useRef(false);
 	useEffect(() => {
 		let mounted = true;
-		let timer: number | null = null;
-		const sync = () => {
-			void getCurrentWindow().isFullscreen().then((fs) => {
-				if (!mounted) return;
-				fullscreenRef.current = fs;
-				setFullscreen(fs);
-			});
-		};
-		sync();
-		const onResize = () => {
-			if (timer !== null) window.clearTimeout(timer);
-			timer = window.setTimeout(sync, fullscreenRef.current ? 150 : 750);
-		};
-		const unlisten = getCurrentWindow().onResized(onResize);
+		const unlisten = listen<string>("window://fullscreen", (e) => {
+			if (!mounted) return;
+			setFullscreen(e.payload === "enter");
+		});
+		// Initial state (e.g. app relaunched while still in fullscreen).
+		void getCurrentWindow().isFullscreen().then((fs) => {
+			if (mounted) setFullscreen(fs);
+		});
 		return () => {
 			mounted = false;
-			if (timer !== null) window.clearTimeout(timer);
 			void unlisten.then((f) => f());
 		};
 	}, []);
