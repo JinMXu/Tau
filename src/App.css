@@ -416,8 +416,30 @@ textarea {
 	flex-shrink: 0;
 	min-width: 0;
 	display: flex;
+	overflow: hidden;
 	background: var(--sidebar-bg);
 	border-right: 1px solid var(--sidebar-border);
+	/* Animate the collapse/expand: the width shrinks/grows (the chat area
+	   flexes to fill the space) while the content fades. `visibility` flips
+	   discretely at the end so the hidden sidebar drops out of focus order. */
+	transition:
+		width 0.24s var(--ease),
+		opacity 0.24s var(--ease),
+		visibility 0.24s;
+}
+
+.sidebar-shell.collapsed {
+	opacity: 0;
+	visibility: hidden;
+	pointer-events: none;
+}
+
+/* Holds the sidebar at its real width while the shell shrinks, so the
+   content never reflows mid-animation. */
+.sidebar-fixed {
+	flex-shrink: 0;
+	overflow: hidden;
+	display: flex;
 }
 
 .sidebar {
@@ -774,6 +796,10 @@ textarea {
 	transition: background var(--dur) var(--ease);
 }
 
+.sidebar-resizer.hidden {
+	display: none;
+}
+
 .sidebar-resizer:hover {
 	background: color-mix(in srgb, var(--app-muted) 26%, transparent);
 }
@@ -811,13 +837,27 @@ textarea {
 /* Collapsed sidebar: the expand / back / forward / new-task buttons move
    into the chat header (the whole page becomes the chat). The buttons sit
    exactly where the expanded sidebar brand had them — right after the
-   traffic lights, vertically aligned with them. */
+   traffic lights, vertically aligned with them. They fade in slightly after
+   the collapse starts so the sidebar's own buttons and these don't visually
+   stack. */
 .collapsed-actions {
 	display: flex;
 	align-items: center;
 	gap: var(--sp-2);
 	flex-shrink: 0;
 	transition: opacity 0.12s var(--ease);
+	animation: collapsed-actions-in 0.2s var(--ease) 0.12s both;
+}
+
+@keyframes collapsed-actions-in {
+	from {
+		opacity: 0;
+		transform: translateX(-4px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
 }
 
 html[data-platform="macos"] .shell.collapsed .chat-header-left {

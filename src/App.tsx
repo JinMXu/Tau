@@ -3107,12 +3107,25 @@ export default function App() {
 			className={`app${fullscreen ? " fullscreen" : ""}${fsTransitioning ? " fs-transitioning" : ""}`}
 		>
 			<div className={`shell${sidebarCollapsed ? " collapsed" : ""}`}>
-				{!sidebarCollapsed && !settingsOpen && (
+				{!settingsOpen && (
 					<>
-						<div className="sidebar-shell" style={{ width: sidebarWidth }}>
-							{sidebarEl}
+						{/* Always mounted so the collapse/expand animates the width
+						    smoothly (the chat area flexes to fill the freed space).
+						    The inner wrapper keeps the sidebar content at its real
+						    width so it doesn't reflow while the shell shrinks. */}
+						<div
+							className={`sidebar-shell${sidebarCollapsed ? " collapsed" : ""}`}
+							style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
+							aria-hidden={sidebarCollapsed}
+						>
+							<div className="sidebar-fixed" style={{ width: sidebarWidth }}>
+								{sidebarEl}
+							</div>
 						</div>
-						<div className="sidebar-resizer" onPointerDown={startResize} />
+						<div
+							className={`sidebar-resizer${sidebarCollapsed ? " hidden" : ""}`}
+							onPointerDown={startResize}
+						/>
 					</>
 				)}
 
