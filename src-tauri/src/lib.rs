@@ -139,17 +139,22 @@ fn rebuild_menu(app: AppHandle, lang: String) -> Result<(), String> {
 
 /// macOS: the fullscreen transition animates the window for ~0.5s and
 /// `Resized` fires at the start (frame change), so the renderer cannot tell
-/// when the animation ends. Observe the native "did enter/exit fullscreen"
-/// notifications — posted when the transition finishes — and forward them as
-/// `window://fullscreen` ("enter"/"exit"). The renderer then flips the
-/// header-buttons layout exactly when the transition lands: no mid-animation
-/// move (which showed two rows of buttons) and no lag behind it.
+/// when the animation starts or ends. Observe the native fullscreen
+/// notifications and forward them as `window://fullscreen` events:
+///   "will-enter" / "will-exit" — posted BEFORE the animation starts (the
+///     renderer fades the header buttons out so the old+new window states
+///     shown simultaneously during the transition can't duplicate them);
+///   "enter" / "exit" — posted when the animation finishes (the renderer
+///     flips the layout and fades the buttons back in at the new position).
 #[cfg(target_os = "macos")]
 fn watch_fullscreen_transitions(win: &tauri::WebviewWindow, app: &tauri::AppHandle) {
 	use block2::RcBlock;
 	use objc2::rc::Retained;
 	use objc2::runtime::ProtocolObject;
-	use objc2_app_kit::{NSWindow, NSWindowDidEnterFullScreenNotification, NSWindowDidExitFullScreenNotification};
+	use objc2_app_kit::{
+		NSWindow, NSWindowDidEnterFullScreenNotification, NSWindowDidExitFullScreenNotification,
+		NSWindowWillEnterFullScreenNotification, NSWindowWillExitFullScreenNotification,
+	};
 	use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol};
 	use std::ptr::NonNull;
 
@@ -167,27 +172,28 @@ fn watch_fullscreen_transitions(win: &tauri::WebviewWindow, app: &tauri::AppHand
 			let _ = app.emit("window://fullscreen", payload);
 		});
 		// Safety: name/obj/queue are valid; the block is Send.
-		let token = unsafe {
+		unsafe {
 			center.addObserverForName_object_queue_usingBlock(
 				Some(name),
 				Some(&ns_window),
 				None,
 				&block,
 			)
-		};
-		token
+		}
 	};
 
 	// Keep the observer tokens (and the retained NSWindow) alive for the
 	// whole app lifetime; NSNotificationCenter removes the observation as
 	// soon as the returned token is deallocated.
-	let enter: Retained<ProtocolObject<dyn NSObjectProtocol>> = unsafe {
-		make_observer(NSWindowDidEnterFullScreenNotification, "enter")
-	};
-	let exit: Retained<ProtocolObject<dyn NSObjectProtocol>> = unsafe {
-		make_observer(NSWindowDidExitFullScreenNotification, "exit")
-	};
-	Box::leak(Box::new((enter, exit, ns_window)));
+	let will_enter: Retained<ProtocolObject<dyn NSObjectProtocol>> =
+		unsafe { make_observer(NSWindowWillEnterFullScreenNotification, "will-enter") };
+	let did_enter: Retained<ProtocolObject<dyn NSObjectProtocol>> =
+		unsafe { make_observer(NSWindowDidEnterFullScreenNotification, "enter") };
+	let will_exit: Retained<ProtocolObject<dyn NSObjectProtocol>> =
+		unsafe { make_observer(NSWindowWillExitFullScreenNotification, "will-exit") };
+	let did_exit: Retained<ProtocolObject<dyn NSObjectProtocol>> =
+		unsafe { make_observer(NSWindowDidExitFullScreenNotification, "exit") };
+	Box::leak(Box::new((will_enter, did_enter, will_exit, did_exit, ns_window)));
 }
 
 /// macOS: wry's `trafficLightPosition.y` is a no-op for vertical placement

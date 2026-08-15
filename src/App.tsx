@@ -242,17 +242,31 @@ export default function App() {
 	});
 	// Fullscreen: macOS hides the traffic lights natively, so the header
 	// buttons move into their spot (CSS via the `.app.fullscreen` class). The
-	// Rust side observes the native "did enter/exit fullscreen" notifications
-	// — posted when the transition animation finishes — and forwards them as
-	// `window://fullscreen` ("enter"/"exit"), so the layout flips exactly
-	// when the transition lands: no mid-animation move (duplicate rows), no
-	// lag behind it.
+	// transition shows the old + new window states simultaneously, which
+	// would duplicate the buttons, so the Rust side forwards the native
+	// fullscreen notifications:
+	//   "will-enter"/"will-exit" — before the animation: fade the buttons out;
+	//   "enter"/"exit" — when it finishes: flip the layout and fade them in.
 	const [fullscreen, setFullscreen] = useState(false);
+	const [fsTransitioning, setFsTransitioning] = useState(false);
 	useEffect(() => {
 		let mounted = true;
 		const unlisten = listen<string>("window://fullscreen", (e) => {
 			if (!mounted) return;
-			setFullscreen(e.payload === "enter");
+			switch (e.payload) {
+				case "will-enter":
+				case "will-exit":
+					setFsTransitioning(true);
+					break;
+				case "enter":
+					setFsTransitioning(false);
+					setFullscreen(true);
+					break;
+				case "exit":
+					setFsTransitioning(false);
+					setFullscreen(false);
+					break;
+			}
 		});
 		// Initial state (e.g. app relaunched while still in fullscreen).
 		void getCurrentWindow().isFullscreen().then((fs) => {
@@ -3089,7 +3103,9 @@ export default function App() {
 	);
 
 	return (
-		<div className={`app${fullscreen ? " fullscreen" : ""}`}>
+		<div
+			className={`app${fullscreen ? " fullscreen" : ""}${fsTransitioning ? " fs-transitioning" : ""}`}
+		>
 			<div className={`shell${sidebarCollapsed ? " collapsed" : ""}`}>
 				{!sidebarCollapsed && !settingsOpen && (
 					<>
