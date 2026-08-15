@@ -257,7 +257,7 @@ export default function App() {
 		sync();
 		const onResize = () => {
 			if (timer !== null) window.clearTimeout(timer);
-			timer = window.setTimeout(sync, 300);
+			timer = window.setTimeout(sync, 150);
 		};
 		const unlisten = getCurrentWindow().onResized(onResize);
 		return () => {
