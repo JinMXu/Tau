@@ -273,7 +273,11 @@ pub fn run() {
 				window_state::attach(&win);
 				// macOS: align the native traffic lights with the title bar
 				// content (wry can't move them vertically). Fullscreen toggles
-				// reset the frames, so re-apply on every resize.
+				// reset the frames, so re-apply after resizing — but debounced:
+				// the fullscreen transition animates the window size and fires a
+				// burst of Resized events; re-aligning on every one of them
+				// fights AppKit's own traffic-light animation on the main thread
+				// (the lights stutter / look stuck) and stutters the transition.
 				#[cfg(target_os = "macos")]
 				{
 					align_traffic_lights(&win);
@@ -284,7 +288,25 @@ pub fn run() {
 							crate::pi::kill_window_process_inner(&inner, "main");
 						}
 						if let tauri::WindowEvent::Resized(_) = event {
-							align_traffic_lights(&win_for_events);
+							use std::sync::atomic::{AtomicU64, Ordering};
+							use std::time::{SystemTime, UNIX_EPOCH};
+							static LAST_RESIZE: AtomicU64 = AtomicU64::new(0);
+							let stamp = SystemTime::now()
+								.duration_since(UNIX_EPOCH)
+								.map(|d| d.as_millis() as u64)
+								.unwrap_or(0);
+							LAST_RESIZE.store(stamp, Ordering::SeqCst);
+							let w = win_for_events.clone();
+							std::thread::spawn(move || {
+								std::thread::sleep(std::time::Duration::from_millis(300));
+								// A newer resize superseded this one; it owns the
+								// re-align once the burst settles.
+								if LAST_RESIZE.load(Ordering::SeqCst) != stamp {
+									return;
+								}
+								let w2 = w.clone();
+								let _ = w.run_on_main_thread(move || align_traffic_lights(&w2));
+							});
 						}
 					});
 				}

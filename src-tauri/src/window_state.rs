@@ -215,8 +215,17 @@ pub fn attach<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 		let state_arc = state.clone();
 		let path = path.clone();
 		let saving = saving.clone();
+		let win_for_save = win.clone();
 		thread::spawn(move || {
 			thread::sleep(Duration::from_millis(400));
+			// Never persist fullscreen (or mid-transition) geometry: entering
+			// fullscreen animates the size and fires continuous Resized events,
+			// and saving an intermediate frame would restore a wrong window
+			// size on the next launch.
+			if win_for_save.is_fullscreen().unwrap_or(false) {
+				saving.store(false, Ordering::SeqCst);
+				return;
+			}
 			// Write the LATEST state, not the snapshot captured at spawn: an
 			// event arriving during the sleep mutates `state` under the lock
 			// and would otherwise be lost if no further event re-triggers.
