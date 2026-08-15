@@ -5,16 +5,19 @@ mod window_state;
 
 #[cfg(target_os = "macos")]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 /// Build the native application menu in the given interface language.
 /// The renderer calls `rebuild_menu` after a language change so the menu
 /// follows the UI without an app restart.
 ///
-/// On Windows/Linux the borderless window renders its own menu inside the
-/// custom title bar, so no native menu bar is attached (a native menu bar
-/// would stack above the title bar and misalign the sidebar toggle). Only
-/// macOS gets a real application menu (system menu bar).
+/// macOS: the menu lives in the system menu bar (there is no in-window
+/// title bar; traffic lights are drawn natively over the content). The
+/// custom items (About / Session details / Session tree / Toggle sidebar)
+/// are forwarded to the renderer as `menu://command` events; New window is
+/// handled in Rust directly. Windows/Linux use the standard window
+/// decorations (no native menu bar in Tauri v2), so nothing is attached
+/// there.
 fn build_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
 	#[cfg(not(target_os = "macos"))]
 	{
@@ -27,6 +30,7 @@ fn build_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
 		let (
 			app_menu_label,
 			about_label,
+			new_window_label,
 			edit_label,
 			undo_label,
 			redo_label,
@@ -36,10 +40,14 @@ fn build_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
 			select_all_label,
 			view_label,
 			fullscreen_label,
+			session_info_label,
+			tree_label,
+			toggle_sidebar_label,
 		) = if zh {
 			(
 				"应用",
 				"关于 Tau",
+				"新窗口",
 				"编辑",
 				"撤销",
 				"重做",
@@ -49,11 +57,15 @@ fn build_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
 				"全选",
 				"视图",
 				"切换全屏",
+				"会话详情",
+				"会话树",
+				"切换侧边栏",
 			)
 		} else {
 			(
 				"App",
 				"About Tau",
+				"New window",
 				"Edit",
 				"Undo",
 				"Redo",
@@ -63,6 +75,9 @@ fn build_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
 				"Select All",
 				"View",
 				"Toggle Fullscreen",
+				"Session details",
+				"Session tree",
+				"Toggle Sidebar",
 			)
 		};
 		let edit_menu = Submenu::with_items(
@@ -84,12 +99,33 @@ fn build_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
 			view_label,
 			true,
 			&[
-				&PredefinedMenuItem::separator(app)?,
 				&PredefinedMenuItem::fullscreen(app, Some(fullscreen_label))?,
+				&PredefinedMenuItem::separator(app)?,
+				&MenuItem::with_id(
+					app,
+					"toggle-sidebar",
+					toggle_sidebar_label,
+					true,
+					None::<&str>,
+				)?,
+				&MenuItem::with_id(app, "session-info", session_info_label, true, None::<&str>)?,
+				&MenuItem::with_id(app, "tree", tree_label, true, None::<&str>)?,
 			],
 		)?;
-		let app_item = MenuItem::with_id(app, "about", about_label, true, None::<&str>)?;
-		let app_menu = Submenu::with_items(app, app_menu_label, true, &[&app_item])?;
+		let new_window_item = MenuItem::with_id(
+			app,
+			"new-window",
+			new_window_label,
+			true,
+			Some("CmdOrCtrl+Shift+N"),
+		)?;
+		let about_item = MenuItem::with_id(app, "about", about_label, true, None::<&str>)?;
+		let app_menu = Submenu::with_items(
+			app,
+			app_menu_label,
+			true,
+			&[&new_window_item, &PredefinedMenuItem::separator(app)?, &about_item],
+		)?;
 		let menu = Menu::with_items(app, &[&app_menu, &edit_menu, &view_menu])?;
 		app.set_menu(menu)?;
 		Ok(())
@@ -99,6 +135,65 @@ fn build_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
 #[tauri::command]
 fn rebuild_menu(app: AppHandle, lang: String) -> Result<(), String> {
 	build_menu(&app, &lang).map_err(|e| e.to_string())
+}
+
+/// macOS: wry's `trafficLightPosition.y` is a no-op for vertical placement
+/// (it only stretches the transparent title-bar container; the standard
+/// window buttons keep the system's fixed Y). Reposition the buttons natively
+/// so their centers line up with the chat title bar content (y = 23 — where
+/// the 26px top-aligned header buttons sit, padding-top 10px).
+///
+/// Reads the current frame (which already carries wry's X inset) and only
+/// adjusts Y, so horizontal placement stays intact. Re-applied on every
+/// resize (fullscreen toggles reset the frames).
+#[cfg(target_os = "macos")]
+fn align_traffic_lights(win: &tauri::WebviewWindow) {
+	use objc2::rc::Retained;
+	use objc2_app_kit::{NSWindow, NSWindowButton};
+
+	// 26px header buttons sit top-aligned at padding-top 10 → center y=23
+	// from the window top; move the lights to the same line as the chat
+	// title bar content.
+	const TARGET_CENTER_Y: f64 = 23.0;
+
+	let Ok(raw) = win.ns_window() else {
+		return;
+	};
+	let Some(ns_window) = (unsafe { Retained::retain(raw.cast::<NSWindow>()) }) else {
+		return;
+	};
+	// Position relative to the content view (fills the window in overlay
+	// mode, top = window top). convertRect handles flipped intermediate
+	// views, so the math is: bottom-origin content view, center at
+	// content_h - 23 from the bottom.
+	let Some(content_view) = ns_window.contentView() else {
+		return;
+	};
+	let content_h = content_view.frame().size.height;
+	for kind in [
+		NSWindowButton::CloseButton,
+		NSWindowButton::MiniaturizeButton,
+		NSWindowButton::ZoomButton,
+	] {
+		let Some(btn) = ns_window.standardWindowButton(kind) else {
+			continue;
+		};
+		let Some(superview) = (unsafe { btn.superview() }) else {
+			continue;
+		};
+		// Current rect in content view coordinates (btn.frame() lives in the
+		// superview's space, so convert from there).
+		let in_cv = superview.convertRect_toView(btn.frame(), Some(&content_view));
+		// Target origin in content view coordinates (keep x, set y so the
+		// center lands at content_h - 23).
+		let mut target = in_cv;
+		target.origin.y = (content_h - TARGET_CENTER_Y) - in_cv.size.height / 2.0;
+		// Convert back into the button's superview space and apply.
+		let in_super = superview.convertRect_fromView(target, Some(&content_view));
+		let mut f = btn.frame();
+		f.origin.y = in_super.origin.y;
+		btn.setFrame(f);
+	}
 }
 
 /// Frontend error reporting channel: the renderer catches uncaught
@@ -114,6 +209,29 @@ pub fn run() {
 	pi::register(tauri::Builder::default())
 		.plugin(tauri_plugin_opener::init())
 		.plugin(tauri_plugin_dialog::init())
+		.on_menu_event(|app, event| {
+			let id = event.id().as_ref();
+			match id {
+				// "New Window" already has a Rust-side implementation; open it
+				// directly without a renderer round-trip.
+				"new-window" => {
+					let _ = crate::pi::pi_new_window(app.clone());
+				}
+				// Everything else is renderer-side state (settings panel,
+				// dialogs, sidebar toggle), so forward the command to the
+				// focused window.
+				"about" | "session-info" | "tree" | "toggle-sidebar" => {
+					let windows = app.webview_windows();
+					if let Some(win) = windows
+						.values()
+						.find(|w| w.is_focused().unwrap_or(false))
+					{
+						let _ = win.emit("menu://command", id);
+					}
+				}
+				_ => {}
+			}
+		})
 		.setup(|app| {
 			// Panics on the main thread kill the whole app with zero evidence
 			// (GUI builds have no console and Windows WER doesn't capture
@@ -141,31 +259,46 @@ pub fn run() {
 				});
 			}
 			if let Some(win) = app.get_webview_window("main") {
-				// macOS: keep system decorations (titleBarStyle Overlay + traffic
-				// lights are configured in tauri.conf.json, native rendering).
-				// Windows/Linux: the config's decorations:true is only a
-				// macOS-friendly default; switch back to the borderless
-				// window with the custom title-bar buttons. The window is
-				// created hidden (visible:false) so nothing flashes.
+				// macOS: overlay title bar — no native title bar, just the
+				// traffic lights drawn over the content (configured in
+				// tauri.conf.json). Windows/Linux keep the standard window
+				// decorations. The window is created hidden (visible:false)
+				// so nothing flashes.
 				#[cfg(target_os = "macos")]
 				{
 					let _ = win.set_title_bar_style(tauri::TitleBarStyle::Overlay);
 				}
-				#[cfg(not(target_os = "macos"))]
-				{
-					let _ = win.set_decorations(false);
-				}
 				let _ = win.show();
 				window_state::restore(&win);
 				window_state::attach(&win);
-				// Kill the main window's pi process when the window closes
-				// (other windows may keep the app alive).
-				let inner = app.state::<crate::pi::PiState>().handle();
-				win.on_window_event(move |event| {
-					if let tauri::WindowEvent::Destroyed = event {
-						crate::pi::kill_window_process_inner(&inner, "main");
-					}
-				});
+				// macOS: align the native traffic lights with the title bar
+				// content (wry can't move them vertically). Fullscreen toggles
+				// reset the frames, so re-apply on every resize.
+				#[cfg(target_os = "macos")]
+				{
+					align_traffic_lights(&win);
+					let win_for_events = win.clone();
+					let inner = app.state::<crate::pi::PiState>().handle();
+					win.on_window_event(move |event| {
+						if let tauri::WindowEvent::Destroyed = event {
+							crate::pi::kill_window_process_inner(&inner, "main");
+						}
+						if let tauri::WindowEvent::Resized(_) = event {
+							align_traffic_lights(&win_for_events);
+						}
+					});
+				}
+				#[cfg(not(target_os = "macos"))]
+				{
+					// Kill the main window's pi process when the window closes
+					// (other windows may keep the app alive).
+					let inner = app.state::<crate::pi::PiState>().handle();
+					win.on_window_event(move |event| {
+						if let tauri::WindowEvent::Destroyed = event {
+							crate::pi::kill_window_process_inner(&inner, "main");
+						}
+					});
+				}
 			}
 			Ok(())
 		})

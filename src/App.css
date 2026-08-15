@@ -435,42 +435,15 @@ textarea {
 	gap: var(--sp-2);
 	height: var(--titlebar-h);
 	padding: 0 var(--sp-3) 0 var(--sp-4);
+	border-bottom: 1px solid var(--sidebar-border);
 	flex-shrink: 0;
 }
 
-.brand-logo {
-	width: 24px;
-	height: 24px;
-	border-radius: 8px;
-	overflow: hidden;
-	flex-shrink: 0;
-}
-
-.brand-logo img {
-	width: 100%;
-	height: 100%;
-	object-fit: cover;
-	display: block;
-	user-select: none;
-	-webkit-user-drag: none;
-}
-
-.brand-name {
-	font-weight: 650;
-	font-size: var(--fs-md);
-	letter-spacing: -0.01em;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.chip {
-	font-size: var(--fs-xs);
-	color: var(--sidebar-muted);
-	background: var(--sidebar-hover);
-	border-radius: var(--r-md);
-	padding: 1px 7px;
-	white-space: nowrap;
+/* back/forward pair sits as one group, collapse button stays separate */
+.sidebar-nav-btns {
+	display: flex;
+	align-items: center;
+	gap: 2px;
 }
 
 .icon-btn {
@@ -751,20 +724,6 @@ textarea {
 	gap: var(--sp-2);
 }
 
-.restore-btn {
-	flex-shrink: 0;
-	font-size: var(--fs-xs);
-	color: var(--app-muted);
-	border: 1px solid var(--border-1);
-	border-radius: var(--r-sm);
-	padding: 2px var(--sp-2);
-}
-
-.restore-btn:hover {
-	background: var(--hover);
-	color: var(--app-fg);
-}
-
 .sidebar-footer {
 	border-top: 1px solid var(--sidebar-border);
 	padding: var(--sp-2) var(--sp-2);
@@ -813,36 +772,6 @@ textarea {
 	background: color-mix(in srgb, var(--app-muted) 26%, transparent);
 }
 
-/* collapsed sidebar peek overlay (hover the titlebar toggle) */
-.sidebar-peek {
-	position: fixed;
-	top: 40px;
-	left: 0;
-	bottom: 0;
-	z-index: 90;
-	display: flex;
-	background: var(--sidebar-bg);
-	border-right: 1px solid var(--sidebar-border);
-	box-shadow: var(--shadow-2);
-	animation: peek-in var(--dur) var(--ease);
-}
-
-.sidebar-peek .sidebar {
-	flex: 1;
-	min-width: 0;
-}
-
-@keyframes peek-in {
-	from {
-		transform: translateX(-12px);
-		opacity: 0;
-	}
-	to {
-		transform: translateX(0);
-		opacity: 1;
-	}
-}
-
 /* ============================ Chat panel ============================ */
 .chat {
 	flex: 1;
@@ -869,6 +798,48 @@ textarea {
 	gap: 8px;
 	min-width: 0;
 	flex: 1;
+}
+
+/* Collapsed sidebar: the expand / back / forward / new-task buttons move
+   into the chat header (the whole page becomes the chat). The buttons sit
+   exactly where the expanded sidebar brand had them — right after the
+   traffic lights, vertically aligned with them. */
+.collapsed-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	flex-shrink: 0;
+}
+
+html[data-platform="macos"] .shell.collapsed .chat-header-left {
+	height: 100%;
+	/* 14px header padding + 78px = 92px: same x as the expanded brand */
+	padding-left: 78px;
+}
+
+/* Match the chat header (task title bar): 26px buttons top-aligned so
+   their center (y23) lines up with the title bar's vertically centered
+   content. */
+html[data-platform="macos"] .shell.collapsed .collapsed-actions {
+	align-self: flex-start;
+	padding-top: 10px;
+}
+
+/* Welcome view (no messages → no chat header): the collapsed buttons get a
+   standalone top strip so they survive collapsing before the first message. */
+.collapsed-actions-bar {
+	height: var(--titlebar-h);
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	padding: 0 14px;
+	background: var(--dsh-bg-base);
+	border-bottom: 1px solid var(--dsh-border-l2);
+}
+
+html[data-platform="macos"] .collapsed-actions-bar {
+	padding-left: 92px;
+	align-items: flex-start;
 }
 
 .chat-title {
@@ -4062,8 +4033,6 @@ textarea {
  * ------------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
 	.cursor,
-	.thinking-dot.pulse,
-	.tool-status.running,
 	.spin {
 		animation: none;
 	}
@@ -4073,154 +4042,29 @@ textarea {
 	}
 }
 
-/* ============================ Custom title bar ============================ */
-.titlebar {
-	height: var(--titlebar-h);
-	flex-shrink: 0;
-	display: flex;
-	align-items: stretch;
-	background: var(--app-bg);
-	border-bottom: 1px solid var(--border-1);
-	user-select: none;
+/* ============================ App header (sidebar brand) ============================ */
+/* macOS: the native traffic lights sit at macOS's fixed position (their
+   vertical position cannot be moved — trafficLightPosition.y only stretches
+   the transparent title-bar container). The buttons are aligned to the chat
+   header (task title bar) instead: 26px buttons centered at y23 → 10px top
+   offset. The lights stay at the native upper position like Xcode/Finder. */
+html[data-platform="macos"] .sidebar-brand {
+	align-items: flex-start;
+	padding-left: 92px;
+	padding-top: 10px;
 }
 
-/* Fullscreen: hide like the native menu bar, slide back in on top-edge
-   hover. The app content stays full-bleed underneath; the bar overlays it
-   while peeking so the traffic lights remain usable (exit fullscreen). */
-.titlebar.fullscreen {
-	position: fixed;
-	top: 0;
-	left: 0;
-	right: 0;
-	z-index: 100;
-	transform: translateY(-100%);
-	opacity: 0;
-	pointer-events: none;
-	transition:
-		transform 0.22s var(--ease),
-		opacity 0.22s var(--ease);
+/* Fullscreen hides the traffic lights natively (and the menu bar until
+   hovered): drop their clearance so the buttons move flush to the edge
+   instead of leaving an empty gap. */
+html[data-platform="macos"] .app.fullscreen .sidebar-brand {
+	padding-left: var(--sp-4);
 }
-.titlebar.fullscreen.peek {
-	transform: translateY(0);
-	opacity: 1;
-	pointer-events: auto;
+html[data-platform="macos"] .app.fullscreen .collapsed-actions-bar {
+	padding-left: 14px;
 }
-
-.titlebar-left {
-	display: flex;
-	align-items: center;
-	gap: 2px;
-	padding: 0 var(--sp-2);
-}
-
-/* macOS: the system-drawn traffic lights (titleBarStyle Overlay) sit in
-   the top-left corner; keep the custom controls clear of them. */
-.titlebar.mac .titlebar-left {
-	padding-left: 78px;
-}
-
-.titlebar-sidebar-btn,
-.titlebar-menu-btn {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	height: 26px;
-	line-height: 1;
-	border-radius: var(--r-sm);
-	color: var(--text-2);
-	transition:
-		background var(--dur) var(--ease),
-		color var(--dur) var(--ease);
-}
-
-.titlebar-sidebar-btn {
-	width: 28px;
-}
-
-.titlebar-sidebar-btn:hover,
-.titlebar-menu-btn:hover,
-.titlebar-menu-btn.open {
-	background: var(--hover);
-	color: var(--text-1);
-}
-
-.titlebar-menu {
-	position: relative;
-	display: flex;
-}
-
-.titlebar-menu-btn {
-	padding: 0 9px;
-	font-size: var(--fs-sm);
-}
-
-.titlebar-menu-pop {
-	position: absolute;
-	top: calc(100% + 4px);
-	left: 0;
-	min-width: 200px;
-	background: var(--menu-bg);
-	border: 1px solid var(--menu-border);
-	border-radius: var(--r-lg);
-	box-shadow: var(--shadow-2);
-	padding: var(--sp-1);
-	z-index: 100;
-}
-
-.titlebar-menu-pop button {
-	display: flex;
-	align-items: center;
-	width: 100%;
-	padding: 6px 9px;
-	border-radius: var(--r-sm);
-	font-size: var(--fs-sm);
-	text-align: left;
-}
-
-.titlebar-menu-pop button:hover {
-	background: var(--hover);
-}
-
-.titlebar-menu-pop kbd {
-	margin-left: auto;
-	font-family: var(--font-mono);
-	font-size: var(--fs-xs);
-	color: var(--text-3);
-}
-
-.titlebar-drag {
-	flex: 1;
-}
-
-.titlebar-controls {
-	display: flex;
-	align-items: stretch;
-}
-
-.win-btn {
-	width: 44px;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	color: var(--text-2);
-	transition:
-		background var(--dur) var(--ease),
-		color var(--dur) var(--ease);
-}
-
-.win-btn:hover {
-	background: var(--hover);
-	color: var(--text-1);
-}
-
-.win-btn.close:hover {
-	background: var(--status-err);
-	color: #fff;
-}
-
-.resize-edge {
-	position: fixed;
-	z-index: 999;
+html[data-platform="macos"] .app.fullscreen .shell.collapsed .chat-header-left {
+	padding-left: 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -4844,10 +4688,6 @@ textarea {
 	color: var(--dsh-fg-primary);
 }
 
-.session-search-active {
-	background: color-mix(in srgb, var(--dsh-brand) 45%, transparent);
-}
-
 .message-search-target {
 	animation: searchFlash 1.2s ease-out;
 }
@@ -4932,22 +4772,28 @@ textarea {
 	margin: 8px auto 0;
 }
 
-/* ---- extension status (setStatus) in titlebar ---- */
-.titlebar-status {
+/* ---- extension status (setStatus) in the chat header ---- */
+.chat-header-status {
 	display: flex;
 	align-items: center;
-	gap: 14px;
-	max-width: 46vw;
+	gap: 10px;
+	max-width: 40vw;
 	overflow: hidden;
 	pointer-events: none;
 }
 
-.titlebar-status-item {
+.chat-header-status span {
 	font-size: 11px;
 	color: var(--text-3);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+.chat-header-status.empty {
+	padding: 10px 16px 0;
+	justify-content: flex-end;
+	max-width: 100%;
 }
 
 /* ---- session tree dialog ---- */

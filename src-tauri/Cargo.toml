@@ -23,3 +23,10 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Move the native traffic lights vertically: wry's trafficLightPosition.y
+# is a no-op for vertical placement, so reposition the standard window
+# buttons directly.
+objc2 = "0.6"
+objc2-app-kit = "0.3"

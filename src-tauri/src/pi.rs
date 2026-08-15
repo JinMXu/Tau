@@ -863,7 +863,7 @@ static WINDOW_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 /// Open another Tau window (each window runs its own pi process/session).
 /// Generic over the runtime so it works with the mock runtime in tests.
 #[tauri::command]
-fn pi_new_window<R: tauri::Runtime>(app: AppHandle<R>) -> Result<(), String> {
+pub(crate) fn pi_new_window<R: tauri::Runtime>(app: AppHandle<R>) -> Result<(), String> {
 	let stamp = std::time::SystemTime::now()
 		.duration_since(std::time::UNIX_EPOCH)
 		.map(|d| d.as_millis())
@@ -3172,10 +3172,19 @@ async fn pi_usage_stats() -> Result<Vec<PiUsageEntry>, String> {
 	.await
 }
 
+/// Pick a workspace folder. The dialog is `blocking` from the plugin's point
+/// of view, so run it on a blocking thread: invoked as a sync command it
+/// would call `rx.recv()` on the main thread and freeze the window while
+/// the dialog is open (the modal run loop stalls behind the blocked main
+/// thread).
 #[tauri::command]
-fn pi_open_workspace(app: AppHandle) -> Result<Option<String>, String> {
+async fn pi_open_workspace(app: AppHandle) -> Result<Option<String>, String> {
 	use tauri_plugin_dialog::DialogExt;
-	let picked = app.dialog().file().blocking_pick_folder();
+	let picked = tauri::async_runtime::spawn_blocking(move || {
+		app.dialog().file().blocking_pick_folder()
+	})
+	.await
+	.map_err(|e| e.to_string())?;
 	Ok(picked.map(|p| p.to_string()))
 }
 

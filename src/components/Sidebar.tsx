@@ -1,18 +1,21 @@
 import { memo, useCallback, useEffect, useState } from "react";
-import type { PiBinaryInfo, PiSessionInfo } from "../pi";
+import type { PiSessionInfo } from "../pi";
 import type { MessageCatalog } from "../i18n";
 import {
 	ArchiveIcon,
+	ChevronLeftIcon,
+	ChevronRightIcon,
 	FolderIcon,
 	FolderOpenIcon,
 	MoreIcon,
+	PanelLeftCloseIcon,
 	PinIcon,
 	PlusIcon,
 	SearchIcon,
 	SettingsIcon,
 	TrashIcon,
 } from "../icons";
-import { MOD_KEY } from "../platform";
+import { MOD_KEY, isMac } from "../platform";
 
 function timeAgo(ms: number, lang: "zh" | "en"): string {
 	const diff = Date.now() - ms;
@@ -46,6 +49,11 @@ export const Sidebar = memo(function Sidebar({
 	expandedProjects,
 	onToggleProject,
 	onSelectSession,
+	onToggleSidebar,
+	onBack,
+	onForward,
+	canGoBack,
+	canGoForward,
 	pinnedSessions,
 	onTogglePin,
 	onArchiveSession,
@@ -59,7 +67,6 @@ export const Sidebar = memo(function Sidebar({
 	sessionOrder,
 	onReorderSession,
 	busy,
-	binary,
 	binError,
 	workingPath,
 }: {
@@ -70,6 +77,11 @@ export const Sidebar = memo(function Sidebar({
 	expandedProjects: Set<string>;
 	onToggleProject: (project: string) => void;
 	onSelectSession: (s: PiSessionInfo) => void;
+	onToggleSidebar: () => void;
+	onBack: () => void;
+	onForward: () => void;
+	canGoBack: boolean;
+	canGoForward: boolean;
 	pinnedSessions: string[];
 	onTogglePin: (path: string) => void;
 	onArchiveSession: (path: string) => void;
@@ -83,7 +95,6 @@ export const Sidebar = memo(function Sidebar({
 	sessionOrder: string[];
 	onReorderSession: (order: string[]) => void;
 	busy: boolean;
-	binary: PiBinaryInfo | null;
 	binError: string | null;
 	workingPath: string | null;
 }) {
@@ -152,16 +163,35 @@ export const Sidebar = memo(function Sidebar({
 
 	return (
 		<aside className="sidebar">
-			<div className="sidebar-brand">
-				<div className="brand-logo">
-					<img src="/logo.png" alt="Tau" draggable={false} />
+			<div className="sidebar-brand" data-tauri-drag-region={isMac ? "deep" : undefined}>
+				<button
+					className="icon-btn sidebar-toggle-btn"
+					title={t.sidebar.collapse}
+					aria-label={t.sidebar.collapse}
+					onClick={onToggleSidebar}
+				>
+					<PanelLeftCloseIcon size={16} />
+				</button>
+				<div className="sidebar-nav-btns">
+					<button
+						className="icon-btn"
+						title={t.sidebar.back}
+						aria-label={t.sidebar.back}
+						disabled={!canGoBack}
+						onClick={onBack}
+					>
+						<ChevronLeftIcon size={16} />
+					</button>
+					<button
+						className="icon-btn"
+						title={t.sidebar.forward}
+						aria-label={t.sidebar.forward}
+						disabled={!canGoForward}
+						onClick={onForward}
+					>
+						<ChevronRightIcon size={16} />
+					</button>
 				</div>
-				<span className="brand-name">{t.app.name}</span>
-				{binary && (
-					<span className="chip" title={binary.bin}>
-						{binary.version}
-					</span>
-				)}
 			</div>
 
 			<div className="sidebar-actions">

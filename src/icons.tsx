@@ -293,15 +293,6 @@ export function SparkleIcon(props: IconProps) {
 	);
 }
 
-export function ClockIcon(props: IconProps) {
-	return (
-		<svg {...base(props)}>
-			<circle cx="12" cy="12" r="10" />
-			<path d="M12 6v6l4 2" />
-		</svg>
-	);
-}
-
 export function GripVerticalIcon(props: IconProps) {
 	return (
 		<svg {...base(props)}>
@@ -356,32 +347,6 @@ export function BrainIcon(props: IconProps) {
 			<path d="M19.938 10.5a4 4 0 0 1 .585.396" />
 			<path d="M6 18a4 4 0 0 1-1.967-.516" />
 			<path d="M19.967 17.484A4 4 0 0 1 18 18" />
-		</svg>
-	);
-}
-
-export function MinusIcon(props: IconProps) {
-	return (
-		<svg {...base(props)}>
-			<path d="M6 12.5h12" />
-		</svg>
-	);
-}
-
-export function MaximizeIcon(props: IconProps) {
-	return (
-		<svg {...base(props)}>
-			<rect x="6.5" y="6.5" width="11" height="11" />
-		</svg>
-	);
-}
-
-/** Overlapping window squares — shown while the window is maximized. */
-export function RestoreWindowIcon(props: IconProps) {
-	return (
-		<svg {...base(props)}>
-			<rect x="8.5" y="8.5" width="9" height="9" />
-			<path d="M15.5 8.5v-2h-9v9h2" />
 		</svg>
 	);
 }

@@ -90,8 +90,8 @@ import { ShareDialog } from "./components/ShareDialog";
 import { LlamaDialog } from "./components/LlamaDialog";
 import type { ModelEntry } from "./components/Composer";
 import "./App.css";
-import { TitleBar } from "./components/TitleBar";
 import { formatBytes } from "./format";
+import { isMac } from "./platform";
 
 let nextId = 1;
 
@@ -240,6 +240,43 @@ export default function App() {
 		const w = Number(localStorage.getItem(STORAGE_KEYS.width));
 		return w >= 200 && w <= 340 ? w : 280;
 	});
+	// macOS fullscreen hides the traffic lights natively; the UI drops the
+	// light-clearance padding so buttons/logo move to the edge. Tracked via
+	// isFullscreen + resize (no dedicated fullscreen event in the API).
+	const [fullscreen, setFullscreen] = useState(false);
+	useEffect(() => {
+		let mounted = true;
+		const refresh = () => {
+			void getCurrentWindow().isFullscreen().then((fs) => {
+				if (mounted) setFullscreen(fs);
+			});
+		};
+		refresh();
+		const unlisten = getCurrentWindow().onResized(refresh);
+		return () => {
+			mounted = false;
+			void unlisten.then((f) => f());
+		};
+	}, []);
+	// ---- session navigation history (back / forward) ----
+	// Mirrored in refs so pushNav/navGo never read stale closures.
+	const [navHistory, setNavHistory] = useState<string[]>([]);
+	const [navIndex, setNavIndex] = useState(-1);
+	const navHistoryRef = useRef<string[]>([]);
+	const navIndexRef = useRef(-1);
+	const pushNav = useCallback((path: string) => {
+		// Clicking the session already on screen doesn't add a duplicate.
+		if (navHistoryRef.current[navIndexRef.current] === path) return;
+		navIndexRef.current += 1;
+		navHistoryRef.current = [
+			...navHistoryRef.current.slice(0, navIndexRef.current),
+			path,
+		];
+		setNavHistory(navHistoryRef.current);
+		setNavIndex(navIndexRef.current);
+	}, []);
+	const canGoBack = navIndex > 0;
+	const canGoForward = navIndex >= 0 && navIndex < navHistory.length - 1;
 	const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
 		loadExpanded,
 	);
@@ -499,6 +536,7 @@ export default function App() {
 		const apply = () => {
 			const theme = resolveTheme(settings.theme, mq.matches);
 			document.documentElement.dataset.theme = theme;
+			document.documentElement.dataset.platform = isMac ? "macos" : "other";
 			document.documentElement.dataset.colorScale = settings.colorScale;
 			document.documentElement.dataset.density = settings.density;
 			// Keep the document language in sync with the UI language
@@ -1540,6 +1578,20 @@ export default function App() {
 		],
 	);
 
+	// Back/forward: move through the session navigation history (connect
+	// directly so the move itself is never recorded as a new entry).
+	const navGo = useCallback(
+		async (dir: -1 | 1) => {
+			const idx = navIndexRef.current + dir;
+			const target = navHistoryRef.current[idx];
+			if (idx < 0 || idx >= navHistoryRef.current.length || !target) return;
+			navIndexRef.current = idx;
+			setNavIndex(idx);
+			await connect({ sessionFile: target });
+		},
+		[connect],
+	);
+
 	const disconnect = useCallback(async () => {
 		// pi_stop can reject if the process already exited (crash, external
 		// kill). disconnect must never throw — several callers fire-and-forget
@@ -1621,16 +1673,24 @@ export default function App() {
 	}, [recentWorkspaces, sessions]);
 
 	const newTask = useCallback(async () => {
+		// Already on a fresh task (no session file yet): nothing to reset —
+		// clicking again just disconnects and re-runs the workspace dialog.
+		// Hint instead of tearing down the blank task.
+		if (!sessionPathRef.current && !pendingSession) {
+			toast(t.app.alreadyNewTask);
+			return;
+		}
 		await disconnect();
 		setMessages([]);
 		await connect({ sessionFile: null });
-	}, [connect, disconnect]);
+	}, [connect, disconnect, pendingSession, toast, t]);
 
 	const openSession = useCallback(
 		async (session: PiSessionInfo) => {
+			pushNav(session.path);
 			await connect({ sessionFile: session.path });
 		},
-		[connect],
+		[connect, pushNav],
 	);
 
 	// init effect when connected
@@ -2650,10 +2710,11 @@ export default function App() {
 
 	const handleSearchSelect = useCallback(
 		async (path: string) => {
+			pushNav(path);
 			const s = sessions.find((x) => x.path === path);
 			await connect({ sessionFile: s?.path ?? path });
 		},
-		[connect, sessions],
+		[connect, sessions, pushNav],
 	);
 
 	// ---- /reload: restart pi so extensions/skills/prompts/themes reload ----
@@ -2750,20 +2811,29 @@ export default function App() {
 
 	const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
 
-	// Sidebar peek: hovering the titlebar toggle while collapsed reveals the sidebar as a temporary overlay.
-	const [sidebarPeek, setSidebarPeek] = useState(false);
-	const peekTimer = useRef<number | null>(null);
-	const openSidebarPeek = useCallback(() => {
-		if (peekTimer.current !== null) {
-			clearTimeout(peekTimer.current);
-			peekTimer.current = null;
-		}
-		if (sidebarCollapsed) setSidebarPeek(true);
-	}, [sidebarCollapsed]);
-	const closeSidebarPeekSoon = useCallback(() => {
-		if (peekTimer.current !== null) clearTimeout(peekTimer.current);
-		peekTimer.current = window.setTimeout(() => setSidebarPeek(false), 180);
-	}, []);
+	// Native system menu commands (macOS menu bar) forwarded from Rust. "New
+	// Window" is handled in Rust; everything else is renderer-side state.
+	useEffect(() => {
+		const unlisten = listen<string>("menu://command", (e) => {
+			switch (e.payload) {
+				case "about":
+					setSettingsOpen(true);
+					break;
+				case "session-info":
+					void openSessionInfo();
+					break;
+				case "tree":
+					void openTree();
+					break;
+				case "toggle-sidebar":
+					toggleSidebar();
+					break;
+			}
+		});
+		return () => {
+			void unlisten.then((f) => f());
+		};
+	}, [openSessionInfo, openTree, toggleSidebar]);
 
 	// Deep links: "#settings" / "#search" open the matching surface on mount.
 	useEffect(() => {
@@ -2882,6 +2952,12 @@ export default function App() {
 			} else if (key === "b") {
 				e.preventDefault();
 				toggleSidebar();
+			} else if (key === "[" && !e.shiftKey) {
+				e.preventDefault();
+				void navGo(-1);
+			} else if (key === "]" && !e.shiftKey) {
+				e.preventDefault();
+				void navGo(1);
 			} else if (key === "l") {
 				e.preventDefault();
 				focusComposer();
@@ -2896,7 +2972,7 @@ export default function App() {
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [newTask, toggleSidebar, focusComposer, archiveCurrent, busy, toast, t, cycleModel]);
+	}, [newTask, toggleSidebar, focusComposer, archiveCurrent, busy, toast, t, cycleModel, navGo]);
 
 	// ---- sidebar resize ----
 	const resizeRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -2987,6 +3063,11 @@ export default function App() {
 				})
 			}
 			onSelectSession={openSession}
+			onToggleSidebar={toggleSidebar}
+			onBack={() => void navGo(-1)}
+			onForward={() => void navGo(1)}
+			canGoBack={canGoBack}
+			canGoForward={canGoForward}
 			pinnedSessions={pinnedSessions}
 			onTogglePin={togglePinSession}
 			onArchiveSession={archiveSessionByPath}
@@ -2998,26 +3079,13 @@ export default function App() {
 			onRevealProject={handleRevealProject}
 			onDeleteProject={handleDeleteProject}
 			busy={busy}
-			binary={binary}
 			binError={binError}
 		/>
 	);
 
 	return (
-		<div className="app">
-			<TitleBar
-				t={t}
-				onOpenSettings={() => setSettingsOpen(true)}
-				onNewWindow={() => void newWindow().catch((e) => setError(String(e)))}
-				sidebarCollapsed={sidebarCollapsed}
-				onToggleSidebar={toggleSidebar}
-				onPeekSidebar={openSidebarPeek}
-				onPeekSidebarLeave={closeSidebarPeekSoon}
-				extensionStatus={Object.values(extensionStatus)}
-				onOpenSessionInfo={openSessionInfo}
-				onOpenTree={openTree}
-			/>
-			<div className="shell">
+		<div className={`app${fullscreen ? " fullscreen" : ""}`}>
+			<div className={`shell${sidebarCollapsed ? " collapsed" : ""}`}>
 				{!sidebarCollapsed && !settingsOpen && (
 					<>
 						<div className="sidebar-shell" style={{ width: sidebarWidth }}>
@@ -3081,6 +3149,13 @@ export default function App() {
 						onQueueDelete={(id) => queueDelete(id)}
 						onQueueReorder={(a, b) => queueReorder(a, b)}
 						onQueueCancelEdit={() => setEditingQueueId(null)}
+						sidebarCollapsed={sidebarCollapsed}
+						onToggleSidebar={toggleSidebar}
+						onNewTask={() => void newTask()}
+						onBack={() => void navGo(-1)}
+						onForward={() => void navGo(1)}
+						canGoBack={canGoBack}
+						canGoForward={canGoForward}
 						customTools={settings.customTools}
 						onCustomToolsChange={(tools) =>
 							setSettings((prev) => ({ ...prev, customTools: tools }))
@@ -3089,6 +3164,7 @@ export default function App() {
 						modelsLoading={modelsLoading}
 						commands={commands}
 						extensionWidgets={extensionWidgets}
+						extensionStatus={Object.values(extensionStatus)}
 						externalDraft={externalDraft}
 						onExternalDraftConsumed={() => setExternalDraft(null)}
 						onCycleThinking={cycleThinkingLevel}
@@ -3120,17 +3196,6 @@ export default function App() {
 					/>
 				)}
 			</div>
-
-			{sidebarCollapsed && sidebarPeek && !settingsOpen && (
-				<div
-					className="sidebar-peek"
-					style={{ width: sidebarWidth }}
-					onMouseEnter={openSidebarPeek}
-					onMouseLeave={closeSidebarPeekSoon}
-				>
-					{sidebarEl}
-				</div>
-			)}
 
 			<SearchOverlay
 				t={t}

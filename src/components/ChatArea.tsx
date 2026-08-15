@@ -11,12 +11,16 @@ import {
 	BranchIcon,
 	CheckIcon,
 	ChevronDownIcon,
+	ChevronLeftIcon,
+	ChevronRightIcon,
 	ChevronUpIcon,
 	CopyIcon,
 	DownloadIcon,
 	EditIcon,
 	FolderOpenIcon,
 	MoreIcon,
+	PanelLeftOpenIcon,
+	PlusIcon,
 	SearchIcon,
 	SparkleIcon,
 	TrashIcon,
@@ -25,12 +29,82 @@ import {
 import { Composer, type ModelEntry } from "./Composer";
 import { MessageList, TurnStatus } from "./MessageList";
 import { searchMessages } from "./message-utils";
+import { isMac } from "../platform";
 
 function greeting(t: MessageCatalog): string {
 	const h = new Date().getHours();
 	if (h < 12) return t.chat.greetingMorning;
 	if (h < 18) return t.chat.greetingAfternoon;
 	return t.chat.greetingEvening;
+}
+
+/**
+ * Collapsed-sidebar actions: expand / back / forward / new task. Rendered in
+ * the chat header when there are messages AND in a standalone top strip on
+ * the welcome view (no header there) — so the buttons survive collapsing
+ * even before the first message, and the sidebar can always be expanded
+ * back with the mouse.
+ */
+function CollapsedActions({
+	t,
+	busy,
+	canGoBack,
+	canGoForward,
+	onToggleSidebar,
+	onBack,
+	onForward,
+	onNewTask,
+}: {
+	t: MessageCatalog;
+	busy: boolean;
+	canGoBack: boolean;
+	canGoForward: boolean;
+	onToggleSidebar: () => void;
+	onBack: () => void;
+	onForward: () => void;
+	onNewTask: () => void;
+}) {
+	return (
+		<div className="collapsed-actions">
+			<button
+				className="icon-btn"
+				title={t.sidebar.expand}
+				aria-label={t.sidebar.expand}
+				onClick={onToggleSidebar}
+			>
+				<PanelLeftOpenIcon size={16} />
+			</button>
+			<div className="sidebar-nav-btns">
+				<button
+					className="icon-btn"
+					title={t.sidebar.back}
+					aria-label={t.sidebar.back}
+					disabled={!canGoBack}
+					onClick={onBack}
+				>
+					<ChevronLeftIcon size={16} />
+				</button>
+				<button
+					className="icon-btn"
+					title={t.sidebar.forward}
+					aria-label={t.sidebar.forward}
+					disabled={!canGoForward}
+					onClick={onForward}
+				>
+					<ChevronRightIcon size={16} />
+				</button>
+			</div>
+			<button
+				className="icon-btn"
+				title={t.sidebar.newTask}
+				aria-label={t.sidebar.newTask}
+				disabled={busy}
+				onClick={onNewTask}
+			>
+				<PlusIcon size={16} />
+			</button>
+		</div>
+	);
 }
 
 export const ChatArea = memo(function ChatArea({
@@ -86,12 +160,20 @@ export const ChatArea = memo(function ChatArea({
 	onQueueDelete,
 	onQueueReorder,
 	onQueueCancelEdit,
+	sidebarCollapsed,
+	onToggleSidebar,
+	onNewTask,
+	onBack,
+	onForward,
+	canGoBack,
+	canGoForward,
 	customTools,
 	onCustomToolsChange,
 	showContextUsage,
 	modelsLoading,
 	commands,
 	extensionWidgets,
+	extensionStatus,
 	externalDraft,
 	onExternalDraftConsumed,
 	onCycleThinking,
@@ -153,6 +235,13 @@ export const ChatArea = memo(function ChatArea({
 	onQueueDelete: (id: string) => void;
 	onQueueReorder: (activeId: string, overId: string) => void;
 	onQueueCancelEdit: () => void;
+	sidebarCollapsed: boolean;
+	onToggleSidebar: () => void;
+	onNewTask: () => void;
+	onBack: () => void;
+	onForward: () => void;
+	canGoBack: boolean;
+	canGoForward: boolean;
 	customTools: AgentToolName[];
 	onCustomToolsChange: (tools: AgentToolName[]) => void;
 	showContextUsage: boolean;
@@ -162,6 +251,7 @@ export const ChatArea = memo(function ChatArea({
 		string,
 		{ lines: string[]; placement: "aboveEditor" | "belowEditor" }
 	>;
+	extensionStatus: string[];
 	externalDraft: string | null;
 	onExternalDraftConsumed: () => void;
 	onCycleThinking: () => void;
@@ -302,7 +392,33 @@ export const ChatArea = memo(function ChatArea({
 	if (messages.length === 0) {
 		return (
 			<main className="chat">
+				{sidebarCollapsed && (
+					<div
+						className="collapsed-actions-bar"
+						data-tauri-drag-region={isMac ? "deep" : undefined}
+					>
+						<CollapsedActions
+							t={t}
+							busy={busy}
+							canGoBack={canGoBack}
+							canGoForward={canGoForward}
+							onToggleSidebar={onToggleSidebar}
+							onBack={onBack}
+							onForward={onForward}
+							onNewTask={onNewTask}
+						/>
+					</div>
+				)}
 				{error && <div className="error-banner">{error}</div>}
+				{extensionStatus.length > 0 && (
+					<div className="chat-header-status empty">
+						{extensionStatus.map((s, i) => (
+							<span key={i} title={s}>
+								{s}
+							</span>
+						))}
+					</div>
+				)}
 				<div className="chat-scroll welcome">
 					<div className="empty-chat">
 						<p className="empty-chat-greeting">{greeting(t)}</p>
@@ -315,8 +431,20 @@ export const ChatArea = memo(function ChatArea({
 
 	return (
 		<main className="chat">
-			<header className="chat-header">
+			<header className="chat-header" data-tauri-drag-region={isMac ? "deep" : undefined}>
 				<div className="chat-header-left">
+					{sidebarCollapsed && (
+						<CollapsedActions
+							t={t}
+							busy={busy}
+							canGoBack={canGoBack}
+							canGoForward={canGoForward}
+							onToggleSidebar={onToggleSidebar}
+							onBack={onBack}
+							onForward={onForward}
+							onNewTask={onNewTask}
+						/>
+					)}
 					<h1 className="chat-title" title={session?.path}>
 						{session?.title ?? t.app.newSession}
 					</h1>
@@ -330,6 +458,15 @@ export const ChatArea = memo(function ChatArea({
 					)}
 				</div>
 				<div className="chat-header-right">
+					{extensionStatus.length > 0 && (
+						<div className="chat-header-status">
+							{extensionStatus.map((s, i) => (
+								<span key={i} title={s}>
+									{s}
+								</span>
+							))}
+						</div>
+					)}
 					<span className={`dot ${connected ? "on" : ""}`} />
 					{connected && <span className="conn-label">{t.app.connected}</span>}
 					<div className="header-menu" ref={menuRef}>
