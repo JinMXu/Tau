@@ -2440,6 +2440,16 @@ html[data-platform="macos"] .collapsed-actions-bar {
 	color: var(--sidebar-fg);
 }
 
+/* macOS: the native traffic lights float over the settings nav's top-left
+   corner; clear them (same 92px as the header buttons). In fullscreen the
+   lights are hidden, so the button moves back to the edge. */
+html[data-platform="macos"] .settings-back {
+	margin-left: 92px;
+}
+html[data-platform="macos"] .app.fullscreen .settings-back {
+	margin-left: var(--sp-3);
+}
+
 .settings-nav-scroll {
 	flex: 1;
 	overflow-y: auto;
