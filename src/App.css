@@ -420,26 +420,32 @@ textarea {
 	background: var(--sidebar-bg);
 	border-right: 1px solid var(--sidebar-border);
 	/* Animate the collapse/expand: the width shrinks/grows (the chat area
-	   flexes to fill the space) while the content fades. `visibility` flips
-	   discretely at the end so the hidden sidebar drops out of focus order. */
+	   flexes to fill the space) while the content slides out underneath.
+	   `visibility` flips discretely at the end so the hidden sidebar drops
+	   out of focus order. */
 	transition:
-		width 0.24s var(--ease),
-		opacity 0.24s var(--ease),
-		visibility 0.24s;
+		width 0.2s var(--ease),
+		visibility 0.2s;
 }
 
 .sidebar-shell.collapsed {
-	opacity: 0;
 	visibility: hidden;
 	pointer-events: none;
 }
 
 /* Holds the sidebar at its real width while the shell shrinks, so the
-   content never reflows mid-animation. */
+   content never reflows mid-animation. The transform slides the content
+   left in sync with the shrinking width (drawer effect) instead of it
+   being sliced off. */
 .sidebar-fixed {
 	flex-shrink: 0;
 	overflow: hidden;
 	display: flex;
+	transition: transform 0.2s var(--ease);
+}
+
+.sidebar-shell.collapsed .sidebar-fixed {
+	transform: translateX(-100%);
 }
 
 .sidebar {
