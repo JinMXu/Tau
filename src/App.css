@@ -2441,13 +2441,14 @@ html[data-platform="macos"] .collapsed-actions-bar {
 }
 
 /* macOS: the native traffic lights float over the settings nav's top-left
-   corner; clear them (same 92px as the header buttons). In fullscreen the
-   lights are hidden, so the button moves back to the edge. */
+   corner; keep the back button clear of them by placing it BELOW the lights
+   (they span y≈16–30). In fullscreen the lights are hidden, so the button
+   returns to its normal top position. */
 html[data-platform="macos"] .settings-back {
-	margin-left: 92px;
+	margin-top: 36px;
 }
 html[data-platform="macos"] .app.fullscreen .settings-back {
-	margin-left: var(--sp-3);
+	margin-top: var(--sp-2);
 }
 
 .settings-nav-scroll {
