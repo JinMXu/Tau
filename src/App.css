@@ -896,10 +896,22 @@ html[data-platform="macos"] .shell.collapsed .collapsed-actions {
 
 /* During the fullscreen transition AppKit shows the old and new window
    states simultaneously; hiding the header buttons while it plays prevents
-   them from appearing as two rows / overlapping the traffic lights. */
+   them from appearing as two rows / overlapping the traffic lights.
+
+   A 0s animation (not a transition) does the hiding: animations outrank
+   both normal declarations AND transitions in the cascade, so this beats
+   the .collapsed-actions mount animation and applies instantly regardless
+   of the current transition state. The fade-back-in at the end runs via the
+   base opacity transition once this class is removed. */
 .app.fs-transitioning .sidebar-brand,
 .app.fs-transitioning .collapsed-actions {
-	opacity: 0;
+	animation: fs-hide 0s linear forwards;
+}
+
+@keyframes fs-hide {
+	to {
+		opacity: 0;
+	}
 }
 
 html[data-platform="macos"] .collapsed-actions-bar {
