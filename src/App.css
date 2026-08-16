@@ -505,6 +505,9 @@ textarea {
 	flex: 1;
 	min-width: 0;
 	display: flex;
+	/* Match the chat background so no seam shows between the sidebar edge
+	   and the chat (e.g. via the resizer / sub-pixel rounding). */
+	background: var(--dsh-bg-base);
 }
 
 .chat-area-shell.hidden {
@@ -896,7 +899,11 @@ textarea {
 	width: 3px;
 	flex-shrink: 0;
 	cursor: col-resize;
-	background: transparent;
+	/* Match the chat background: a transparent strip here would show the
+	   shell/app background, which with the tone scales sits between the
+	   sidebar and chat colors and reads as sidebar color bleeding into the
+	   chat. The hover state below still overrides on mouse-over. */
+	background: var(--dsh-bg-base);
 	position: relative;
 	z-index: 5;
 	transition: background var(--dur) var(--ease);
