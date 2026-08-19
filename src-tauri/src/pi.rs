@@ -507,6 +507,40 @@ fn find_node(near: Option<&Path>) -> Option<PathBuf> {
 		.find(|dir| dir.join("node").is_file())
 }
 
+/// Windows variant: locate a node.exe able to run pi's JS entrypoint. There
+/// is no shebang-resolution problem here, but npm global installs may put
+/// node.exe next to the shim in the same prefix dir, and the GUI can inherit
+/// a PATH where node only exists under a different spelling.
+#[cfg(windows)]
+fn find_node(near: Option<&Path>) -> Option<PathBuf> {
+	if let Some(dir) = near.and_then(|s| s.parent()) {
+		for name in ["node.exe", "node"] {
+			let c = dir.join(name);
+			if c.is_file() {
+				return Some(c);
+			}
+		}
+	}
+	if let Some(path) = std::env::var_os("PATH") {
+		for dir in std::env::split_paths(&path) {
+			for name in ["node.exe", "node"] {
+				let c = dir.join(name);
+				if c.is_file() {
+					return Some(c);
+				}
+			}
+		}
+	}
+	// npm's global prefix (APPDATA\npm) is not always on PATH.
+	if let Some(appdata) = std::env::var_os("APPDATA") {
+		let c = PathBuf::from(appdata).join("npm").join("node.exe");
+		if c.is_file() {
+			return Some(c);
+		}
+	}
+	None
+}
+
 /// Base `Command` for launching pi. Never goes through cmd.exe argument
 /// parsing: npm shims are resolved to node + script at probe time.
 pub(crate) fn pi_command(info: &PiBinaryInfo) -> Command {
@@ -651,6 +685,11 @@ impl PiProcess {
 		let stop_flag_thread = stop_flag.clone();
 		thread::spawn(move || {
 			let reader = BufReader::new(stdout);
+			// Stream diagnostics: how many events were forwarded and how many
+			// emits failed. When a freeze happens mid-stream, the last of these
+			// lines shows the stream rate right before it.
+			let mut streamed: u64 = 0;
+			let mut emit_errors: u64 = 0;
 			for line in LimitedLines::new(reader, MAX_EVENT_LINE) {
 				let line = match line {
 					Ok(line) => line,
@@ -677,7 +716,18 @@ impl PiProcess {
 				if line_len > 4 * 1024 * 1024 {
 					cap_strings(&mut payload, 1024 * 1024);
 				}
-				let _ = win_stdout.emit("pi://event", &payload);
+				if win_stdout.emit("pi://event", &payload).is_err() {
+					emit_errors += 1;
+				}
+				streamed += 1;
+				if streamed % 250 == 0 {
+					crate::runtime_log::log_info(
+						&app_stdout,
+						&format!(
+							"pi stream: {streamed} events, {emit_errors} emit errors window={label_thread}"
+						),
+					);
+				}
 			}
 			let mut guard = lock_state(&state);
 			let is_current = guard
@@ -885,7 +935,13 @@ pub(crate) fn pi_new_window<R: tauri::Runtime>(app: AppHandle<R>) -> Result<(), 
 			.hidden_title(true)
 			.traffic_light_position(tauri::LogicalPosition::new(20.0, 25.0));
 	}
-	#[cfg(not(target_os = "macos"))]
+	#[cfg(target_os = "windows")]
+	{
+		// Undecorated: the renderer draws a custom title bar (menu bar and
+		// window controls on one row) and handles dragging/resizing.
+		builder = builder.decorations(false);
+	}
+	#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 	{
 		builder = builder.decorations(false);
 	}
@@ -1072,6 +1128,11 @@ struct SessionScan {
 	model: Option<String>,
 	created_at: Option<u64>,
 	message_count: u64,
+	/// Subagent sessions (pi's Agent tool spawns them) carry `parentSession`
+	/// in the header and fork the parent's early history, so they show up as
+	/// duplicate-titled entries in the session list. They are internal
+	/// artifacts, not user sessions — the list/search views skip them.
+	is_subagent: bool,
 }
 
 /// Scan a session JSONL for display metadata. `limit` caps lines scanned
@@ -1084,6 +1145,7 @@ fn scan_session(path: &Path, limit: usize) -> SessionScan {
 		model: None,
 		created_at: None,
 		message_count: 0,
+		is_subagent: false,
 	};
 	let file = match File::open(path) {
 		Ok(f) => f,
@@ -1114,6 +1176,10 @@ fn scan_session(path: &Path, limit: usize) -> SessionScan {
 					.get("timestamp")
 					.and_then(|x| x.as_str())
 					.and_then(parse_iso_ms);
+				scan.is_subagent = v
+					.get("parentSession")
+					.and_then(|x| x.as_str())
+					.is_some_and(|s| !s.is_empty());
 			}
 			"model_change" => {
 				let provider = v.get("provider").and_then(|x| x.as_str());
@@ -1233,7 +1299,12 @@ fn collect_sessions(dir: &Path, out: &mut Vec<PiSessionInfo>) {
 	let infos = par_map(files, |path| {
 		let meta = std::fs::metadata(path).ok();
 		let scan = scan_session(path, 400);
-		PiSessionInfo {
+		// Subagent sessions are internal artifacts of a parent session's Agent
+		// tool runs — don't list them as user sessions.
+		if scan.is_subagent {
+			return None;
+		}
+		Some(PiSessionInfo {
 			path: path.to_string_lossy().into_owned(),
 			name: file_stem(path),
 			project: scan.project,
@@ -1251,9 +1322,9 @@ fn collect_sessions(dir: &Path, out: &mut Vec<PiSessionInfo>) {
 				.map(unix_ms)
 				.unwrap_or(0),
 			size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-		}
+		})
 	});
-	out.extend(infos);
+	out.extend(infos.into_iter().flatten());
 }
 
 fn parse_message_blocks(message: &serde_json::Value) -> Vec<PiParsedBlock> {
@@ -1546,10 +1617,32 @@ fn pi_send(window: WebviewWindow, state: State<'_, PiState>, command: Value) -> 
 	};
 	let mut line = serde_json::to_string(&command).map_err(|e| e.to_string())?;
 	line.push('\n');
+	// This sync command runs on the main thread and the pipe write can block
+	// (pi not reading stdin). Log begin/end so a wedge here shows up as a
+	// "pi_send begin" with no matching "end" in tau.log.
+	let t0 = std::time::Instant::now();
+	crate::runtime_log::log_info(
+		window.app_handle(),
+		&format!("pi_send begin type={kind} window={label}"),
+	);
 	let result = stdin
 		.write_all(line.as_bytes())
 		.and_then(|_| stdin.flush())
 		.map_err(|e| format!("failed to write to pi stdin: {e}"));
+	{
+		let elapsed = t0.elapsed().as_millis();
+		// Fast writes are the norm; only log completions that were slow or
+		// failed, so a healthy session doesn't double the log volume.
+		if elapsed > 250 || result.is_err() {
+			crate::runtime_log::log_info(
+				window.app_handle(),
+				&format!(
+					"pi_send end type={kind} window={label} ok={} elapsed={elapsed}ms",
+					result.is_ok()
+				),
+			);
+		}
+	}
 	// Restore the handle (best-effort): only if the process wasn't replaced in
 	// the meantime (a replaced process already has its own stdin set).
 	let mut map = lock_state(&state.inner);
@@ -2635,6 +2728,177 @@ async fn pi_read_tree(path: String) -> Result<serde_json::Value, String> {
 	run_blocking(move || read_tree_from_file(&p)).await
 }
 
+// ---- live subagent run status (pi-subagents extension) ----
+
+/// One step of a subagent run, as shown in the chat's live panel.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentStepInfo {
+	label: String,
+	agent: String,
+	status: String,
+	model: Option<String>,
+	turn_count: u64,
+	tool_count: u64,
+	/// Most recent finished tool call — the "what is it doing" line.
+	last_tool: Option<String>,
+	last_tool_args: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentRunInfo {
+	run_id: String,
+	mode: String,
+	state: String,
+	started_at: Option<u64>,
+	steps: Vec<SubagentStepInfo>,
+}
+
+/// The pi-subagents extension keeps live run state under
+/// `%TEMP%/pi-subagents*/async-subagent-runs/<run-id>/status.json`. The
+/// extension dir suffix carries the OS user when several share a machine,
+/// so match the prefix instead of an exact name.
+fn subagent_run_dirs() -> Vec<PathBuf> {
+	let mut out = Vec::new();
+	let Ok(temp_entries) = std::fs::read_dir(std::env::temp_dir()) else {
+		return out;
+	};
+	for entry in temp_entries.flatten() {
+		if !entry.file_name().to_string_lossy().starts_with("pi-subagents") {
+			continue;
+		}
+		let Ok(run_entries) = std::fs::read_dir(entry.path().join("async-subagent-runs")) else {
+			continue;
+		};
+		for run in run_entries.flatten() {
+			if run.path().join("status.json").is_file() {
+				out.push(run.path());
+			}
+		}
+	}
+	out
+}
+
+/// Terminal states of a run; anything else counts as active.
+fn subagent_run_terminal(state: &str) -> bool {
+	matches!(
+		state,
+		"complete" | "completed" | "failed" | "error" | "cancelled" | "canceled" | "timeout"
+			| "aborted"
+	)
+}
+
+/// Parse a status.json into a run summary. Returns None for runs belonging
+/// to another session, terminal runs, and stale "active" runs: a crashed
+/// extension leaves status.json behind mid-state, and without the freshness
+/// check the panel would show a dead run forever.
+fn parse_subagent_status(
+	v: &serde_json::Value,
+	session_lower: &str,
+	now_ms: u64,
+) -> Option<SubagentRunInfo> {
+	let sid = v.get("sessionId").and_then(|x| x.as_str())?;
+	if canonical_or(Path::new(sid)).to_string_lossy().to_lowercase() != session_lower {
+		return None;
+	}
+	let state = v
+		.get("state")
+		.and_then(|x| x.as_str())
+		.unwrap_or("")
+		.to_string();
+	if subagent_run_terminal(&state) {
+		return None;
+	}
+	let last_update = v.get("lastUpdate").and_then(|x| x.as_u64());
+	if now_ms.saturating_sub(last_update.unwrap_or(0)) > 15 * 60 * 1000 {
+		return None;
+	}
+	let steps = v
+		.get("steps")
+		.and_then(|x| x.as_array())
+		.map(|arr| {
+			arr.iter()
+				.map(|s| {
+					let last = s
+						.get("recentTools")
+						.and_then(|x| x.as_array())
+						.and_then(|tools| tools.last());
+					SubagentStepInfo {
+						label: s
+							.get("label")
+							.and_then(|x| x.as_str())
+							.unwrap_or("")
+							.to_string(),
+						agent: s
+							.get("agent")
+							.and_then(|x| x.as_str())
+							.unwrap_or("")
+							.to_string(),
+						status: s
+							.get("status")
+							.and_then(|x| x.as_str())
+							.unwrap_or("")
+							.to_string(),
+						model: s
+							.get("model")
+							.and_then(|x| x.as_str())
+							.map(|m| m.to_string()),
+						turn_count: s.get("turnCount").and_then(|x| x.as_u64()).unwrap_or(0),
+						tool_count: s.get("toolCount").and_then(|x| x.as_u64()).unwrap_or(0),
+						last_tool: last
+							.and_then(|t| t.get("tool"))
+							.and_then(|x| x.as_str())
+							.map(|n| n.to_string()),
+						last_tool_args: last
+							.and_then(|t| t.get("args"))
+							.and_then(|x| x.as_str())
+							.map(|a| a.chars().take(120).collect()),
+					}
+				})
+				.collect()
+		})
+		.unwrap_or_default();
+	Some(SubagentRunInfo {
+		run_id: v
+			.get("runId")
+			.and_then(|x| x.as_str())
+			.unwrap_or("")
+			.to_string(),
+		mode: v
+			.get("mode")
+			.and_then(|x| x.as_str())
+			.unwrap_or("")
+			.to_string(),
+		state,
+		started_at: v.get("startedAt").and_then(|x| x.as_u64()),
+		steps,
+	})
+}
+
+/// Live status of the subagent runs belonging to a session, for the chat's
+/// subagent panel. The frontend polls this while a task is working.
+#[tauri::command]
+async fn pi_subagent_runs(session: String) -> Result<Vec<SubagentRunInfo>, String> {
+	run_blocking(move || {
+		let session_lower = canonical_or(Path::new(&session))
+			.to_string_lossy()
+			.to_lowercase();
+		let now_ms = unix_ms(std::time::SystemTime::now());
+		let mut runs: Vec<SubagentRunInfo> = subagent_run_dirs()
+			.iter()
+			.filter_map(|dir| {
+				let raw = std::fs::read_to_string(dir.join("status.json")).ok()?;
+				let v = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+				parse_subagent_status(&v, &session_lower, now_ms)
+			})
+			.collect();
+		runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
+		Ok(runs)
+	})
+	.await
+}
+
 // ===================================================================
 // Project trust (/trust): read/write ~/.pi/agent/trust.json with the same
 // shape pi uses — a map of canonical absolute directory → true|false — and
@@ -3073,6 +3337,9 @@ pub struct PiUsageEntry {
 	reasoning: u64,
 	total: u64,
 	cost: f64,
+	/// Message timestamp (epoch ms) — the stats page derives per-session chat
+	/// durations from these.
+	ts: u64,
 }
 
 /// Scan every session JSONL for LLM `usage` records (one per assistant
@@ -3143,6 +3410,11 @@ fn usage_from_file(path: &Path) -> Vec<PiUsageEntry> {
 						.and_then(|x| x.as_u64())
 						.unwrap_or(0),
 					cost,
+					ts: v
+						.get("timestamp")
+						.and_then(|x| x.as_str())
+						.and_then(parse_iso_ms)
+						.unwrap_or(0),
 				});
 			}
 			_ => {}
@@ -3180,11 +3452,10 @@ async fn pi_usage_stats() -> Result<Vec<PiUsageEntry>, String> {
 #[tauri::command]
 async fn pi_open_workspace(app: AppHandle) -> Result<Option<String>, String> {
 	use tauri_plugin_dialog::DialogExt;
-	let picked = tauri::async_runtime::spawn_blocking(move || {
-		app.dialog().file().blocking_pick_folder()
-	})
-	.await
-	.map_err(|e| e.to_string())?;
+	let picked =
+		tauri::async_runtime::spawn_blocking(move || app.dialog().file().blocking_pick_folder())
+			.await
+			.map_err(|e| e.to_string())?;
 	Ok(picked.map(|p| p.to_string()))
 }
 
@@ -3224,10 +3495,14 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			pi_restore_session,
 			pi_purge_session,
 			pi_reveal_session,
+			pi_subagent_runs,
 			crate::extras::pi_auth_status,
 			crate::extras::pi_auth_set_key,
 			crate::extras::pi_auth_remove,
 			crate::extras::pi_providers,
+			crate::extras::pi_custom_providers,
+			crate::extras::pi_upsert_custom_provider,
+			crate::extras::pi_remove_custom_provider,
 			crate::extras::git_branch_state,
 			crate::extras::git_checkout_branch,
 			crate::extras::git_create_branch,
@@ -3238,6 +3513,7 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			crate::extras::pi_move_session,
 			crate::rebuild_menu,
 			crate::log_frontend,
+			crate::log_frontend_info,
 		])
 }
 
@@ -3448,6 +3724,77 @@ mod tests {
 		assert_eq!(messages[1].blocks.len(), 2);
 		assert_eq!(messages[1].blocks[0].kind, "thinking");
 		assert_eq!(messages[1].blocks[1].kind, "text");
+	}
+
+	#[test]
+	fn detects_subagent_session_header() {
+		let path = write_temp_session(
+			"scan-subagent",
+			&[
+				r#"{"type":"session","version":3,"id":"abc","timestamp":"2026-08-10T06:31:02.384Z","cwd":"D:\\projects\\demo","parentSession":"C:\\Users\\x\\.pi\\agent\\sessions\\parent.jsonl"}"#,
+				r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-10T06:31:10.660Z","message":{"role":"user","content":[{"type":"text","text":"sub task"}]}}"#,
+			],
+		);
+		let scan = scan_session(&path, 400);
+		assert!(scan.is_subagent);
+		assert_eq!(scan.project.as_deref(), Some("D:\\projects\\demo"));
+
+		let path = write_temp_session(
+			"scan-not-subagent",
+			&[
+				r#"{"type":"session","version":3,"id":"abc","timestamp":"2026-08-10T06:31:02.384Z","cwd":"D:\\projects\\demo"}"#,
+			],
+		);
+		assert!(!scan_session(&path, 400).is_subagent);
+	}
+
+	#[test]
+	fn parses_subagent_status() {
+		let session = "D:\\sessions\\parent.jsonl";
+		let session_lower = canonical_or(Path::new(session))
+			.to_string_lossy()
+			.to_lowercase();
+		let now = 1_800_000_000_000u64;
+		let mk = |state: &str, last_update: u64, sid: &str| {
+			serde_json::json!({
+				"runId": "r1",
+				"sessionId": sid,
+				"mode": "workflow",
+				"state": state,
+				"startedAt": now - 60_000,
+				"lastUpdate": last_update,
+				"steps": [{
+					"agent": "worker",
+					"label": "boot",
+					"status": "running",
+					"model": "deepseek-v4-flash",
+					"turnCount": 3,
+					"toolCount": 5,
+					"recentTools": [
+						{ "tool": "read", "args": "a.ts", "endMs": 1 },
+						{ "tool": "bash", "args": "ls -la", "endMs": 2 }
+					]
+				}]
+			})
+		};
+		// Active run for this session parses with its step summary.
+		let run = parse_subagent_status(&mk("running", now - 1000, session), &session_lower, now)
+			.expect("active run should parse");
+		assert_eq!(run.run_id, "r1");
+		assert_eq!(run.steps.len(), 1);
+		assert_eq!(run.steps[0].label, "boot");
+		assert_eq!(run.steps[0].last_tool.as_deref(), Some("bash"));
+		assert_eq!(run.steps[0].last_tool_args.as_deref(), Some("ls -la"));
+		// Terminal, stale and other-session runs are filtered out.
+		assert!(parse_subagent_status(&mk("complete", now - 1000, session), &session_lower, now).is_none());
+		assert!(
+			parse_subagent_status(&mk("running", now - 20 * 60 * 1000, session), &session_lower, now)
+				.is_none()
+		);
+		assert!(
+			parse_subagent_status(&mk("running", now - 1000, "D:\\sessions\\other.jsonl"), &session_lower, now)
+				.is_none()
+		);
 	}
 
 	#[test]

@@ -3,7 +3,6 @@ mod pi;
 mod runtime_log;
 mod window_state;
 
-#[cfg(target_os = "macos")]
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -16,120 +15,135 @@ use tauri::{AppHandle, Emitter, Manager};
 /// custom items (About / Session details / Session tree / Toggle sidebar)
 /// are forwarded to the renderer as `menu://command` events; New window is
 /// handled in Rust directly. Windows/Linux use the standard window
-/// decorations (no native menu bar in Tauri v2), so nothing is attached
-/// there.
+/// decorations; Windows renders its menu inside the app (brand row in the
+/// chat header), so no native menu bar is attached here.
 fn build_menu(app: &tauri::AppHandle, lang: &str) -> tauri::Result<()> {
-	#[cfg(not(target_os = "macos"))]
-	{
-		let _ = (app, lang);
-		Ok(())
-	}
+	let menu = build_menu_items(app, lang)?;
 	#[cfg(target_os = "macos")]
 	{
-		let zh = lang == "zh";
-		let (
-			app_menu_label,
-			about_label,
-			new_window_label,
-			edit_label,
-			undo_label,
-			redo_label,
-			cut_label,
-			copy_label,
-			paste_label,
-			select_all_label,
-			view_label,
-			fullscreen_label,
-			session_info_label,
-			tree_label,
-			toggle_sidebar_label,
-		) = if zh {
-			(
-				"应用",
-				"关于 Tau",
-				"新窗口",
-				"编辑",
-				"撤销",
-				"重做",
-				"剪切",
-				"复制",
-				"粘贴",
-				"全选",
-				"视图",
-				"切换全屏",
-				"会话详情",
-				"会话树",
-				"切换侧边栏",
-			)
-		} else {
-			(
-				"App",
-				"About Tau",
-				"New window",
-				"Edit",
-				"Undo",
-				"Redo",
-				"Cut",
-				"Copy",
-				"Paste",
-				"Select All",
-				"View",
-				"Toggle Fullscreen",
-				"Session details",
-				"Session tree",
-				"Toggle Sidebar",
-			)
-		};
-		let edit_menu = Submenu::with_items(
-			app,
-			edit_label,
-			true,
-			&[
-				&PredefinedMenuItem::undo(app, Some(undo_label))?,
-				&PredefinedMenuItem::redo(app, Some(redo_label))?,
-				&PredefinedMenuItem::separator(app)?,
-				&PredefinedMenuItem::cut(app, Some(cut_label))?,
-				&PredefinedMenuItem::copy(app, Some(copy_label))?,
-				&PredefinedMenuItem::paste(app, Some(paste_label))?,
-				&PredefinedMenuItem::select_all(app, Some(select_all_label))?,
-			],
-		)?;
-		let view_menu = Submenu::with_items(
-			app,
-			view_label,
-			true,
-			&[
-				&PredefinedMenuItem::fullscreen(app, Some(fullscreen_label))?,
-				&PredefinedMenuItem::separator(app)?,
-				&MenuItem::with_id(
-					app,
-					"toggle-sidebar",
-					toggle_sidebar_label,
-					true,
-					None::<&str>,
-				)?,
-				&MenuItem::with_id(app, "session-info", session_info_label, true, None::<&str>)?,
-				&MenuItem::with_id(app, "tree", tree_label, true, None::<&str>)?,
-			],
-		)?;
-		let new_window_item = MenuItem::with_id(
-			app,
-			"new-window",
-			new_window_label,
-			true,
-			Some("CmdOrCtrl+Shift+N"),
-		)?;
-		let about_item = MenuItem::with_id(app, "about", about_label, true, None::<&str>)?;
-		let app_menu = Submenu::with_items(
-			app,
-			app_menu_label,
-			true,
-			&[&new_window_item, &PredefinedMenuItem::separator(app)?, &about_item],
-		)?;
-		let menu = Menu::with_items(app, &[&app_menu, &edit_menu, &view_menu])?;
 		app.set_menu(menu)?;
-		Ok(())
 	}
+	#[cfg(not(target_os = "macos"))]
+	{
+		let _ = menu;
+	}
+	Ok(())
+}
+
+/// Build the App / Edit / View menu structure shared by the platforms that
+/// show a native menu. `lang` selects the display language: "zh" renders
+/// Chinese labels, anything else English. The renderer re-invokes
+/// `rebuild_menu` after a language change so the menu follows the UI
+/// without an app restart.
+fn build_menu_items<R: tauri::Runtime>(
+	app: &tauri::AppHandle<R>,
+	lang: &str,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+	let zh = lang == "zh";
+	let (
+		app_menu_label,
+		about_label,
+		new_window_label,
+		edit_label,
+		undo_label,
+		redo_label,
+		cut_label,
+		copy_label,
+		paste_label,
+		select_all_label,
+		view_label,
+		fullscreen_label,
+		session_info_label,
+		tree_label,
+		toggle_sidebar_label,
+	) = if zh {
+		(
+			"应用",
+			"关于 Tau",
+			"新窗口",
+			"编辑",
+			"撤销",
+			"重做",
+			"剪切",
+			"复制",
+			"粘贴",
+			"全选",
+			"视图",
+			"切换全屏",
+			"会话详情",
+			"会话树",
+			"切换侧边栏",
+		)
+	} else {
+		(
+			"App",
+			"About Tau",
+			"New window",
+			"Edit",
+			"Undo",
+			"Redo",
+			"Cut",
+			"Copy",
+			"Paste",
+			"Select All",
+			"View",
+			"Toggle Fullscreen",
+			"Session details",
+			"Session tree",
+			"Toggle Sidebar",
+		)
+	};
+	let edit_menu = Submenu::with_items(
+		app,
+		edit_label,
+		true,
+		&[
+			&PredefinedMenuItem::undo(app, Some(undo_label))?,
+			&PredefinedMenuItem::redo(app, Some(redo_label))?,
+			&PredefinedMenuItem::separator(app)?,
+			&PredefinedMenuItem::cut(app, Some(cut_label))?,
+			&PredefinedMenuItem::copy(app, Some(copy_label))?,
+			&PredefinedMenuItem::paste(app, Some(paste_label))?,
+			&PredefinedMenuItem::select_all(app, Some(select_all_label))?,
+		],
+	)?;
+	let view_menu = Submenu::with_items(
+		app,
+		view_label,
+		true,
+		&[
+			&PredefinedMenuItem::fullscreen(app, Some(fullscreen_label))?,
+			&PredefinedMenuItem::separator(app)?,
+			&MenuItem::with_id(
+				app,
+				"toggle-sidebar",
+				toggle_sidebar_label,
+				true,
+				None::<&str>,
+			)?,
+			&MenuItem::with_id(app, "session-info", session_info_label, true, None::<&str>)?,
+			&MenuItem::with_id(app, "tree", tree_label, true, None::<&str>)?,
+		],
+	)?;
+	let new_window_item = MenuItem::with_id(
+		app,
+		"new-window",
+		new_window_label,
+		true,
+		Some("CmdOrCtrl+Shift+N"),
+	)?;
+	let about_item = MenuItem::with_id(app, "about", about_label, true, None::<&str>)?;
+	let app_menu = Submenu::with_items(
+		app,
+		app_menu_label,
+		true,
+		&[
+			&new_window_item,
+			&PredefinedMenuItem::separator(app)?,
+			&about_item,
+		],
+	)?;
+	Menu::with_items(app, &[&app_menu, &edit_menu, &view_menu])
 }
 
 #[tauri::command]
@@ -166,7 +180,8 @@ fn watch_fullscreen_transitions(win: &tauri::WebviewWindow, app: &tauri::AppHand
 	};
 	let center = NSNotificationCenter::defaultCenter();
 
-	let make_observer = |name: &'static objc2_foundation::NSNotificationName, payload: &'static str| {
+	let make_observer = |name: &'static objc2_foundation::NSNotificationName,
+	                     payload: &'static str| {
 		let app = app.clone();
 		let block = RcBlock::new(move |_note: NonNull<NSNotification>| {
 			let _ = app.emit("window://fullscreen", payload);
@@ -193,7 +208,9 @@ fn watch_fullscreen_transitions(win: &tauri::WebviewWindow, app: &tauri::AppHand
 		unsafe { make_observer(NSWindowWillExitFullScreenNotification, "will-exit") };
 	let did_exit: Retained<ProtocolObject<dyn NSObjectProtocol>> =
 		unsafe { make_observer(NSWindowDidExitFullScreenNotification, "exit") };
-	Box::leak(Box::new((will_enter, did_enter, will_exit, did_exit, ns_window)));
+	Box::leak(Box::new((
+		will_enter, did_enter, will_exit, did_exit, ns_window,
+	)));
 }
 
 /// macOS: wry's `trafficLightPosition.y` is a no-op for vertical placement
@@ -263,6 +280,14 @@ fn log_frontend(app: AppHandle, message: String) {
 	runtime_log::log_error(&app, &format!("frontend: {message}"));
 }
 
+/// Info-level counterpart of `log_frontend` for renderer liveness and
+/// visibility pings — logging those as errors would drown real frontend
+/// failures.
+#[tauri::command]
+fn log_frontend_info(app: AppHandle, message: String) {
+	runtime_log::log_info(&app, &format!("frontend: {message}"));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
 	pi::register(tauri::Builder::default())
@@ -281,10 +306,7 @@ pub fn run() {
 				// focused window.
 				"about" | "session-info" | "tree" | "toggle-sidebar" => {
 					let windows = app.webview_windows();
-					if let Some(win) = windows
-						.values()
-						.find(|w| w.is_focused().unwrap_or(false))
-					{
+					if let Some(win) = windows.values().find(|w| w.is_focused().unwrap_or(false)) {
 						let _ = win.emit("menu://command", id);
 					}
 				}
@@ -314,6 +336,31 @@ pub fn run() {
 						std::thread::sleep(std::time::Duration::from_secs(15));
 						tick += 1;
 						runtime_log::log_info(&handle, &format!("heartbeat #{tick}"));
+					}
+				});
+			}
+			// Main-thread liveness probe. The background heartbeat above keeps
+			// ticking even when the UI thread is wedged (seen in WER AppHang
+			// reports: heartbeats ran right up to the hang), so it cannot tell
+			// a frozen main thread apart from a live one. This schedules a
+			// closure onto the main thread every 15s and logs the dispatch
+			// delay: when the UI freezes, the probe lines stop (or show a huge
+			// delay) while the background heartbeat continues — and whatever
+			// was logged just before the freeze is the suspect.
+			{
+				let handle = app.handle().clone();
+				std::thread::spawn(move || {
+					loop {
+						let scheduled = std::time::Instant::now();
+						let h = handle.clone();
+						let _ = handle.run_on_main_thread(move || {
+							let delay = scheduled.elapsed().as_millis();
+							runtime_log::log_info(
+								&h,
+								&format!("main-thread alive (dispatch delay {delay}ms)"),
+							);
+						});
+						std::thread::sleep(std::time::Duration::from_secs(15));
 					}
 				});
 			}
@@ -375,9 +422,19 @@ pub fn run() {
 					// Kill the main window's pi process when the window closes
 					// (other windows may keep the app alive).
 					let inner = app.state::<crate::pi::PiState>().handle();
+					let app_handle = app.handle().clone();
 					win.on_window_event(move |event| {
 						if let tauri::WindowEvent::Destroyed = event {
+							// This runs on the main thread and blocks until the
+							// child tree dies — log the timing so a teardown
+							// stall is visible in tau.log.
+							let t0 = std::time::Instant::now();
+							crate::runtime_log::log_info(&app_handle, "killing pi (main destroyed)");
 							crate::pi::kill_window_process_inner(&inner, "main");
+							crate::runtime_log::log_info(
+								&app_handle,
+								&format!("pi killed in {}ms (main destroyed)", t0.elapsed().as_millis()),
+							);
 						}
 					});
 				}

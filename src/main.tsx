@@ -100,6 +100,29 @@ window.addEventListener("beforeunload", () => {
 	);
 });
 
+// Freeze diagnostics (investigating "window occluded + session streaming =>
+// app stops responding"). Three ping sources with different dependencies let
+// the log show exactly which piece wedged:
+//   - Rust background heartbeat: keeps logging unless the whole process died;
+//   - Rust main-thread probe: stops when the UI thread is blocked;
+//   - this renderer ping: needs BOTH a live renderer and a main thread that
+//     still processes IPC.
+// Whichever line stops first in tau.log identifies the frozen piece.
+setInterval(() => {
+	void invoke("log_frontend_info", {
+		message: `renderer alive (${document.visibilityState})`,
+	}).catch(() => {});
+}, 15000);
+
+// Chromium marks a fully-occluded WebView2 page hidden (native window
+// occlusion tracking), so these transitions timestamp exactly when the
+// window got covered/uncovered — the condition linked to the freezes.
+document.addEventListener("visibilitychange", () => {
+	void invoke("log_frontend_info", {
+		message: `renderer visibility: ${document.visibilityState}`,
+	}).catch(() => {});
+});
+
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
 	<React.StrictMode>
 		<ErrorBoundary>

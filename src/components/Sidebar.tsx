@@ -15,7 +15,7 @@ import {
 	SettingsIcon,
 	TrashIcon,
 } from "../icons";
-import { MOD_KEY, isMac } from "../platform";
+import { MOD_KEY, MOD_KEY_SEP, isMac } from "../platform";
 
 function timeAgo(ms: number, lang: "zh" | "en"): string {
 	const diff = Date.now() - ms;
@@ -198,12 +198,12 @@ export const Sidebar = memo(function Sidebar({
 				<button className="nav-item" onClick={onNewTask} disabled={busy}>
 					<PlusIcon size={15} />
 					<span>{t.sidebar.newTask}</span>
-					<kbd>{MOD_KEY}N</kbd>
+					<kbd>{MOD_KEY}{MOD_KEY_SEP}N</kbd>
 				</button>
 				<button className="nav-item" onClick={onOpenSearch}>
 					<SearchIcon size={15} />
 					<span>{t.app.search}</span>
-					<kbd>{MOD_KEY}K</kbd>
+					<kbd>{MOD_KEY}{MOD_KEY_SEP}K</kbd>
 				</button>
 			</div>
 
@@ -351,10 +351,10 @@ export const Sidebar = memo(function Sidebar({
 			</div>
 
 			<div className="sidebar-footer">
-				<button className="footer-btn" onClick={onOpenSettings} title={`${MOD_KEY},`}>
+				<button className="footer-btn" onClick={onOpenSettings} title={`${MOD_KEY}${MOD_KEY_SEP},`}>
 					<SettingsIcon size={15} />
 					<span>{t.app.settings}</span>
-					<kbd>{MOD_KEY},</kbd>
+					<kbd>{MOD_KEY}{MOD_KEY_SEP},</kbd>
 				</button>
 			</div>
 		</aside>

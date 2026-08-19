@@ -4,12 +4,15 @@ import {
 	authRemove,
 	authSetKey,
 	authStatus,
+	piCustomProviders,
 	piInstalledSkills,
 	piPackageInstall,
 	piPackageRemove,
 	piPackages,
 	piProviders,
+	piRemoveCustomProvider,
 	type AuthProviderStatus,
+	type CustomProviderEntry,
 	type PiPackageEntry,
 	type PiSkillEntry,
 } from "../pi";
@@ -25,6 +28,7 @@ import {
 	EyeIcon,
 	GridIcon,
 	InfoIcon,
+	PlusIcon,
 	RefreshIcon,
 	RestoreIcon,
 	SettingsIcon,
@@ -36,6 +40,7 @@ import type { AppSettings, ColorScale, Density, Theme } from "../settings";
 import { ALL_AGENT_TOOLS } from "../settings";
 import { PACKAGES_CATALOG, formatDownloads } from "../packages-catalog";
 import { UsageStats } from "./UsageStats";
+import { CustomProviderDialog } from "./CustomProviderDialog";
 
 type SettingsPage =
 	| "general"
@@ -315,6 +320,7 @@ export function SettingsPanel({
 	trustDefault,
 	onSetProjectTrust,
 	onSetDefaultTrust,
+	onCustomProvidersChanged,
 }: {
 	t: MessageCatalog;
 	settings: AppSettings;
@@ -337,6 +343,10 @@ export function SettingsPanel({
 	trustDefault: string;
 	onSetProjectTrust: (decision: boolean | null) => void;
 	onSetDefaultTrust: (value: string) => void;
+	/** Fired after a custom provider is added/edited/deleted (models.json
+	 * changed). The host uses it to reconnect the running session so pi
+	 * re-reads the model catalog. */
+	onCustomProvidersChanged?: () => void;
 }) {
 	const themeOptions: { id: Theme; label: string }[] = [
 		{ id: "light", label: t.settings.themeLight },
@@ -416,11 +426,9 @@ export function SettingsPanel({
 	// isn't on disk.
 	const [providerIds, setProviderIds] = useState<string[] | null>(null);
 
-	useEffect(() => {
-		let cancelled = false;
+	const refreshProviders = useCallback(() => {
 		piProviders()
 			.then((list) => {
-				if (cancelled) return;
 				const ids = list.some((p) => p.known)
 					? list.map((p) => p.id)
 					: [
@@ -431,13 +439,11 @@ export function SettingsPanel({
 						];
 				setProviderIds(ids);
 			})
-			.catch(() => {
-				if (!cancelled) setProviderIds(FALLBACK_PROVIDER_IDS);
-			});
-		return () => {
-			cancelled = true;
-		};
+			.catch(() => setProviderIds(FALLBACK_PROVIDER_IDS));
 	}, []);
+	useEffect(() => {
+		refreshProviders();
+	}, [refreshProviders]);
 	const providers = providerIds ?? FALLBACK_PROVIDER_IDS;
 
 	const refreshAuth = useCallback(() => {
@@ -459,6 +465,64 @@ export function SettingsPanel({
 		window.clearTimeout(errorTimerRef.current);
 		errorTimerRef.current = window.setTimeout(() => setErrorMsg(null), 4000);
 	}, []);
+
+	// ---- custom providers (models.json CRUD) ----
+	const [customProviders, setCustomProviders] = useState<CustomProviderEntry[]>(
+		[],
+	);
+	const [cpDialogOpen, setCpDialogOpen] = useState(false);
+	const [cpEditing, setCpEditing] = useState<CustomProviderEntry | null>(null);
+	/** Two-step delete: first click arms, second click executes. */
+	const [cpConfirmDelete, setCpConfirmDelete] = useState<string | null>(null);
+
+	const refreshCustomProviders = useCallback(() => {
+		piCustomProviders()
+			.then(setCustomProviders)
+			.catch(() => setCustomProviders([]));
+	}, []);
+	useEffect(() => {
+		refreshCustomProviders();
+	}, [refreshCustomProviders]);
+
+	// Disarm a stale delete confirmation automatically.
+	useEffect(() => {
+		if (!cpConfirmDelete) return;
+		const timer = window.setTimeout(() => setCpConfirmDelete(null), 3000);
+		return () => window.clearTimeout(timer);
+	}, [cpConfirmDelete]);
+
+	const onProvidersChanged = useCallback(() => {
+		refreshProviders();
+		refreshCustomProviders();
+		refreshAuth();
+		// Let the host reconnect the running session so the pi process
+		// re-reads models.json (its model catalog is a startup snapshot).
+		onCustomProvidersChanged?.();
+	}, [
+		refreshProviders,
+		refreshCustomProviders,
+		refreshAuth,
+		onCustomProvidersChanged,
+	]);
+
+	const deleteCustomProvider = async (entry: CustomProviderEntry) => {
+		if (cpConfirmDelete !== entry.id) {
+			setCpConfirmDelete(entry.id);
+			return;
+		}
+		setCpConfirmDelete(null);
+		try {
+			await piRemoveCustomProvider(entry.id);
+			// Drop the stored key too, or the provider would linger in the list
+			// (pi_providers merges auth.json entries).
+			await authRemove(entry.id).catch(() => {});
+			onProvidersChanged();
+			notify(t.settings.providerDeleted.replace("{id}", entry.id));
+		} catch (e) {
+			notifyError(String(e));
+		}
+	};
+	const customIds = new Set(customProviders.map((c) => c.id));
 
 	// ---- packages & skills ----
 	// Cache extension data for the app session so reopening the settings panel
@@ -943,20 +1007,106 @@ export function SettingsPanel({
 					<section className="settings-section">
 						<h3>{t.settings.providers}</h3>
 					<p className="settings-hint">{t.settings.providersHint}</p>
+
+					<div className="settings-section-title-row">
+						<h4 className="settings-sub">{t.settings.customProviders}</h4>
+						<button
+							className="btn secondary small"
+							onClick={() => {
+								setCpEditing(null);
+								setCpDialogOpen(true);
+							}}
+						>
+							<PlusIcon size={12} /> {t.settings.addProvider}
+						</button>
+					</div>
+					<p className="settings-hint">{t.settings.customProvidersHint}</p>
+					{customProviders.length === 0 ? (
+						<p className="settings-hint">{t.settings.customProviderEmpty}</p>
+					) : (
+						<ul className="provider-list">
+							{customProviders.map((entry) => {
+								const configured = auth.find(
+									(a) => a.provider === entry.id,
+								)?.hasKey;
+								const modelCount = Array.isArray(entry.config.models)
+									? entry.config.models.length
+									: 0;
+								return (
+									<li className="provider-row" key={entry.id}>
+										<div className="provider-info">
+											<span className="provider-name">{entry.id}</span>
+											<span
+												className={`provider-status ${configured ? "ok" : ""}`}
+											>
+												{configured
+													? t.settings.providerConfigured
+													: t.settings.providerNotConfigured}
+											</span>
+											<span className="provider-status">
+												{t.settings.modelCount.replace(
+													"{count}",
+													String(modelCount),
+												)}
+											</span>
+										</div>
+										<div className="provider-actions">
+											<button
+												className="btn secondary small"
+												onClick={() => {
+													setCpConfirmDelete(null);
+													setCpEditing(entry);
+													setCpDialogOpen(true);
+												}}
+											>
+												{t.settings.editProvider}
+											</button>
+											<button
+												className={`btn small ${
+													cpConfirmDelete === entry.id ? "danger" : "secondary"
+												}`}
+												onClick={() => void deleteCustomProvider(entry)}
+											>
+												{cpConfirmDelete === entry.id
+													? t.settings.deleteProviderConfirm
+													: t.settings.deleteProvider}
+											</button>
+										</div>
+									</li>
+								);
+							})}
+						</ul>
+					)}
+
+					<h4 className="settings-sub">{t.settings.builtinProviders}</h4>
 					<ul className="provider-list">
-						{providers.map((id) => (
-							<ProviderRow
-								key={id}
-								provider={id}
-								label={providerLabel(id)}
-								status={auth.find((a) => a.provider === id)}
-								onSaved={notify}
-								onError={notifyError}
-								onAuthChanged={refreshAuth}
-								t={t}
-							/>
-						))}
+						{providers
+							.filter((id) => !customIds.has(id))
+							.map((id) => (
+								<ProviderRow
+									key={id}
+									provider={id}
+									label={providerLabel(id)}
+									status={auth.find((a) => a.provider === id)}
+									onSaved={notify}
+									onError={notifyError}
+									onAuthChanged={refreshAuth}
+									t={t}
+								/>
+							))}
 					</ul>
+
+					<CustomProviderDialog
+						open={cpDialogOpen}
+						editing={cpEditing}
+						builtinIds={providers.filter((id) => !customIds.has(id))}
+						existingIds={customProviders.map((c) => c.id)}
+						t={t}
+						onClose={() => setCpDialogOpen(false)}
+						onSaved={notify}
+						onError={notifyError}
+						onChanged={onProvidersChanged}
+					/>
 					</section>
 					)}
 
@@ -1171,7 +1321,7 @@ export function SettingsPanel({
 					{page === "usage" && (
 					<section className="settings-section">
 						<h3>{t.settings.usage}</h3>
-						<UsageStats t={t} />
+						<UsageStats t={t} lang={settings.language} />
 					</section>
 					)}
 

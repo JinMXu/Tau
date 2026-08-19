@@ -1,11 +1,4 @@
-import {
-	useCallback,
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-	startTransition,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, startTransition } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -19,6 +12,7 @@ import {
 	deleteSession as deleteSessionCmd,
 	exportChat,
 	exportHtml,
+	fetchSubagentRuns,
 	gitBranchState,
 	gitCheckoutBranch,
 	gitCreateBranch,
@@ -50,16 +44,10 @@ import {
 	type PiEvent,
 	type PiParsedMessage,
 	type PiSessionInfo,
+	type SubagentRun,
 } from "./pi";
-import {
-	getMessages,
-} from "./i18n";
-import {
-	loadSettings,
-	resolveTheme,
-	saveSettings,
-	type AppSettings,
-} from "./settings";
+import { getMessages } from "./i18n";
+import { loadSettings, resolveTheme, saveSettings, type AppSettings } from "./settings";
 import type {
 	Attachment,
 	Block,
@@ -70,17 +58,12 @@ import type {
 } from "./chat-types";
 import { Sidebar } from "./components/Sidebar";
 import { ChatArea } from "./components/ChatArea";
+import { TitleBar } from "./components/TitleBar";
 import { SearchOverlay } from "./components/SearchOverlay";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { ArchivedPreview } from "./components/ArchivedPreview";
-import {
-	chatMessageToMarkdown,
-	parsedMessagesToMarkdown,
-} from "./components/message-utils";
-import {
-	ExtensionDialog,
-	type ExtensionRequest,
-} from "./components/ExtensionDialog";
+import { chatMessageToMarkdown, parsedMessagesToMarkdown } from "./components/message-utils";
+import { ExtensionDialog, type ExtensionRequest } from "./components/ExtensionDialog";
 import { TreePanel, type PiTreeData } from "./components/TreePanel";
 import { SessionInfoDialog } from "./components/SessionInfoDialog";
 import { HotkeysDialog } from "./components/HotkeysDialog";
@@ -91,7 +74,7 @@ import { LlamaDialog } from "./components/LlamaDialog";
 import type { ModelEntry } from "./components/Composer";
 import "./App.css";
 import { formatBytes } from "./format";
-import { isMac } from "./platform";
+import { isMac, isWin } from "./platform";
 
 let nextId = 1;
 
@@ -188,21 +171,17 @@ export default function App() {
 	const [sessions, setSessions] = useState<PiSessionInfo[]>([]);
 	// Optimistic placeholder for a brand-new task: shown in the sidebar the
 	// moment a prompt is sent, before pi has flushed the session file to disk.
-	const [pendingSession, setPendingSession] = useState<PiSessionInfo | null>(
-		null,
-	);
+	const [pendingSession, setPendingSession] = useState<PiSessionInfo | null>(null);
 	const [archived, setArchived] = useState<PiArchivedSession[]>([]);
-	const [selectedSessionPath, setSelectedSessionPath] = useState<string | null>(
-		null,
-	);
+	const [selectedSessionPath, setSelectedSessionPath] = useState<string | null>(null);
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [streaming, setStreaming] = useState(false);
 	const [working, setWorking] = useState(false);
+	// Live pi-subagents runs for the current session (polled while working).
+	const [subagentRuns, setSubagentRuns] = useState<SubagentRun[]>([]);
 	const [models, setModels] = useState<ModelEntry[]>([]);
 	const [commands, setCommands] = useState<PiCommand[]>([]);
-	const [model, setModel] = useState<string>(
-		() => localStorage.getItem(STORAGE_KEYS.model) ?? "",
-	);
+	const [model, setModel] = useState<string>(() => localStorage.getItem(STORAGE_KEYS.model) ?? "");
 	const [thinkingLevels, setThinkingLevels] = useState<string[]>([]);
 	const [thinkingLevel, setThinkingLevel] = useState<string>(
 		() => localStorage.getItem(STORAGE_KEYS.thinking) ?? settings.thinkingLevel,
@@ -269,9 +248,11 @@ export default function App() {
 			}
 		});
 		// Initial state (e.g. app relaunched while still in fullscreen).
-		void getCurrentWindow().isFullscreen().then((fs) => {
-			if (mounted) setFullscreen(fs);
-		});
+		void getCurrentWindow()
+			.isFullscreen()
+			.then((fs) => {
+				if (mounted) setFullscreen(fs);
+			});
 		return () => {
 			mounted = false;
 			void unlisten.then((f) => f());
@@ -287,18 +268,13 @@ export default function App() {
 		// Clicking the session already on screen doesn't add a duplicate.
 		if (navHistoryRef.current[navIndexRef.current] === path) return;
 		navIndexRef.current += 1;
-		navHistoryRef.current = [
-			...navHistoryRef.current.slice(0, navIndexRef.current),
-			path,
-		];
+		navHistoryRef.current = [...navHistoryRef.current.slice(0, navIndexRef.current), path];
 		setNavHistory(navHistoryRef.current);
 		setNavIndex(navIndexRef.current);
 	}, []);
 	const canGoBack = navIndex > 0;
 	const canGoForward = navIndex >= 0 && navIndex < navHistory.length - 1;
-	const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
-		loadExpanded,
-	);
+	const [expandedProjects, setExpandedProjects] = useState<Set<string>>(loadExpanded);
 	const [sessionOrder, setSessionOrder] = useState<string[]>(() => {
 		try {
 			const raw = localStorage.getItem(STORAGE_KEYS.sessionOrder);
@@ -324,8 +300,7 @@ export default function App() {
 	const [composerFocusRequest, setComposerFocusRequest] = useState(0);
 	const [gitState, setGitState] = useState<GitBranchState | null>(null);
 	const [stats, setStats] = useState<SessionStats | null>(null);
-	const [extensionRequest, setExtensionRequest] =
-		useState<ExtensionRequest | null>(null);
+	const [extensionRequest, setExtensionRequest] = useState<ExtensionRequest | null>(null);
 	// Mirrors `extensionRequest` for the event handler (a ref, so handleEvent
 	// doesn't re-subscribe when the dialog changes). Used to cancel a pending
 	// request before it is overwritten by a newer one.
@@ -338,9 +313,7 @@ export default function App() {
 	const [extensionWidgets, setExtensionWidgets] = useState<
 		Record<string, { lines: string[]; placement: "aboveEditor" | "belowEditor" }>
 	>({});
-	const [extensionStatus, setExtensionStatus] = useState<
-		Record<string, string>
-	>({});
+	const [extensionStatus, setExtensionStatus] = useState<Record<string, string>>({});
 	const [externalDraft, setExternalDraft] = useState<string | null>(null);
 
 	// ---- session tree (/tree equivalent) ----
@@ -401,9 +374,7 @@ export default function App() {
 
 	// ---- provider API-key gate (chat-time key dialog) ----
 	const [, setAuthProviders] = useState<AuthProviderStatus[]>([]);
-	const [apiKeyDialog, setApiKeyDialog] = useState<{ provider: string } | null>(
-		null,
-	);
+	const [apiKeyDialog, setApiKeyDialog] = useState<{ provider: string } | null>(null);
 	const apiKeyResolversRef = useRef<((saved: boolean) => void)[]>([]);
 
 	useEffect(() => {
@@ -428,37 +399,29 @@ export default function App() {
 	// Hot-apply the auto-retry toggle without reconnecting.
 	useEffect(() => {
 		if (!connected) return;
-		send({ type: "set_auto_retry", enabled: settings.autoRetryOnFailure }).catch(
-			() => {
-				/* older pi */
-			},
-		);
+		send({ type: "set_auto_retry", enabled: settings.autoRetryOnFailure }).catch(() => {
+			/* older pi */
+		});
 	}, [settings.autoRetryOnFailure, connected]);
 
 	// Hot-apply queue delivery modes + auto-compaction without reconnecting.
 	useEffect(() => {
 		if (!connected) return;
-		send({ type: "set_steering_mode", mode: settings.steeringMode }).catch(
-			() => {
-				/* older pi */
-			},
-		);
+		send({ type: "set_steering_mode", mode: settings.steeringMode }).catch(() => {
+			/* older pi */
+		});
 	}, [settings.steeringMode, connected]);
 	useEffect(() => {
 		if (!connected) return;
-		send({ type: "set_follow_up_mode", mode: settings.followUpMode }).catch(
-			() => {
-				/* older pi */
-			},
-		);
+		send({ type: "set_follow_up_mode", mode: settings.followUpMode }).catch(() => {
+			/* older pi */
+		});
 	}, [settings.followUpMode, connected]);
 	useEffect(() => {
 		if (!connected) return;
-		send({ type: "set_auto_compaction", enabled: settings.autoCompaction }).catch(
-			() => {
-				/* older pi */
-			},
-		);
+		send({ type: "set_auto_compaction", enabled: settings.autoCompaction }).catch(() => {
+			/* older pi */
+		});
 	}, [settings.autoCompaction, connected]);
 
 	const pendingRef = useRef(new Map<string, (v: unknown) => void>());
@@ -496,46 +459,46 @@ export default function App() {
 			// deltas arrive faster than the parse can keep up.
 			startTransition(() => {
 				setMessages((prev) => {
-				const idx = prev.length - 1;
-				if (idx < 0) return prev;
-				const role = prev[idx].role;
-				if (role !== "assistant" && role !== "tool") return prev;
-				const blocks = [...prev[idx].blocks];
-				if (d.text) {
-					const last = blocks[blocks.length - 1];
-					if (last?.kind === "text") {
-						blocks[blocks.length - 1] = { kind: "text", text: last.text + d.text };
-					} else {
-						blocks.push({ kind: "text", text: d.text });
+					const idx = prev.length - 1;
+					if (idx < 0) return prev;
+					const role = prev[idx].role;
+					if (role !== "assistant" && role !== "tool") return prev;
+					const blocks = [...prev[idx].blocks];
+					if (d.text) {
+						const last = blocks[blocks.length - 1];
+						if (last?.kind === "text") {
+							blocks[blocks.length - 1] = { kind: "text", text: last.text + d.text };
+						} else {
+							blocks.push({ kind: "text", text: d.text });
+						}
 					}
-				}
-				if (d.thinking) {
-					const last = blocks[blocks.length - 1];
-					if (last?.kind === "thinking") {
-						blocks[blocks.length - 1] = {
-							kind: "thinking",
-							text: last.text + d.thinking,
-						};
-					} else {
-						blocks.push({ kind: "thinking", text: d.thinking });
+					if (d.thinking) {
+						const last = blocks[blocks.length - 1];
+						if (last?.kind === "thinking") {
+							blocks[blocks.length - 1] = {
+								kind: "thinking",
+								text: last.text + d.thinking,
+							};
+						} else {
+							blocks.push({ kind: "thinking", text: d.thinking });
+						}
 					}
-				}
-				if (d.tool) {
-					const last = blocks[blocks.length - 1];
-					if (last?.kind === "tool") {
-						blocks[blocks.length - 1] = {
-							kind: "tool",
-							name: last.name,
-							args: last.args + d.tool,
-						};
-					} else {
-						blocks.push({ kind: "tool", name: "…", args: d.tool });
+					if (d.tool) {
+						const last = blocks[blocks.length - 1];
+						if (last?.kind === "tool") {
+							blocks[blocks.length - 1] = {
+								kind: "tool",
+								name: last.name,
+								args: last.args + d.tool,
+							};
+						} else {
+							blocks.push({ kind: "tool", name: "…", args: d.tool });
+						}
 					}
-				}
-				const next = [...prev];
-				next[idx] = { ...prev[idx], blocks };
-				return next;
-			});
+					const next = [...prev];
+					next[idx] = { ...prev[idx], blocks };
+					return next;
+				});
 			});
 		});
 	}, []);
@@ -560,8 +523,7 @@ export default function App() {
 			document.documentElement.dataset.density = settings.density;
 			// Keep the document language in sync with the UI language
 			// (spell-check, screen readers, `<html lang>`).
-			document.documentElement.lang =
-				settings.language === "zh" ? "zh-CN" : "en";
+			document.documentElement.lang = settings.language === "zh" ? "zh-CN" : "en";
 			document.documentElement.style.setProperty(
 				"--ousia-chat-font-size",
 				`${settings.fontSize}px`,
@@ -621,9 +583,7 @@ export default function App() {
 	// Settings-page changes to the default send mode also update the live
 	// toggle (runtime composer switches only touch the state, not settings).
 	useEffect(() => {
-		setSendDuringRun(
-			settings.sendDuringRunMode === "queue" ? "followUp" : "steer",
-		);
+		setSendDuringRun(settings.sendDuringRunMode === "queue" ? "followUp" : "steer");
 		localStorage.setItem(
 			STORAGE_KEYS.sendMode,
 			settings.sendDuringRunMode === "queue" ? "followUp" : "steer",
@@ -639,10 +599,7 @@ export default function App() {
 
 	// ---- persistence of misc UI state ----
 	useEffect(() => {
-		localStorage.setItem(
-			STORAGE_KEYS.expanded,
-			JSON.stringify([...expandedProjects]),
-		);
+		localStorage.setItem(STORAGE_KEYS.expanded, JSON.stringify([...expandedProjects]));
 	}, [expandedProjects]);
 	useEffect(() => {
 		localStorage.setItem(STORAGE_KEYS.sessionOrder, JSON.stringify(sessionOrder));
@@ -676,10 +633,7 @@ export default function App() {
 	const toast = useCallback((text: string) => {
 		const id = nextId++;
 		setToasts((prev) => [...prev, { id, text }]);
-		setTimeout(
-			() => setToasts((prev) => prev.filter((x) => x.id !== id)),
-			2600,
-		);
+		setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== id)), 2600);
 	}, []);
 
 	const refreshSessions = useCallback(async (): Promise<PiSessionInfo[]> => {
@@ -728,19 +682,14 @@ export default function App() {
 	}, []);
 
 	const handleResponse = useCallback(
-		async (
-			command: Record<string, unknown>,
-			opts?: { id?: string },
-		): Promise<PiEvent> => {
+		async (command: Record<string, unknown>, opts?: { id?: string }): Promise<PiEvent> => {
 			// A caller-provided id lets `bash` stream events be correlated with
 			// the originating command (bash_execution_update carries the id).
 			const id = opts?.id ?? `gui-${nextId++}`;
-			const timeoutMs =
-				RESPONSE_TIMEOUTS[String(command.type)] ?? 60000;
+			const timeoutMs = RESPONSE_TIMEOUTS[String(command.type)] ?? 60000;
 			const event = await new Promise<PiEvent>((resolve, reject) => {
 				const timer = setTimeout(() => {
-					if (pendingRef.current.delete(id))
-						reject(new Error("timeout waiting for pi response"));
+					if (pendingRef.current.delete(id)) reject(new Error("timeout waiting for pi response"));
 				}, timeoutMs);
 				pendingRef.current.set(id, ((e: PiEvent) => {
 					clearTimeout(timer);
@@ -763,36 +712,39 @@ export default function App() {
 	// Poll for the on-disk session file of a just-created task so the sidebar
 	// can promote its optimistic placeholder to the real session as soon as pi
 	// flushes the file (usually within a second of the first prompt).
-	const discoverNewSession = useCallback(async (navEpoch: number) => {
-		for (let i = 0; i < 20; i++) {
-			// The user switched sessions / disconnected / started a new task
-			// while we were polling — stop promoting the just-created session
-			// over their new selection.
-			if (navEpochRef.current !== navEpoch) return;
-			await new Promise((r) => setTimeout(r, 350));
-			let file: string | null = null;
-			try {
-				const r = await handleResponse({ type: "get_state" });
-				file =
-					((r.data as { sessionFile?: string | null } | undefined)
-						?.sessionFile as string | null | undefined) ?? null;
-			} catch {
-				/* pi may still be starting; keep polling */
+	const discoverNewSession = useCallback(
+		async (navEpoch: number) => {
+			for (let i = 0; i < 20; i++) {
+				// The user switched sessions / disconnected / started a new task
+				// while we were polling — stop promoting the just-created session
+				// over their new selection.
+				if (navEpochRef.current !== navEpoch) return;
+				await new Promise((r) => setTimeout(r, 350));
+				let file: string | null = null;
+				try {
+					const r = await handleResponse({ type: "get_state" });
+					file =
+						((r.data as { sessionFile?: string | null } | undefined)?.sessionFile as
+							string | null | undefined) ?? null;
+				} catch {
+					/* pi may still be starting; keep polling */
+				}
+				// Only touch the refs/selection when the path actually changes
+				// (the loop also runs while the user may have switched sessions).
+				if (file && sessionPathRef.current !== file) {
+					sessionPathRef.current = file;
+					setSelectedSessionPath(file);
+					localStorage.setItem(STORAGE_KEYS.lastSession, file);
+				}
+				const list = await refreshSessions();
+				if (file && list.some((s) => s.path === file)) {
+					setPendingSession(null);
+					return;
+				}
 			}
-			// Only touch the refs/selection when the path actually changes
-			// (the loop also runs while the user may have switched sessions).
-			if (file && sessionPathRef.current !== file) {
-				sessionPathRef.current = file;
-				setSelectedSessionPath(file);
-				localStorage.setItem(STORAGE_KEYS.lastSession, file);
-			}
-			const list = await refreshSessions();
-			if (file && list.some((s) => s.path === file)) {
-				setPendingSession(null);
-				return;
-			}
-		}
-	}, [handleResponse, refreshSessions]);
+		},
+		[handleResponse, refreshSessions],
+	);
 
 	const refreshStats = useCallback(
 		async (withPerf = false) => {
@@ -807,26 +759,18 @@ export default function App() {
 							? firstTokenRef.current - turnStartRef.current
 							: null;
 					if (ttft != null && ttft > 0) {
-						ttftHistoryRef.current = [...ttftHistoryRef.current, ttft].slice(
-							-20,
-						);
+						ttftHistoryRef.current = [...ttftHistoryRef.current, ttft].slice(-20);
 					}
 					const avgTTFT =
 						ttftHistoryRef.current.length > 0
-							? ttftHistoryRef.current.reduce((a, b) => a + b, 0) /
-								ttftHistoryRef.current.length
+							? ttftHistoryRef.current.reduce((a, b) => a + b, 0) / ttftHistoryRef.current.length
 							: undefined;
 					const outputDelta = tk.output - prevOutputTokensRef.current;
 					const genTimeSec = totalGenTimeRef.current / 1000;
 					const tokensPerSec =
-						genTimeSec > 0 && outputDelta > 0
-							? outputDelta / genTimeSec
-							: undefined;
+						genTimeSec > 0 && outputDelta > 0 ? outputDelta / genTimeSec : undefined;
 					newStats.perf = {
-						cacheHitRate:
-							totalInput > 0
-								? (tk.cacheRead / totalInput) * 100
-								: undefined,
+						cacheHitRate: totalInput > 0 ? (tk.cacheRead / totalInput) * 100 : undefined,
 						avgTTFT,
 						tokensPerSec,
 					};
@@ -845,12 +789,7 @@ export default function App() {
 			.filter((a) => a.kind === "image" && a.dataUrl)
 			.map((a) => {
 				const parts = a.dataUrl!.split(",");
-				const mimeType =
-					a.dataUrl!
-						.split(";")[0]
-						.split(":")
-						.slice(1)
-						.join(":") || "image/png";
+				const mimeType = a.dataUrl!.split(";")[0].split(":").slice(1).join(":") || "image/png";
 				return { type: "image", mimeType, data: parts[1] ?? "" };
 			});
 	}, []);
@@ -925,8 +864,7 @@ export default function App() {
 			if (editingQueueId === next.id) setEditingQueueId(null);
 			// Resolve the effective sender BEFORE sendQueuedMessage sets
 			// working=true: workingRef still reflects the pre-delivery state.
-			const effective =
-				sender === "steer" && workingRef.current ? "steer" : "prompt";
+			const effective = sender === "steer" && workingRef.current ? "steer" : "prompt";
 			await sendQueuedMessage(next, effective);
 		},
 		[editingQueueId, sendQueuedMessage],
@@ -986,16 +924,19 @@ export default function App() {
 					toast(String(event.message ?? ""));
 					return;
 				}
-				if (method === "select" || method === "confirm" || method === "input" || method === "editor") {
+				if (
+					method === "select" ||
+					method === "confirm" ||
+					method === "input" ||
+					method === "editor"
+				) {
 					// A newer request overwrites the dialog; explicitly cancel the
 					// still-pending one so its extension doesn't hang waiting for a
 					// response that will never come.
 					const previous = extensionRequestRef.current;
 					if (previous) {
 						const payload =
-							previous.method === "confirm"
-								? { confirmed: false }
-								: { cancelled: true };
+							previous.method === "confirm" ? { confirmed: false } : { cancelled: true };
 						void send({
 							type: "extension_ui_response",
 							id: previous.id,
@@ -1032,8 +973,7 @@ export default function App() {
 					const key = String(event.widgetKey ?? "");
 					if (!key) return;
 					const lines = event.widgetLines as string[] | undefined;
-					const placement =
-						event.widgetPlacement === "belowEditor" ? "belowEditor" : "aboveEditor";
+					const placement = event.widgetPlacement === "belowEditor" ? "belowEditor" : "aboveEditor";
 					setExtensionWidgets((prev) => {
 						const next = { ...prev };
 						if (lines && lines.length) next[key] = { lines, placement };
@@ -1157,27 +1097,20 @@ export default function App() {
 					}
 					const blocks: Block[] = (message.content ?? [])
 						.map((item): Block | null => {
-							if (item.type === "text")
-								return { kind: "text", text: item.text ?? "" };
-							if (item.type === "thinking")
-								return { kind: "thinking", text: item.thinking ?? "" };
+							if (item.type === "text") return { kind: "text", text: item.text ?? "" };
+							if (item.type === "thinking") return { kind: "thinking", text: item.thinking ?? "" };
 							if (item.type === "toolCall" || item.type === "tool_call") {
 								return {
 									kind: "tool",
 									name: item.name ?? "tool",
-									args:
-										item.arguments !== undefined
-											? JSON.stringify(item.arguments, null, 2)
-											: "",
+									args: item.arguments !== undefined ? JSON.stringify(item.arguments, null, 2) : "",
 								};
 							}
 							return null;
 						})
 						.filter((b): b is Block => b !== null);
 					const errorMsg =
-						message.stopReason === "error"
-							? (message.errorMessage ?? "error")
-							: undefined;
+						message.stopReason === "error" ? (message.errorMessage ?? "error") : undefined;
 					patchLast((m) => ({
 						...m,
 						blocks,
@@ -1217,10 +1150,8 @@ export default function App() {
 						}));
 						break;
 					case "text_delta":
-						if (firstTokenRef.current === null)
-							firstTokenRef.current = Date.now();
-						if (msgGenStartRef.current === null)
-							msgGenStartRef.current = Date.now();
+						if (firstTokenRef.current === null) firstTokenRef.current = Date.now();
+						if (msgGenStartRef.current === null) msgGenStartRef.current = Date.now();
 						pendingDeltaRef.current = {
 							...(pendingDeltaRef.current ?? {}),
 							text: (pendingDeltaRef.current?.text ?? "") + (ame.delta ?? ""),
@@ -1254,18 +1185,14 @@ export default function App() {
 					case "thinking_delta":
 						pendingDeltaRef.current = {
 							...(pendingDeltaRef.current ?? {}),
-							thinking:
-								(pendingDeltaRef.current?.thinking ?? "") + (ame.delta ?? ""),
+							thinking: (pendingDeltaRef.current?.thinking ?? "") + (ame.delta ?? ""),
 						};
 						scheduleDeltaFlush();
 						break;
 					case "toolcall_start":
 						patchLast((m) => ({
 							...m,
-							blocks: [
-								...m.blocks,
-								{ kind: "tool", name: "…", args: "" },
-							],
+							blocks: [...m.blocks, { kind: "tool", name: "…", args: "" }],
 						}));
 						break;
 					case "toolcall_delta":
@@ -1281,9 +1208,7 @@ export default function App() {
 						if (pendingDeltaRef.current) {
 							pendingDeltaRef.current.tool = undefined;
 						}
-						const toolCall = ame.toolCall as
-							| { name?: string; arguments?: unknown }
-							| undefined;
+						const toolCall = ame.toolCall as { name?: string; arguments?: unknown } | undefined;
 						patchLast((m) => {
 							const blocks = [...m.blocks];
 							const last = blocks[blocks.length - 1];
@@ -1339,7 +1264,15 @@ export default function App() {
 				return;
 			}
 		},
-		[deliverQueuedNext, patchLast, refreshSessions, refreshStats, toast, clearPendingDeltas, scheduleDeltaFlush],
+		[
+			deliverQueuedNext,
+			patchLast,
+			refreshSessions,
+			refreshStats,
+			toast,
+			clearPendingDeltas,
+			scheduleDeltaFlush,
+		],
 	);
 
 	useEffect(() => {
@@ -1350,14 +1283,14 @@ export default function App() {
 				listen<string>("pi://stderr", (e) => pushStderr(e.payload)),
 				listen<unknown>("pi://exit", () => {
 					setConnected(false);
-			setStreaming(false);
-				setWorking(false);
-				turnStartRef.current = null;
-				firstTokenRef.current = null;
-				msgGenStartRef.current = null;
-				totalGenTimeRef.current = 0;
-				prevOutputTokensRef.current = 0;
-				ttftHistoryRef.current = [];
+					setStreaming(false);
+					setWorking(false);
+					turnStartRef.current = null;
+					firstTokenRef.current = null;
+					msgGenStartRef.current = null;
+					totalGenTimeRef.current = 0;
+					prevOutputTokensRef.current = 0;
+					ttftHistoryRef.current = [];
 					setPendingSession(null);
 					// The backend only emits this on real crashes (deliberate
 					// stops are flagged), so surface it; the auto-connect effect
@@ -1388,6 +1321,32 @@ export default function App() {
 			unlisteners.forEach((p) => p.then((fn) => fn()));
 		};
 	}, [handleEvent, refreshSessions, pushStderr, toast]);
+
+	// ---- live subagent runs ----
+	// Poll the pi-subagents extension's on-disk run status while the session
+	// has activity (working, or a run seen recently). Idle sessions cost
+	// nothing: no interval is armed until something is happening.
+	useEffect(() => {
+		const path = selectedSessionPath;
+		if (!path || (!working && subagentRuns.length === 0)) {
+			if (subagentRuns.length !== 0) setSubagentRuns([]);
+			return;
+		}
+		let cancelled = false;
+		const tick = () => {
+			fetchSubagentRuns(path)
+				.then((runs) => {
+					if (!cancelled) setSubagentRuns(runs);
+				})
+				.catch(() => {});
+		};
+		tick();
+		const id = setInterval(tick, 2500);
+		return () => {
+			cancelled = true;
+			clearInterval(id);
+		};
+	}, [working, selectedSessionPath, subagentRuns.length]);
 
 	// ---- connection ----
 	const loadHistory = useCallback(async (path: string) => {
@@ -1514,16 +1473,10 @@ export default function App() {
 						sessionName: opts?.sessionName ?? null,
 						systemPrompt: settings.systemPrompt || null,
 						appendSystemPrompt: settings.appendSystemPrompt || null,
-						tools: settings.customTools.length
-							? settings.customTools
-							: null,
-						excludedTools: settings.excludedTools.length
-							? settings.excludedTools
-							: null,
+						tools: settings.customTools.length ? settings.customTools : null,
+						excludedTools: settings.excludedTools.length ? settings.excludedTools : null,
 						// Scoped model patterns for Ctrl+P cycling (/scoped-models).
-						models: settings.scopedModels.length
-							? settings.scopedModels.join(",")
-							: null,
+						models: settings.scopedModels.length ? settings.scopedModels.join(",") : null,
 					};
 					// A session file can only be driven by ONE pi process (the
 					// backend rejects a second window opening the same JSONL).
@@ -1533,10 +1486,7 @@ export default function App() {
 					try {
 						await start(ws, effectiveSession, startOpts);
 					} catch (e) {
-						if (
-							effectiveSession &&
-							String(e).includes("already open in another window")
-						) {
+						if (effectiveSession && String(e).includes("already open in another window")) {
 							localStorage.removeItem(STORAGE_KEYS.lastSession);
 							navEpochRef.current += 1;
 							sessionPathRef.current = null;
@@ -1727,9 +1677,11 @@ export default function App() {
 				try {
 					const resp = await handleResponse({ type: "get_available_models" });
 					if (cancelled) return;
-					const data = resp.data as {
-						models?: (ModelEntry & { thinkingLevels?: string[] })[];
-					} | undefined;
+					const data = resp.data as
+						| {
+								models?: (ModelEntry & { thinkingLevels?: string[] })[];
+						  }
+						| undefined;
 					list = (data?.models ?? []).map((m) => ({
 						provider: m.provider,
 						id: m.id,
@@ -1751,10 +1703,12 @@ export default function App() {
 			try {
 				const stateResp = await handleResponse({ type: "get_state" });
 				if (cancelled) return;
-				const stateData = stateResp.data as {
-					model?: ModelEntry | null;
-					thinkingLevel?: string;
-				} | undefined;
+				const stateData = stateResp.data as
+					| {
+							model?: ModelEntry | null;
+							thinkingLevel?: string;
+					  }
+					| undefined;
 				const current = stateData?.model;
 				if (current) {
 					// pi's actual session model wins over any stale local value.
@@ -1763,10 +1717,7 @@ export default function App() {
 					// Fall back to the persisted choice, but only when it still
 					// exists in the available models; otherwise pick the first.
 					setModel((prev) => {
-						if (
-							prev &&
-							list.some((m) => `${m.provider}/${m.id}` === prev)
-						) {
+						if (prev && list.some((m) => `${m.provider}/${m.id}` === prev)) {
 							return prev;
 						}
 						return `${list[0].provider}/${list[0].id}`;
@@ -1781,9 +1732,7 @@ export default function App() {
 					type: "get_available_thinking_levels",
 				});
 				if (cancelled) return;
-				const levels =
-					(thinkingResp.data as { levels?: string[] } | undefined)?.levels ??
-					[];
+				const levels = (thinkingResp.data as { levels?: string[] } | undefined)?.levels ?? [];
 				if (levels.length) {
 					setThinkingLevels(levels);
 					setThinkingLevel((prev) => prev || levels[0]);
@@ -1840,10 +1789,7 @@ export default function App() {
 				// Slash commands (extension commands, prompt templates, skills).
 				const cmdResp = await handleResponse({ type: "get_commands" });
 				if (!cancelled) {
-					setCommands(
-						(cmdResp.data as { commands?: PiCommand[] } | undefined)
-							?.commands ?? [],
-					);
+					setCommands((cmdResp.data as { commands?: PiCommand[] } | undefined)?.commands ?? []);
 				}
 			} catch {
 				/* older pi */
@@ -1856,32 +1802,26 @@ export default function App() {
 	}, [connected, handleResponse]);
 
 	// ---- actions ----
-	const changeModel = useCallback(
-		async (value: string) => {
-			const slash = value.indexOf("/");
-			const provider = value.slice(0, slash);
-			const modelId = value.slice(slash + 1);
-			setModel(value);
-			try {
-				await send({ type: "set_model", provider, modelId });
-			} catch (e) {
-				setError(String(e));
-			}
-		},
-		[],
-	);
+	const changeModel = useCallback(async (value: string) => {
+		const slash = value.indexOf("/");
+		const provider = value.slice(0, slash);
+		const modelId = value.slice(slash + 1);
+		setModel(value);
+		try {
+			await send({ type: "set_model", provider, modelId });
+		} catch (e) {
+			setError(String(e));
+		}
+	}, []);
 
-	const changeThinkingLevel = useCallback(
-		async (level: string) => {
-			setThinkingLevel(level);
-			try {
-				await send({ type: "set_thinking_level", level });
-			} catch (e) {
-				setError(String(e));
-			}
-		},
-		[],
-	);
+	const changeThinkingLevel = useCallback(async (level: string) => {
+		setThinkingLevel(level);
+		try {
+			await send({ type: "set_thinking_level", level });
+		} catch (e) {
+			setError(String(e));
+		}
+	}, []);
 
 	// Cycle to the next available model (TUI Ctrl+P). The RPC command only
 	// cycles forward; the response carries the new model (or null when there
@@ -2037,16 +1977,15 @@ export default function App() {
 							exitCode?: number;
 							truncated?: boolean;
 							cancelled?: boolean;
-						}
+					  }
 					| undefined;
 				const output = data?.output ?? "";
 				const exitCode = data?.exitCode;
-				const suffix =
-					data?.truncated
-						? "\n… (output truncated)"
-						: exitCode !== undefined && exitCode !== 0
-							? `\n[exit ${exitCode}]`
-							: "";
+				const suffix = data?.truncated
+					? "\n… (output truncated)"
+					: exitCode !== undefined && exitCode !== 0
+						? `\n[exit ${exitCode}]`
+						: "";
 				setMessages((prev) =>
 					prev.map((m) =>
 						m.id === messageId
@@ -2068,11 +2007,7 @@ export default function App() {
 				);
 			} catch (e) {
 				setMessages((prev) =>
-					prev.map((m) =>
-						m.id === messageId
-							? { ...m, streaming: false, error: String(e) }
-							: m,
-					),
+					prev.map((m) => (m.id === messageId ? { ...m, streaming: false, error: String(e) } : m)),
 				);
 				setError(String(e));
 			} finally {
@@ -2182,8 +2117,7 @@ export default function App() {
 			// polls), the epoch changes and the poll aborts instead of yanking
 			// the selection back to this session.
 			const navEpoch = navEpochRef.current;
-			const title =
-				text.trim().slice(0, 60) || (attachments[0]?.name ?? "New session");
+			const title = text.trim().slice(0, 60) || (attachments[0]?.name ?? "New session");
 			if (isNew && !sessionPathRef.current) {
 				setPendingSession({
 					path: `pending://${nextId++}`,
@@ -2231,7 +2165,18 @@ export default function App() {
 			}
 			return true;
 		},
-		[connected, workspace, connect, discoverNewSession, ensureProviderKey, attachmentsToImages, attachmentsToText, working, sendDuringRun, runBash],
+		[
+			connected,
+			workspace,
+			connect,
+			discoverNewSession,
+			ensureProviderKey,
+			attachmentsToImages,
+			attachmentsToText,
+			working,
+			sendDuringRun,
+			runBash,
+		],
 	);
 
 	const abortWatchdogRef = useRef<number>(0);
@@ -2262,11 +2207,7 @@ export default function App() {
 		const epoch = runEpochRef.current;
 		window.clearTimeout(abortWatchdogRef.current);
 		abortWatchdogRef.current = window.setTimeout(() => {
-			if (
-				runEpochRef.current !== epoch ||
-				(!workingRef.current && !streamingRef.current)
-			)
-				return;
+			if (runEpochRef.current !== epoch || (!workingRef.current && !streamingRef.current)) return;
 			void (async () => {
 				const resume = sessionPathRef.current;
 				try {
@@ -2280,23 +2221,23 @@ export default function App() {
 		}, 5000);
 	}, [disconnect, connect, toast, t]);
 
-	const compact = useCallback(async (customInstructions?: string) => {
-		try {
-			await send({
-				type: "compact",
-				...(customInstructions ? { customInstructions } : {}),
-			});
-			toast(t.chat.compacting);
-		} catch (e) {
-			setError(String(e));
-		}
-	}, [t, toast]);
+	const compact = useCallback(
+		async (customInstructions?: string) => {
+			try {
+				await send({
+					type: "compact",
+					...(customInstructions ? { customInstructions } : {}),
+				});
+				toast(t.chat.compacting);
+			} catch (e) {
+				setError(String(e));
+			}
+		},
+		[t, toast],
+	);
 
 	const copyConversation = useCallback(async (): Promise<boolean> => {
-		const md = messages
-			.map(chatMessageToMarkdown)
-			.filter(Boolean)
-			.join("\n\n");
+		const md = messages.map(chatMessageToMarkdown).filter(Boolean).join("\n\n");
 		if (!md) return false;
 		try {
 			await navigator.clipboard.writeText(md);
@@ -2306,15 +2247,18 @@ export default function App() {
 		}
 	}, [messages]);
 
-	const renameSession = useCallback(async (name: string) => {
-		if (!connected || !name.trim()) return;
-		try {
-			await send({ type: "set_session_name", name: name.trim() });
-			await refreshSessions();
-		} catch (e) {
-			setError(String(e));
-		}
-	}, [connected, refreshSessions]);
+	const renameSession = useCallback(
+		async (name: string) => {
+			if (!connected || !name.trim()) return;
+			try {
+				await send({ type: "set_session_name", name: name.trim() });
+				await refreshSessions();
+			} catch (e) {
+				setError(String(e));
+			}
+		},
+		[connected, refreshSessions],
+	);
 
 	const archiveCurrent = useCallback(async () => {
 		const path = sessionPathRef.current;
@@ -2361,8 +2305,7 @@ export default function App() {
 							setMessages([]);
 						}
 						await refreshSessions();
-						if (wasCurrent && workspace)
-							void connect({ sessionFile: null });
+						if (wasCurrent && workspace) void connect({ sessionFile: null });
 						toast(t.sidebar.archive);
 					} catch (e) {
 						setError(String(e));
@@ -2464,11 +2407,7 @@ export default function App() {
 				} else if (format === "jsonl") {
 					await exportChat(preview.path, null, "jsonl");
 				} else {
-					await exportChat(
-						preview.path,
-						parsedMessagesToMarkdown(preview.messages),
-						"markdown",
-					);
+					await exportChat(preview.path, parsedMessagesToMarkdown(preview.messages), "markdown");
 				}
 			} catch (e) {
 				setError(String(e));
@@ -2491,16 +2430,12 @@ export default function App() {
 			if (projectSessions.length === 0) return;
 			setConfirmState({
 				title: t.confirm.deleteProjectTitle,
-				body: t.confirm.deleteProjectBody.replace(
-					"{count}",
-					String(projectSessions.length),
-				),
+				body: t.confirm.deleteProjectBody.replace("{count}", String(projectSessions.length)),
 				confirmLabel: t.app.delete,
 				onConfirm: async () => {
 					const current = sessionPathRef.current;
 					const includesCurrent =
-						current != null &&
-						projectSessions.some((s) => s.path === current);
+						current != null && projectSessions.some((s) => s.path === current);
 					if (includesCurrent) {
 						await disconnect();
 					}
@@ -2644,9 +2579,8 @@ export default function App() {
 			try {
 				await handleResponse({ type: "fork", entryId });
 				const state = await handleResponse({ type: "get_state" });
-				const sessionFile = (
-					state.data as { sessionFile?: string | null } | undefined
-				)?.sessionFile;
+				const sessionFile = (state.data as { sessionFile?: string | null } | undefined)
+					?.sessionFile;
 				setMessages([]);
 				setStreaming(false);
 				setWorking(false);
@@ -2749,6 +2683,18 @@ export default function App() {
 		toast(t.chat.reloaded);
 	}, [busy, disconnect, connect, toast, t]);
 
+	// Custom providers live in models.json, which pi reads at process start —
+	// the running session's model catalog is a snapshot that only a reconnect
+	// refreshes. Reload silently when idle; never interrupt a running agent.
+	const handleCustomProvidersChanged = useCallback(() => {
+		if (!connected) return;
+		if (streaming || working) {
+			toast(t.settings.providerSavedNeedsReload);
+			return;
+		}
+		void reload();
+	}, [connected, streaming, working, reload, toast, t]);
+
 	// ---- /trust: current project decision + global fallback ----
 	const refreshTrust = useCallback(async () => {
 		try {
@@ -2773,11 +2719,7 @@ export default function App() {
 				await trustSet(workspace, decision);
 				setTrustDecision(decision);
 				toast(
-					decision === null
-						? t.chat.trustCleared
-						: decision
-							? t.chat.trusted
-							: t.chat.trustDenied,
+					decision === null ? t.chat.trustCleared : decision ? t.chat.trusted : t.chat.trustDenied,
 				);
 			} catch (e) {
 				setError(String(e));
@@ -2868,8 +2810,7 @@ export default function App() {
 	useEffect(() => {
 		if (connected || busy || !workspace) return;
 		const st = autoConnectStateRef.current;
-		const backoff =
-			st.failures === 0 ? 0 : Math.min(30000, 3000 * 2 ** (st.failures - 1));
+		const backoff = st.failures === 0 ? 0 : Math.min(30000, 3000 * 2 ** (st.failures - 1));
 		const last = localStorage.getItem(STORAGE_KEYS.lastSession);
 		const target = sessionPathRef.current ?? last;
 		const timer = setTimeout(() => {
@@ -2884,12 +2825,7 @@ export default function App() {
 		const onKeyDown = (e: KeyboardEvent) => {
 			if (e.key !== "Escape") return;
 			const el = e.target as HTMLElement | null;
-			if (
-				el &&
-				(el.tagName === "INPUT" ||
-					el.tagName === "TEXTAREA" ||
-					el.isContentEditable)
-			) {
+			if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
 				return;
 			}
 			if (
@@ -2938,12 +2874,7 @@ export default function App() {
 			// (composer, settings editors, menu search boxes) — Ctrl+N would
 			// otherwise tear down the current session and draft mid-keystroke.
 			const el = e.target as HTMLElement | null;
-			if (
-				el &&
-				(el.tagName === "INPUT" ||
-					el.tagName === "TEXTAREA" ||
-					el.isContentEditable)
-			) {
+			if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
 				return;
 			}
 			const mod = e.metaKey || e.ctrlKey;
@@ -2995,34 +2926,37 @@ export default function App() {
 
 	// ---- sidebar resize ----
 	const resizeRef = useRef<{ startX: number; startW: number } | null>(null);
-	const startResize = useCallback((e: React.PointerEvent) => {
-		resizeRef.current = { startX: e.clientX, startW: sidebarWidth };
-		// Throttle to one update per animation frame: pointermove can fire far
-		// faster than a frame, and each setSidebarWidth re-renders the whole
-		// App (the memoized children skip, but the shell still runs).
-		let raf = 0;
-		let pendingW = 0;
-		const onMove = (ev: PointerEvent) => {
-			if (!resizeRef.current) return;
-			pendingW = Math.min(
-				340,
-				Math.max(200, resizeRef.current.startW + ev.clientX - resizeRef.current.startX),
-			);
-			if (raf) return;
-			raf = requestAnimationFrame(() => {
-				raf = 0;
-				setSidebarWidth(pendingW);
-			});
-		};
-		const onUp = () => {
-			if (raf) cancelAnimationFrame(raf);
-			resizeRef.current = null;
-			window.removeEventListener("pointermove", onMove);
-			window.removeEventListener("pointerup", onUp);
-		};
-		window.addEventListener("pointermove", onMove);
-		window.addEventListener("pointerup", onUp);
-	}, [sidebarWidth]);
+	const startResize = useCallback(
+		(e: React.PointerEvent) => {
+			resizeRef.current = { startX: e.clientX, startW: sidebarWidth };
+			// Throttle to one update per animation frame: pointermove can fire far
+			// faster than a frame, and each setSidebarWidth re-renders the whole
+			// App (the memoized children skip, but the shell still runs).
+			let raf = 0;
+			let pendingW = 0;
+			const onMove = (ev: PointerEvent) => {
+				if (!resizeRef.current) return;
+				pendingW = Math.min(
+					340,
+					Math.max(200, resizeRef.current.startW + ev.clientX - resizeRef.current.startX),
+				);
+				if (raf) return;
+				raf = requestAnimationFrame(() => {
+					raf = 0;
+					setSidebarWidth(pendingW);
+				});
+			};
+			const onUp = () => {
+				if (raf) cancelAnimationFrame(raf);
+				resizeRef.current = null;
+				window.removeEventListener("pointermove", onMove);
+				window.removeEventListener("pointerup", onUp);
+			};
+			window.addEventListener("pointermove", onMove);
+			window.addEventListener("pointerup", onUp);
+		},
+		[sidebarWidth],
+	);
 
 	const openSessionDir = useCallback(async () => {
 		try {
@@ -3045,8 +2979,7 @@ export default function App() {
 		() =>
 			sessions.find((s) => s.path === selectedSessionPath) ??
 			(sessionPathRef.current
-				? sessions.find((s) => s.path === sessionPathRef.current) ??
-				  null
+				? (sessions.find((s) => s.path === sessionPathRef.current) ?? null)
 				: null),
 		[sessions, selectedSessionPath],
 	);
@@ -3057,8 +2990,7 @@ export default function App() {
 		if (!pendingSession) return sessions;
 		return [pendingSession, ...sessions];
 	}, [sessions, pendingSession]);
-	const effectiveSelectedPath =
-		selectedSessionPath ?? pendingSession?.path ?? null;
+	const effectiveSelectedPath = selectedSessionPath ?? pendingSession?.path ?? null;
 	const workingPath = working ? effectiveSelectedPath : null;
 
 	const showTurnWait = working && !streaming && connected;
@@ -3106,6 +3038,16 @@ export default function App() {
 		<div
 			className={`app${fullscreen ? " fullscreen" : ""}${fsTransitioning ? " fs-transitioning" : ""}`}
 		>
+			{isWin && (
+				<TitleBar
+					t={t}
+					onNewWindow={() => void newWindow()}
+					onOpenSettings={() => setSettingsOpen(true)}
+					onToggleSidebar={toggleSidebar}
+					onSessionInfo={() => void openSessionInfo()}
+					onTree={() => void openTree()}
+				/>
+			)}
 			<div className={`shell${sidebarCollapsed ? " collapsed" : ""}`}>
 				{!settingsOpen && (
 					<>
@@ -3136,6 +3078,7 @@ export default function App() {
 						messages={messages}
 						streaming={streaming}
 						working={working}
+						subagentRuns={subagentRuns}
 						connected={connected}
 						busy={busy}
 						error={error}
@@ -3154,7 +3097,9 @@ export default function App() {
 						onCopy={copyConversation}
 						onExport={exportSession}
 						onExportHtml={exportSessionHtml}
-						onRename={() => setRenameState({ title: t.chat.rename, initial: selectedSession?.title ?? "" })}
+						onRename={() =>
+							setRenameState({ title: t.chat.rename, initial: selectedSession?.title ?? "" })
+						}
 						onArchive={archiveCurrent}
 						onDelete={deleteCurrent}
 						onCompactImages={handleCompactImages}
@@ -3227,6 +3172,7 @@ export default function App() {
 						trustDefault={trustDefault}
 						onSetProjectTrust={(d) => void setProjectTrust(d)}
 						onSetDefaultTrust={(v) => void setDefaultTrust(v)}
+						onCustomProvidersChanged={handleCustomProvidersChanged}
 					/>
 				)}
 			</div>
@@ -3238,11 +3184,7 @@ export default function App() {
 				onSelect={handleSearchSelect}
 			/>
 
-			<ExtensionDialog
-				request={extensionRequest}
-				onRespond={handleExtensionRespond}
-				t={t}
-			/>
+			<ExtensionDialog request={extensionRequest} onRespond={handleExtensionRespond} t={t} />
 
 			{confirmState && (
 				<div className="overlay-backdrop">
@@ -3257,11 +3199,7 @@ export default function App() {
 						<h3>{confirmState.title}</h3>
 						<p className="extension-message">{confirmState.body}</p>
 						<div className="extension-dialog-actions">
-							<button
-								className="btn secondary"
-								autoFocus
-								onClick={() => setConfirmState(null)}
-							>
+							<button className="btn secondary" autoFocus onClick={() => setConfirmState(null)}>
 								{t.app.cancel}
 							</button>
 							<button
@@ -3328,20 +3266,14 @@ export default function App() {
 				onClose={() => setSessionInfoOpen(false)}
 			/>
 
-			<HotkeysDialog
-				open={hotkeysOpen}
-				t={t}
-				onClose={() => setHotkeysOpen(false)}
-			/>
+			<HotkeysDialog open={hotkeysOpen} t={t} onClose={() => setHotkeysOpen(false)} />
 
 			<ScopedModelsDialog
 				open={scopedModelsOpen}
 				models={settings.scopedModels}
 				t={t}
 				onClose={() => setScopedModelsOpen(false)}
-				onSave={(patterns) =>
-					setSettings((prev) => ({ ...prev, scopedModels: patterns }))
-				}
+				onSave={(patterns) => setSettings((prev) => ({ ...prev, scopedModels: patterns }))}
 			/>
 
 			<CompactDialog
@@ -3354,11 +3286,7 @@ export default function App() {
 				}}
 			/>
 
-			<ShareDialog
-				url={shareUrl}
-				t={t}
-				onClose={() => setShareUrl(null)}
-			/>
+			<ShareDialog url={shareUrl} t={t} onClose={() => setShareUrl(null)} />
 
 			<LlamaDialog
 				open={llamaOpen}
@@ -3416,9 +3344,7 @@ function ApiKeyDialog({
 		<div className="overlay-backdrop">
 			<div className="extension-dialog" role="dialog" aria-modal="true">
 				<h3>{t.keyDialog.title}</h3>
-				<p className="extension-message">
-					{t.keyDialog.body.replace("{provider}", provider)}
-				</p>
+				<p className="extension-message">{t.keyDialog.body.replace("{provider}", provider)}</p>
 				<input
 					ref={inputRef}
 					type="password"

@@ -171,17 +171,6 @@ function ContextUsageRing({
 						</div>
 					</>
 				)}
-			{stats.cost != null && (
-				<>
-					<div className="context-tooltip-divider" />
-					<div className="context-tooltip-row">
-						<span className="ct-label">{t.chat.cost}</span>
-						<span className="ct-value ct-cost">
-							${stats.cost.toFixed(4)}
-						</span>
-					</div>
-				</>
-			)}
 			{perf && (perf.cacheHitRate != null || perf.avgTTFT != null || perf.tokensPerSec != null) && (
 				<>
 					<div className="context-tooltip-divider" />

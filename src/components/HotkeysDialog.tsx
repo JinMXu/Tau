@@ -1,6 +1,6 @@
 import type { MessageCatalog } from "../i18n";
 import { XIcon } from "../icons";
-import { MOD_KEY } from "../platform";
+import { MOD_KEY, MOD_KEY_SEP } from "../platform";
 
 interface HotkeyRow {
 	keys: string[];
@@ -20,20 +20,21 @@ export function HotkeysDialog({
 	if (!open) return null;
 
 	const mod = MOD_KEY;
+	const modSep = MOD_KEY_SEP;
 	const groups: { title: string; rows: HotkeyRow[] }[] = [
 		{
 			title: t.hotkeys.app,
 			rows: [
-				{ keys: [`${mod}K`], label: t.hotkeys.search },
-				{ keys: [`${mod}N`], label: t.hotkeys.newTask },
-				{ keys: [`${mod}Shift+N`], label: t.hotkeys.newWindow },
-				{ keys: [`${mod},`], label: t.hotkeys.settings },
-				{ keys: [`${mod}B`], label: t.hotkeys.toggleSidebar },
-				{ keys: [`${mod}L`], label: t.hotkeys.focusComposer },
-				{ keys: [`${mod}F`], label: t.hotkeys.searchInSession },
-				{ keys: [`${mod}Shift+A`], label: t.hotkeys.archiveSession },
+				{ keys: [`${mod}${modSep}K`], label: t.hotkeys.search },
+				{ keys: [`${mod}${modSep}N`], label: t.hotkeys.newTask },
+				{ keys: [`${mod}${modSep}Shift+N`], label: t.hotkeys.newWindow },
+				{ keys: [`${mod}${modSep},`], label: t.hotkeys.settings },
+				{ keys: [`${mod}${modSep}B`], label: t.hotkeys.toggleSidebar },
+				{ keys: [`${mod}${modSep}L`], label: t.hotkeys.focusComposer },
+				{ keys: [`${mod}${modSep}F`], label: t.hotkeys.searchInSession },
+				{ keys: [`${mod}${modSep}Shift+A`], label: t.hotkeys.archiveSession },
 				{ keys: ["Esc"], label: t.hotkeys.interrupt },
-				{ keys: [`${mod}P`], label: t.hotkeys.cycleModel },
+				{ keys: [`${mod}${modSep}P`], label: t.hotkeys.cycleModel },
 				{ keys: ["Shift+Tab"], label: t.hotkeys.cycleThinking },
 			],
 		},

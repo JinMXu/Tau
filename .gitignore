@@ -26,6 +26,7 @@ dist-ssr
 
 # Rust build artifacts
 src-tauri/target
+scripts/pdbresolve/target
 
 # Reference project (ousia is only a design reference, not part of Tau)
 ousia/

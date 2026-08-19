@@ -1,9 +1,15 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import type { Attachment, ChatMessage, QueuedChatMessage, SendBehavior, SessionStats } from "../chat-types";
+import type {
+	Attachment,
+	ChatMessage,
+	QueuedChatMessage,
+	SendBehavior,
+	SessionStats,
+} from "../chat-types";
 import type { AgentToolName } from "../settings";
 import type { PiCommand } from "../pi";
 import type { MessageCatalog } from "../i18n";
-import type { GitBranchState, PiSessionInfo } from "../pi";
+import type { GitBranchState, PiSessionInfo, SubagentRun } from "../pi";
 import {
 	ArchiveIcon,
 	BarChartIcon,
@@ -27,7 +33,7 @@ import {
 	XIcon,
 } from "../icons";
 import { Composer, type ModelEntry } from "./Composer";
-import { MessageList, TurnStatus } from "./MessageList";
+import { MessageList, SubagentLivePanel, TurnStatus } from "./MessageList";
 import { searchMessages } from "./message-utils";
 import { isMac } from "../platform";
 
@@ -113,6 +119,7 @@ export const ChatArea = memo(function ChatArea({
 	messages,
 	streaming,
 	working,
+	subagentRuns,
 	connected,
 	busy,
 	error,
@@ -183,6 +190,7 @@ export const ChatArea = memo(function ChatArea({
 	messages: ChatMessage[];
 	streaming: boolean;
 	working: boolean;
+	subagentRuns: SubagentRun[];
 	connected: boolean;
 	busy: boolean;
 	error: string | null;
@@ -247,29 +255,21 @@ export const ChatArea = memo(function ChatArea({
 	showContextUsage: boolean;
 	modelsLoading: boolean;
 	commands: PiCommand[];
-	extensionWidgets: Record<
-		string,
-		{ lines: string[]; placement: "aboveEditor" | "belowEditor" }
-	>;
+	extensionWidgets: Record<string, { lines: string[]; placement: "aboveEditor" | "belowEditor" }>;
 	extensionStatus: string[];
 	externalDraft: string | null;
 	onExternalDraftConsumed: () => void;
 	onCycleThinking: () => void;
 }) {
 	const [menuOpen, setMenuOpen] = useState(false);
-	const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
-		"idle",
-	);
+	const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 	const menuRef = useRef<HTMLDivElement>(null);
 	// In-session search (Ctrl+F): hits over all message blocks, one active.
 	const [searchOpen, setSearchOpen] = useState(false);
 	const [searchQuery, setSearchQuery] = useState("");
 	const [activeHit, setActiveHit] = useState(0);
 	const searchInputRef = useRef<HTMLInputElement>(null);
-	const hits = useMemo(
-		() => searchMessages(messages, searchQuery),
-		[messages, searchQuery],
-	);
+	const hits = useMemo(() => searchMessages(messages, searchQuery), [messages, searchQuery]);
 	const activeMessageId = useMemo(() => {
 		if (!searchOpen || hits.length === 0) return null;
 		const hit = hits[Math.min(activeHit, hits.length - 1)];
@@ -448,13 +448,9 @@ export const ChatArea = memo(function ChatArea({
 					<h1 className="chat-title" title={session?.path}>
 						{session?.title ?? t.app.newSession}
 					</h1>
-					{session?.model && (
-						<span className="session-model-badge">{session.model}</span>
-					)}
+					{session?.model && <span className="session-model-badge">{session.model}</span>}
 					{messages.length === 0 && !session && (
-						<span className="session-model-badge neutral">
-							{t.app.newSession}
-						</span>
+						<span className="session-model-badge neutral">{t.app.newSession}</span>
 					)}
 				</div>
 				<div className="chat-header-right">
@@ -470,11 +466,7 @@ export const ChatArea = memo(function ChatArea({
 					<span className={`dot ${connected ? "on" : ""}`} />
 					{connected && <span className="conn-label">{t.app.connected}</span>}
 					<div className="header-menu" ref={menuRef}>
-						<button
-							className="icon-btn"
-							disabled={!session}
-							onClick={() => setMenuOpen((v) => !v)}
-						>
+						<button className="icon-btn" disabled={!session} onClick={() => setMenuOpen((v) => !v)}>
 							<MoreIcon size={17} />
 						</button>
 						{menuOpen && (
@@ -508,14 +500,8 @@ export const ChatArea = memo(function ChatArea({
 									<span>{t.chat.sessionInfo}</span>
 								</button>
 								<button onClick={handleCopy}>
-									{copyState === "copied" ? (
-										<CheckIcon size={14} />
-									) : (
-										<CopyIcon size={14} />
-									)}
-									<span>
-										{copyState === "copied" ? t.chat.copied : t.chat.copy}
-									</span>
+									{copyState === "copied" ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+									<span>{copyState === "copied" ? t.chat.copied : t.chat.copy}</span>
 								</button>
 								<button
 									onClick={() => {
@@ -571,11 +557,21 @@ export const ChatArea = memo(function ChatArea({
 									<BoltIcon size={14} />
 									<span>{t.chat.compactImages}</span>
 								</button>
-								<button onClick={() => { onRename(); setMenuOpen(false); }}>
+								<button
+									onClick={() => {
+										onRename();
+										setMenuOpen(false);
+									}}
+								>
 									<EditIcon size={14} />
 									<span>{t.chat.rename}</span>
 								</button>
-								<button onClick={() => { onReveal(); setMenuOpen(false); }}>
+								<button
+									onClick={() => {
+										onReveal();
+										setMenuOpen(false);
+									}}
+								>
 									<FolderOpenIcon size={14} />
 									<span>{t.chat.reveal}</span>
 								</button>
@@ -590,14 +586,20 @@ export const ChatArea = memo(function ChatArea({
 									<span>{t.chat.hotkeys}</span>
 								</button>
 								<button
-									onClick={() => { onArchive(); setMenuOpen(false); }}
+									onClick={() => {
+										onArchive();
+										setMenuOpen(false);
+									}}
 								>
 									<ArchiveIcon size={14} />
 									<span>{t.chat.archiveSession}</span>
 								</button>
 								<button
 									className="menu-danger"
-									onClick={() => { onDelete(); setMenuOpen(false); }}
+									onClick={() => {
+										onDelete();
+										setMenuOpen(false);
+									}}
 								>
 									<TrashIcon size={14} />
 									<span>{t.chat.deleteSession}</span>
@@ -654,7 +656,12 @@ export const ChatArea = memo(function ChatArea({
 					>
 						<ChevronDownIcon size={14} />
 					</button>
-					<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={closeSearch}>
+					<button
+						className="icon-btn"
+						title={t.app.close}
+						aria-label={t.app.close}
+						onClick={closeSearch}
+					>
 						<XIcon size={14} />
 					</button>
 				</div>
@@ -669,6 +676,7 @@ export const ChatArea = memo(function ChatArea({
 					searchQuery={searchOpen ? searchQuery : undefined}
 					searchActiveMessageId={activeMessageId}
 				/>
+				{subagentRuns.length > 0 && <SubagentLivePanel runs={subagentRuns} t={t} />}
 				{turnStartTime !== null && (
 					<div className="turn-status-wrap">
 						<TurnStatus startTime={turnStartTime} />

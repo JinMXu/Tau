@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openPath } from "@tauri-apps/plugin-opener";
 import type { Block, ChatMessage } from "../chat-types";
+import type { SubagentRun } from "../pi";
 import type { MessageCatalog } from "../i18n";
 import {
 	BoltIcon,
@@ -434,6 +435,62 @@ export function TurnStatus({ startTime }: { startTime: number }) {
 					{formatDuration(elapsedMs)}
 				</span>
 			)}
+		</div>
+	);
+}
+
+/**
+ * Live panel for in-flight pi-subagents runs (the extension publishes run
+ * state to status.json; the backend polls it). Rendered at the end of the
+ * chat column so the user can see what a detached/background subagent is
+ * doing — per-step status, latest tool call and turn/tool counts — instead
+ * of staring at a static "running" tool card for minutes.
+ */
+export function SubagentLivePanel({
+	runs,
+	t,
+}: {
+	runs: SubagentRun[];
+	t: MessageCatalog;
+}) {
+	const statusLabels = t.chat.subagentStatus as Record<string, string>;
+	return (
+		<div className="subagent-live" role="status" aria-live="polite">
+			{runs.map((run) => (
+				<div className="subagent-run" key={run.runId}>
+					<div className="subagent-run-head">
+						<SparkleIcon size={12} />
+						<span className="subagent-run-title">{t.chat.subagents}</span>
+						{run.mode && <span className="subagent-run-mode">{run.mode}</span>}
+					</div>
+					{run.steps.map((s, i) => (
+						<div className="subagent-step" key={`${s.label}-${i}`}>
+							<span className={`subagent-dot ${s.status || "running"}`} />
+							<span className="subagent-step-label">
+								{s.label || s.agent}
+								{s.agent && s.label && s.agent !== s.label ? (
+									<span className="subagent-step-agent"> ({s.agent})</span>
+								) : null}
+							</span>
+							<span className="subagent-step-status">
+								{statusLabels[s.status] ?? s.status}
+							</span>
+							{(s.turnCount > 0 || s.toolCount > 0) && (
+								<span className="subagent-step-counts">
+									{s.turnCount} {t.chat.subagentTurns} · {s.toolCount}{" "}
+									{t.chat.subagentTools}
+								</span>
+							)}
+							{s.lastTool && (
+								<span className="subagent-step-activity" title={s.lastToolArgs ?? ""}>
+									{s.lastTool}
+									{s.lastToolArgs ? `: ${s.lastToolArgs}` : ""}
+								</span>
+							)}
+						</div>
+					))}
+				</div>
+			))}
 		</div>
 	);
 }

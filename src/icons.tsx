@@ -119,6 +119,31 @@ export function XIcon(props: IconProps) {
 	);
 }
 
+export function MinusIcon(props: IconProps) {
+	return (
+		<svg {...base(props)}>
+			<path d="M6 12.5h12" />
+		</svg>
+	);
+}
+
+export function MaximizeIcon(props: IconProps) {
+	return (
+		<svg {...base(props)}>
+			<rect x="6.5" y="6.5" width="11" height="11" rx="0.5" />
+		</svg>
+	);
+}
+
+export function RestoreWindowIcon(props: IconProps) {
+	return (
+		<svg {...base(props)}>
+			<rect x="8.5" y="8.5" width="9" height="9" rx="0.5" />
+			<path d="M15.5 8.5v-2h-9v9h2" />
+		</svg>
+	);
+}
+
 export function CopyIcon(props: IconProps) {
 	return (
 		<svg {...base(props)}>

@@ -157,12 +157,6 @@ export function SessionInfoDialog({
 								label={t.sessionInfo.tokensCache}
 								value={stats.tokens?.cacheRead?.toLocaleString() ?? "—"}
 							/>
-							<Row
-								label={t.sessionInfo.cost}
-								value={
-									stats.cost != null ? `$${stats.cost.toFixed(4)}` : "—"
-								}
-							/>
 							{stats.contextUsage && (
 								<Row
 									label={t.sessionInfo.context}

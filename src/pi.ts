@@ -108,6 +108,8 @@ export interface PiUsageEntry {
 	reasoning: number;
 	total: number;
 	cost: number;
+	/** Message timestamp (epoch ms); used for per-session chat durations. */
+	ts: number;
 }
 
 export interface AssistantMessageEvent {
@@ -139,6 +141,31 @@ export function send(command: Record<string, unknown>, id?: string): Promise<unk
 	return invoke("pi_send", {
 		command: { ...command, id },
 	});
+}
+
+/** Live status of one step in a pi-subagents run (from its status.json). */
+export interface SubagentStep {
+	label: string;
+	agent: string;
+	status: string;
+	model: string | null;
+	turnCount: number;
+	toolCount: number;
+	lastTool: string | null;
+	lastToolArgs: string | null;
+}
+
+/** A live (non-terminal) subagent run belonging to the current session. */
+export interface SubagentRun {
+	runId: string;
+	mode: string;
+	state: string;
+	startedAt: number | null;
+	steps: SubagentStep[];
+}
+
+export function fetchSubagentRuns(session: string): Promise<SubagentRun[]> {
+	return invoke("pi_subagent_runs", { session });
 }
 
 export async function binaryInfo(): Promise<PiBinaryInfo> {
@@ -254,6 +281,28 @@ export async function authStatus(): Promise<AuthProviderStatus[]> {
 
 export async function piProviders(): Promise<PiProviderInfo[]> {
 	return invoke("pi_providers");
+}
+
+/** A custom provider entry from models.json (`providers` map). */
+export interface CustomProviderEntry {
+	id: string;
+	/** Raw provider config JSON; edit known fields, pass the rest through. */
+	config: Record<string, unknown>;
+}
+
+export async function piCustomProviders(): Promise<CustomProviderEntry[]> {
+	return invoke("pi_custom_providers");
+}
+
+export async function piUpsertCustomProvider(
+	id: string,
+	config: Record<string, unknown>,
+): Promise<void> {
+	return invoke("pi_upsert_custom_provider", { id, config });
+}
+
+export async function piRemoveCustomProvider(id: string): Promise<void> {
+	return invoke("pi_remove_custom_provider", { id });
 }
 
 export async function authSetKey(provider: string, key: string): Promise<void> {

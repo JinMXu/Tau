@@ -226,6 +226,151 @@ pub fn pi_auth_remove(provider: String) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// models.json custom provider management
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomProviderEntry {
+	/// Provider id (the `providers` map key in models.json).
+	id: String,
+	/// Raw provider config JSON (baseUrl/api/models/compat/...). The GUI edits
+	/// the fields it knows and passes unknown ones through untouched.
+	config: serde_json::Value,
+}
+
+fn models_file_path() -> PathBuf {
+	pi_agent_dir().join("models.json")
+}
+
+/// Serializes models.json read-modify-write updates (same rationale as
+/// AUTH_MUTEX: the write is atomic, the read+write pair is not).
+static MODELS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Reads models.json as a JSON object. A missing file yields an empty object;
+/// a malformed file is an error so a bad edit never gets clobbered.
+fn read_models_doc() -> Result<serde_json::Map<String, serde_json::Value>, String> {
+	let path = models_file_path();
+	let Ok(raw) = fs::read_to_string(&path) else {
+		return Ok(serde_json::Map::new());
+	};
+	let value: serde_json::Value = serde_json::from_str(&raw)
+		.map_err(|e| format!("models.json is not valid JSON: {e}"))?;
+	value
+		.as_object()
+		.cloned()
+		.ok_or_else(|| "models.json root must be an object".to_string())
+}
+
+fn write_models_doc(doc: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+	let path = models_file_path();
+	if let Some(dir) = path.parent() {
+		fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+	}
+	let raw = serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?;
+	let tmp = path.with_extension("json.tmp");
+	fs::write(&tmp, raw).map_err(|e| format!("failed to write models.json: {e}"))?;
+	fs::rename(&tmp, &path).map_err(|e| format!("failed to persist models.json: {e}"))
+}
+
+#[tauri::command]
+pub fn pi_custom_providers() -> Result<Vec<CustomProviderEntry>, String> {
+	let doc = read_models_doc()?;
+	let mut out: Vec<CustomProviderEntry> = doc
+		.get("providers")
+		.and_then(|p| p.as_object())
+		.map(|map| {
+			map.iter()
+				.map(|(id, config)| CustomProviderEntry {
+					id: id.clone(),
+					config: config.clone(),
+				})
+				.collect()
+		})
+		.unwrap_or_default();
+	out.sort_by(|a, b| a.id.cmp(&b.id));
+	Ok(out)
+}
+
+/// Validates a custom provider entry before it lands in models.json.
+fn validate_custom_provider(id: &str, config: &serde_json::Value) -> Result<(), String> {
+	if id.is_empty() {
+		return Err("provider id must not be empty".into());
+	}
+	let valid = id.chars().enumerate().all(|(i, c)| {
+		c.is_ascii_lowercase() || c.is_ascii_digit() || (i > 0 && (c == '-' || c == '_'))
+	});
+	if !valid {
+		return Err(
+			"provider id may only contain lowercase letters, digits, '-' and '_' (not leading)"
+				.into(),
+		);
+	}
+	// A custom entry whose id matches the built-in catalog would merge into
+	// (and partially replace) that built-in provider instead of adding a new
+	// one — almost never what the user wants from an "add provider" form.
+	if let Some(dir) = pi_ai_providers_data_dir() {
+		if read_catalog_provider_ids(&dir).iter().any(|b| b == id) {
+			return Err(format!(
+				"'{id}' is a built-in provider; choose a different id"
+			));
+		}
+	}
+	let obj = config
+		.as_object()
+		.ok_or("provider config must be an object")?;
+	let base_url_ok = obj
+		.get("baseUrl")
+		.and_then(|v| v.as_str())
+		.is_some_and(|s| !s.trim().is_empty());
+	if !base_url_ok {
+		return Err("provider config requires a non-empty baseUrl".into());
+	}
+	let models = obj
+		.get("models")
+		.and_then(|m| m.as_array())
+		.filter(|a| !a.is_empty())
+		.ok_or("provider config requires at least one model")?;
+	for model in models {
+		let mid = model.get("id").and_then(|v| v.as_str()).unwrap_or("");
+		if mid.trim().is_empty() {
+			return Err("every model requires a non-empty id".into());
+		}
+	}
+	Ok(())
+}
+
+#[tauri::command]
+pub fn pi_upsert_custom_provider(id: String, config: serde_json::Value) -> Result<(), String> {
+	let id = id.trim().to_string();
+	validate_custom_provider(&id, &config)?;
+	let _guard = MODELS_MUTEX
+		.lock()
+		.map_err(|e| format!("models lock poisoned: {e}"))?;
+	let mut doc = read_models_doc()?;
+	let providers = doc
+		.entry("providers".to_string())
+		.or_insert_with(|| serde_json::json!({}));
+	let map = providers
+		.as_object_mut()
+		.ok_or("models.json 'providers' must be an object")?;
+	map.insert(id, config);
+	write_models_doc(&doc)
+}
+
+#[tauri::command]
+pub fn pi_remove_custom_provider(id: String) -> Result<(), String> {
+	let _guard = MODELS_MUTEX
+		.lock()
+		.map_err(|e| format!("models lock poisoned: {e}"))?;
+	let mut doc = read_models_doc()?;
+	if let Some(map) = doc.get_mut("providers").and_then(|p| p.as_object_mut()) {
+		map.remove(&id);
+	}
+	write_models_doc(&doc)
+}
+
+// ---------------------------------------------------------------------------
 // Git branch support
 // ---------------------------------------------------------------------------
 
@@ -752,6 +897,131 @@ mod tests {
 		// its providers are marked known.
 		let known = providers.iter().filter(|p| p.known).count();
 		assert!(known == 0 || known >= 30, "unexpected known count: {known}");
+
+		std::fs::remove_dir_all(&dir).ok();
+		match old_agent_dir {
+			Some(v) => std::env::set_var("PI_AGENT_DIR", v),
+			None => std::env::remove_var("PI_AGENT_DIR"),
+		}
+	}
+
+	#[test]
+	fn custom_providers_upsert_merge_remove() {
+		let _guard = crate::pi::ENV_GUARD.lock().unwrap();
+		let old_agent_dir = std::env::var_os("PI_AGENT_DIR");
+		let dir =
+			std::env::temp_dir().join(format!("pi-gui-models-test-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		std::env::set_var("PI_AGENT_DIR", &dir);
+
+		// Pre-existing content that must survive untouched (here: a provider
+		// entry without a models array, e.g. a proxy override).
+		std::fs::write(
+			dir.join("models.json"),
+			r#"{"providers":{"proxy-note":{"baseUrl":"https://proxy.example.com"}}}"#,
+		)
+		.unwrap();
+
+		// Upsert a new provider.
+		pi_upsert_custom_provider(
+			"volcengine".into(),
+			serde_json::json!({
+				"baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+				"api": "openai-completions",
+				"models": [{"id": "doubao-seed-1-6-250615", "contextWindow": 256000}]
+			}),
+		)
+		.unwrap();
+		let list = pi_custom_providers().unwrap();
+		assert_eq!(list.len(), 2);
+		assert!(list.iter().any(|p| p.id == "volcengine"));
+
+		// Update replaces the entry; the other entry survives.
+		pi_upsert_custom_provider(
+			"volcengine".into(),
+			serde_json::json!({
+				"baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+				"api": "openai-completions",
+				"models": [{"id": "deepseek-v3-1-250821"}]
+			}),
+		)
+		.unwrap();
+		let list = pi_custom_providers().unwrap();
+		assert_eq!(list.len(), 2);
+		let v = list.iter().find(|p| p.id == "volcengine").unwrap();
+		assert_eq!(v.config["models"][0]["id"], "deepseek-v3-1-250821");
+		let other = list.iter().find(|p| p.id == "proxy-note").unwrap();
+		assert_eq!(other.config["baseUrl"], "https://proxy.example.com");
+
+		// Remove only the target entry.
+		pi_remove_custom_provider("volcengine".into()).unwrap();
+		let list = pi_custom_providers().unwrap();
+		assert_eq!(list.len(), 1);
+		assert_eq!(list[0].id, "proxy-note");
+
+		std::fs::remove_dir_all(&dir).ok();
+		match old_agent_dir {
+			Some(v) => std::env::set_var("PI_AGENT_DIR", v),
+			None => std::env::remove_var("PI_AGENT_DIR"),
+		}
+	}
+
+	#[test]
+	fn custom_provider_validation_errors() {
+		let _guard = crate::pi::ENV_GUARD.lock().unwrap();
+		let old_agent_dir = std::env::var_os("PI_AGENT_DIR");
+		let dir = std::env::temp_dir().join(format!(
+			"pi-gui-models-validation-{}",
+			std::process::id()
+		));
+		std::fs::create_dir_all(&dir).unwrap();
+		std::env::set_var("PI_AGENT_DIR", &dir);
+
+		let good = || {
+			serde_json::json!({
+				"baseUrl": "http://localhost:8000/v1",
+				"api": "openai-completions",
+				"models": [{"id": "m1"}]
+			})
+		};
+
+		// Bad ids.
+		assert!(pi_upsert_custom_provider("".into(), good()).is_err());
+		assert!(pi_upsert_custom_provider("Volcengine".into(), good()).is_err());
+		assert!(pi_upsert_custom_provider("-lead".into(), good()).is_err());
+		assert!(pi_upsert_custom_provider("has space".into(), good()).is_err());
+
+		// Missing baseUrl / models / model id.
+		assert!(pi_upsert_custom_provider(
+			"ok-id".into(),
+			serde_json::json!({"api": "openai-completions", "models": [{"id": "m"}]})
+		)
+		.is_err());
+		assert!(pi_upsert_custom_provider(
+			"ok-id".into(),
+			serde_json::json!({"baseUrl": "http://x", "models": []})
+		)
+		.is_err());
+		assert!(pi_upsert_custom_provider(
+			"ok-id".into(),
+			serde_json::json!({"baseUrl": "http://x", "models": [{"name": "no id"}]})
+		)
+		.is_err());
+
+		// A valid upsert works.
+		pi_upsert_custom_provider("ok-id".into(), good()).unwrap();
+		let list = pi_custom_providers().unwrap();
+		assert_eq!(list.len(), 1);
+		assert_eq!(list[0].id, "ok-id");
+
+		// Malformed models.json: read and write both refuse, nothing clobbered.
+		std::fs::write(dir.join("models.json"), "{not json").unwrap();
+		assert!(pi_custom_providers().is_err());
+		assert!(pi_upsert_custom_provider("ok-id".into(), good()).is_err());
+		assert_eq!(
+			std::fs::read_to_string(dir.join("models.json")).unwrap(),
+			"{not json"
+		);
 
 		std::fs::remove_dir_all(&dir).ok();
 		match old_agent_dir {
