@@ -180,29 +180,56 @@ pub fn attach<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 	let win = window.clone();
 
 	window.on_window_event(move |event| {
-		let mut s = state.lock().unwrap();
+		// A minimized window reports position (-32000, -32000) and a degenerate
+		// size: never persist or clamp against that geometry.
+		let minimized = win.is_minimized().unwrap_or(false);
 		match event {
 			WindowEvent::Resized(size) => {
+				if minimized {
+					return;
+				}
+				let mut s = state.lock().unwrap();
 				s.width = size.width as f64;
 				s.height = size.height as f64;
 			}
 			WindowEvent::Moved(pos) => {
-				s.x = pos.x;
-				s.y = pos.y;
+				if minimized {
+					return;
+				}
 				// Live guard: never let the window's bottom slide under the
 				// taskbar (the composer + project/branch chips would end up
 				// hidden). Skipped while maximized — its bounds are the work
 				// area already and set_position would fight the
-				// restore-from-maximize transition.
-				if !win.is_maximized().unwrap_or(false) {
-					if let Some((nx, ny)) = clamp_to_work_area(&win, pos.x, pos.y) {
+				// restore-from-maximize transition. Computed BEFORE locking
+				// `state`: window calls must not run while the mutex is held.
+				let clamped = if win.is_maximized().unwrap_or(false) {
+					None
+				} else {
+					clamp_to_work_area(&win, pos.x, pos.y)
+				};
+				let mut s = state.lock().unwrap();
+				match clamped {
+					Some((nx, ny)) => {
 						s.x = nx;
 						s.y = ny;
-						let _ = win.set_position(PhysicalPosition::new(nx, ny));
+						// Deferred past the current event dispatch: SetWindowPos
+						// fires another WM_MOVE which re-enters this callback
+						// synchronously on Windows, and calling it inline (with
+						// `state` held) deadlocked the main thread on minimize
+						// (WER AppHangB1).
+						let w = win.clone();
+						let _ = win.run_on_main_thread(move || {
+							let _ = w.set_position(PhysicalPosition::new(nx, ny));
+						});
+					}
+					None => {
+						s.x = pos.x;
+						s.y = pos.y;
 					}
 				}
 			}
 			WindowEvent::CloseRequested { .. } => {
+				let mut s = state.lock().unwrap();
 				s.maximized = win.is_maximized().unwrap_or(false);
 				let _ = fs::write(&path, serde_json::to_string(&*s).unwrap_or_default());
 				return;
