@@ -371,6 +371,374 @@ pub fn pi_remove_custom_provider(id: String) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// MCP server config management (pi-mcp-adapter layers)
+// ---------------------------------------------------------------------------
+
+/// One MCP server as the GUI sees it: the effective config merged across all
+/// config layers, plus where the top definition lives.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerEntry {
+	name: String,
+	/// Effective per-field merged config (highest-precedence layer wins).
+	config: serde_json::Value,
+	disabled: bool,
+	/// Layer id of the highest-precedence file defining this server.
+	source: String,
+	/// Absolute path of that source file (display / reveal).
+	source_path: String,
+	/// True when the top layer is one the GUI writes to in place
+	/// (pi-global ~/.pi/agent/mcp.json or shared-project .mcp.json).
+	editable: bool,
+	/// Inferred transport: "stdio" | "http" | "socket".
+	transport: String,
+}
+
+/// One config layer, in adapter precedence order (low → high).
+struct McpLayer {
+	id: &'static str,
+	path: PathBuf,
+	/// Layers the GUI may edit/delete entries in directly.
+	editable: bool,
+}
+
+fn mcp_layers(project: Option<&str>) -> Vec<McpLayer> {
+	let home = dirs_home();
+	let agent = pi_agent_dir().join("mcp.json");
+	let mut layers: Vec<McpLayer> = Vec::new();
+	let mut push = |id: &'static str, path: PathBuf, editable: bool| {
+		// The adapter dedupes layers whose paths coincide (e.g. when the
+		// agent dir IS ~/.config/mcp); mirror that to avoid double merges.
+		if !layers.iter().any(|l: &McpLayer| l.path == path) {
+			layers.push(McpLayer { id, path, editable });
+		}
+	};
+	if let Some(home) = home.as_ref() {
+		push("shared-global", home.join(".config").join("mcp").join("mcp.json"), false);
+		push("agents-global", home.join(".agents").join("mcp.json"), false);
+		push("agents-nested-global", home.join(".agents").join("mcp").join("mcp.json"), false);
+	}
+	push("pi-global", agent, true);
+	if let Some(project) = project.filter(|p| !p.trim().is_empty()) {
+		let root = PathBuf::from(project);
+		push("shared-project", root.join(".mcp.json"), true);
+		push("pi-project", root.join(".pi").join("mcp.json"), false);
+	}
+	layers
+}
+
+fn dirs_home() -> Option<PathBuf> {
+	std::env::var_os("USERPROFILE")
+		.map(PathBuf::from)
+		.or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+}
+
+/// Serializes mcp.json read-modify-write updates (same rationale as
+/// MODELS_MUTEX).
+static MCP_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Reads one layer file's `mcpServers` map. Missing file → empty; malformed
+/// file → error (never clobber a hand-edited file on write).
+fn read_mcp_servers(path: &Path) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+	let Ok(raw) = fs::read_to_string(path) else {
+		return Ok(serde_json::Map::new());
+	};
+	let value: serde_json::Value = serde_json::from_str(&raw)
+		.map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?;
+	let obj = value
+		.as_object()
+		.ok_or_else(|| format!("{} root must be an object", path.display()))?;
+	// The adapter accepts both `mcpServers` and `mcp-servers`.
+	let servers = obj
+		.get("mcpServers")
+		.or_else(|| obj.get("mcp-servers"));
+	match servers {
+		Some(serde_json::Value::Object(map)) => Ok(map.clone()),
+		Some(_) => Err(format!("{} 'mcpServers' must be an object", path.display())),
+		None => Ok(serde_json::Map::new()),
+	}
+}
+
+/// Read-modify-write one layer file, preserving unknown top-level keys
+/// (settings, imports, ...).
+fn update_mcp_file(
+	path: &Path,
+	f: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>) -> Result<(), String>,
+) -> Result<(), String> {
+	let mut doc: serde_json::Map<String, serde_json::Value> = match fs::read_to_string(path) {
+		Ok(raw) => {
+			let value: serde_json::Value = serde_json::from_str(&raw)
+				.map_err(|e| format!("{} is not valid JSON: {e}", path.display()))?;
+			value
+				.as_object()
+				.cloned()
+				.ok_or_else(|| format!("{} root must be an object", path.display()))?
+		}
+		Err(_) => serde_json::Map::new(),
+	};
+	// Keep the key style the file already uses.
+	let key = if doc.contains_key("mcp-servers") && !doc.contains_key("mcpServers") {
+		"mcp-servers"
+	} else {
+		"mcpServers"
+	};
+	let servers = doc
+		.entry(key.to_string())
+		.or_insert_with(|| serde_json::json!({}));
+	let map = servers
+		.as_object_mut()
+		.ok_or_else(|| format!("{} '{key}' must be an object", path.display()))?;
+	f(map)?;
+	if map.is_empty() {
+		doc.remove(key);
+	}
+	if let Some(dir) = path.parent() {
+		fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+	}
+	let raw = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+	let tmp = path.with_extension("json.tmp");
+	fs::write(&tmp, raw).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+	fs::rename(&tmp, &path).map_err(|e| format!("failed to persist {}: {e}", path.display()))
+}
+
+fn mcp_transport(config: &serde_json::Value) -> &'static str {
+	let obj = config.as_object();
+	if obj.is_some_and(|o| o.get("socket").and_then(|v| v.as_str()).is_some()) {
+		"socket"
+	} else if obj.is_some_and(|o| o.get("url").and_then(|v| v.as_str()).is_some()) {
+		"http"
+	} else {
+		"stdio"
+	}
+}
+
+/// Merges all layers (low → high precedence, per-field shallow merge like the
+/// adapter) and returns the effective server list.
+fn merged_mcp_servers(project: Option<&str>) -> Result<Vec<McpServerEntry>, String> {
+	let mut merged: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+	// Track which layer last defined each server.
+	let mut top: std::collections::HashMap<String, (&'static str, PathBuf, bool)> =
+		std::collections::HashMap::new();
+	for layer in mcp_layers(project) {
+		let servers = read_mcp_servers(&layer.path)?;
+		for (name, def) in servers {
+			if !def.is_object() {
+				continue;
+			}
+			let base = merged
+				.get(&name)
+				.and_then(|v| v.as_object())
+				.cloned()
+				.unwrap_or_default();
+			let mut next = base;
+			for (k, v) in def.as_object().unwrap() {
+				next.insert(k.clone(), v.clone());
+			}
+			merged.insert(name.clone(), serde_json::Value::Object(next));
+			top.insert(name, (layer.id, layer.path.clone(), layer.editable));
+		}
+	}
+	let mut out: Vec<McpServerEntry> = merged
+		.into_iter()
+		.filter_map(|(name, config)| {
+			let (source, path, editable) = top.get(&name)?;
+			let disabled = config
+				.get("disabled")
+				.and_then(|v| v.as_bool())
+				.unwrap_or(false);
+			Some(McpServerEntry {
+				transport: mcp_transport(&config).to_string(),
+				disabled,
+				source: source.to_string(),
+				source_path: path.display().to_string(),
+				editable: *editable,
+				name,
+				config,
+			})
+		})
+		.collect();
+	out.sort_by(|a, b| a.name.cmp(&b.name));
+	Ok(out)
+}
+
+#[tauri::command]
+pub fn pi_mcp_servers(project: Option<String>) -> Result<Vec<McpServerEntry>, String> {
+	merged_mcp_servers(project.as_deref())
+}
+
+fn validate_mcp_server(name: &str, config: &serde_json::Value) -> Result<(), String> {
+	if name.trim().is_empty() {
+		return Err("server name must not be empty".into());
+	}
+	let obj = config
+		.as_object()
+		.ok_or("server config must be an object")?;
+	let has_command = obj
+		.get("command")
+		.and_then(|v| v.as_str())
+		.is_some_and(|s| !s.trim().is_empty());
+	let has_url = obj
+		.get("url")
+		.and_then(|v| v.as_str())
+		.is_some_and(|s| !s.trim().is_empty());
+	let has_socket = obj
+		.get("socket")
+		.and_then(|v| v.as_str())
+		.is_some_and(|s| !s.trim().is_empty());
+	if !has_command && !has_url && !has_socket {
+		return Err("server config requires a command, url or socket".into());
+	}
+	Ok(())
+}
+
+fn mcp_write_path(
+	scope: &str,
+	project: Option<&str>,
+) -> Result<PathBuf, String> {
+	match scope {
+		"global" => Ok(pi_agent_dir().join("mcp.json")),
+		"project" => project
+			.filter(|p| !p.trim().is_empty())
+			.map(|p| PathBuf::from(p).join(".mcp.json"))
+			.ok_or_else(|| "no project open; cannot write project scope".to_string()),
+		_ => Err(format!("unknown scope '{scope}'")),
+	}
+}
+
+#[tauri::command]
+pub fn pi_mcp_upsert_server(
+	scope: String,
+	project: Option<String>,
+	name: String,
+	config: serde_json::Value,
+) -> Result<(), String> {
+	let name = name.trim().to_string();
+	validate_mcp_server(&name, &config)?;
+	let path = mcp_write_path(&scope, project.as_deref())?;
+	let _guard = MCP_MUTEX
+		.lock()
+		.map_err(|e| format!("mcp lock poisoned: {e}"))?;
+	update_mcp_file(&path, |map| {
+		map.insert(name, config);
+		Ok(())
+	})
+}
+
+#[tauri::command]
+pub fn pi_mcp_remove_server(
+	scope: String,
+	project: Option<String>,
+	name: String,
+) -> Result<(), String> {
+	let path = mcp_write_path(&scope, project.as_deref())?;
+	let _guard = MCP_MUTEX
+		.lock()
+		.map_err(|e| format!("mcp lock poisoned: {e}"))?;
+	update_mcp_file(&path, |map| {
+		map.remove(&name);
+		Ok(())
+	})
+}
+
+/// Enables/disables a server. Writes the `disabled` flag into the server's
+/// top layer when the GUI owns it (pi-global / shared-project / pi-project);
+/// for read-only shared layers it writes an override flag into the highest
+/// writable layer (project .pi/mcp.json when a project is open, else the Pi
+/// global file) — mirroring the adapter's `/mcp enable|disable` semantics
+/// without ever rewriting shared source files.
+#[tauri::command]
+pub fn pi_mcp_set_disabled(
+	name: String,
+	disabled: bool,
+	project: Option<String>,
+) -> Result<(), String> {
+	let _guard = MCP_MUTEX
+		.lock()
+		.map_err(|e| format!("mcp lock poisoned: {e}"))?;
+	let layers = mcp_layers(project.as_deref());
+	// Merge per layer so we know the top layer and the disabled state below it.
+	let mut merged: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+	let mut top_index: Option<usize> = None;
+	let mut disabled_below: Vec<bool> = Vec::new();
+	for (i, layer) in layers.iter().enumerate() {
+		let servers = read_mcp_servers(&layer.path)?;
+		if let Some(def) = servers.get(&name).filter(|d| d.is_object()) {
+			for (k, v) in def.as_object().unwrap() {
+				merged.insert(k.clone(), v.clone());
+			}
+			top_index = Some(i);
+		}
+		disabled_below.push(
+			merged
+				.get("disabled")
+				.and_then(|v| v.as_bool())
+				.unwrap_or(false),
+		);
+	}
+	let Some(top_index) = top_index else {
+		return Err(format!("MCP server '{name}' not found"));
+	};
+	let top_layer = &layers[top_index];
+	// Where the flag lands: in place for layers we own; otherwise an override
+	// in the highest writable layer. lower_disabled is the merged disabled
+	// state below the target file (an explicit `false` is needed to re-enable
+	// when a lower layer disables the server — adapter semantics).
+	let disabled_below_index = |i: usize| -> bool {
+		if i == 0 {
+			false
+		} else {
+			disabled_below[i - 1]
+		}
+	};
+	let (target_path, lower_disabled) = if top_layer.editable || top_layer.id == "pi-project" {
+		(top_layer.path.clone(), disabled_below_index(top_index))
+	} else if let Some(pos) = layers.iter().position(|l| l.id == "pi-project") {
+		(layers[pos].path.clone(), disabled_below_index(pos))
+	} else {
+		let pos = layers
+			.iter()
+			.position(|l| l.id == "pi-global")
+			.expect("pi-global layer always exists");
+		(layers[pos].path.clone(), disabled_below_index(pos))
+	};
+	update_mcp_file(&target_path, |map| {
+		if disabled {
+			let entry = map
+				.entry(name.clone())
+				.or_insert_with(|| serde_json::json!({}));
+			let obj = entry
+				.as_object_mut()
+				.ok_or("server entry must be an object")?;
+			obj.insert("disabled".to_string(), serde_json::Value::Bool(true));
+		} else {
+			let remove_entry = match map.get_mut(&name).and_then(|e| e.as_object_mut()) {
+				Some(obj) => {
+					if lower_disabled {
+						// A lower layer disables it; an explicit false is needed to
+						// re-enable (adapter semantics).
+						obj.insert("disabled".to_string(), serde_json::Value::Bool(false));
+						false
+					} else {
+						obj.remove("disabled");
+						obj.is_empty()
+					}
+				}
+				None => {
+					if lower_disabled {
+						map.insert(name.clone(), serde_json::json!({ "disabled": false }));
+					}
+					false
+				}
+			};
+			if remove_entry {
+				map.remove(&name);
+			}
+		}
+		Ok(())
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Git branch support
 // ---------------------------------------------------------------------------
 
@@ -1136,5 +1504,167 @@ mod tests {
 		assert!(!state.is_repository);
 		assert!(state.branches.is_empty());
 		std::fs::remove_dir_all(&dir).ok();
+	}
+
+	/// Points PI_AGENT_DIR at a fresh temp dir; restores the old value on drop.
+	/// Guards with ENV_GUARD because the agent dir is process-global env.
+	struct AgentDirGuard {
+		old: Option<std::ffi::OsString>,
+		dir: PathBuf,
+		_guard: std::sync::MutexGuard<'static, ()>,
+	}
+
+	impl AgentDirGuard {
+		fn new(tag: &str) -> Self {
+			let guard = crate::pi::ENV_GUARD.lock().unwrap();
+			let old = std::env::var_os("PI_AGENT_DIR");
+			let dir = std::env::temp_dir().join(format!(
+				"pi-gui-mcp-{tag}-{}",
+				std::process::id()
+			));
+			std::fs::create_dir_all(&dir).unwrap();
+			std::env::set_var("PI_AGENT_DIR", &dir);
+			AgentDirGuard { old, dir, _guard: guard }
+		}
+	}
+
+	impl Drop for AgentDirGuard {
+		fn drop(&mut self) {
+			match &self.old {
+				Some(v) => std::env::set_var("PI_AGENT_DIR", v),
+				None => std::env::remove_var("PI_AGENT_DIR"),
+			}
+			std::fs::remove_dir_all(&self.dir).ok();
+		}
+	}
+
+	#[test]
+	fn mcp_servers_merge_layers_by_precedence() {
+		let agent = AgentDirGuard::new("merge");
+		// Global (pi-global) definition.
+		std::fs::write(
+			agent.dir.join("mcp.json"),
+			r#"{"mcpServers":{"gui-test-srv":{"command":"npx","args":["-y","srv"],"env":{"A":"1"}}}}"#,
+		)
+		.unwrap();
+		// Project layers override per-field and add the disabled flag.
+		let project = agent.dir.join("proj");
+		std::fs::create_dir_all(project.join(".pi")).unwrap();
+		std::fs::write(
+			project.join(".mcp.json"),
+			r#"{"mcpServers":{"gui-test-srv":{"args":["-y","srv2"]}}}"#,
+		)
+		.unwrap();
+		std::fs::write(
+			project.join(".pi").join("mcp.json"),
+			r#"{"mcpServers":{"gui-test-srv":{"disabled":true}}}"#,
+		)
+		.unwrap();
+
+		let servers = merged_mcp_servers(Some(project.to_str().unwrap())).unwrap();
+		let entry = servers
+			.iter()
+			.find(|s| s.name == "gui-test-srv")
+			.expect("server from temp layers");
+		// Per-field merge: args from the project layer, command/env from global.
+		assert_eq!(entry.config["args"], serde_json::json!(["-y", "srv2"]));
+		assert_eq!(entry.config["command"], serde_json::json!("npx"));
+		assert_eq!(entry.config["env"], serde_json::json!({"A": "1"}));
+		assert!(entry.disabled);
+		assert_eq!(entry.source, "pi-project");
+		assert!(!entry.editable);
+		assert_eq!(entry.transport, "stdio");
+
+		// Without a project only the global layer applies.
+		let servers = merged_mcp_servers(None).unwrap();
+		let entry = servers
+			.iter()
+			.find(|s| s.name == "gui-test-srv")
+			.unwrap();
+		assert_eq!(entry.config["args"], serde_json::json!(["-y", "srv"]));
+		assert!(!entry.disabled);
+		assert_eq!(entry.source, "pi-global");
+		assert!(entry.editable);
+	}
+
+	#[test]
+	fn mcp_set_disabled_toggles_flag_in_place() {
+		let agent = AgentDirGuard::new("toggle");
+		std::fs::write(
+			agent.dir.join("mcp.json"),
+			r#"{"mcpServers":{"gui-test-toggle":{"command":"npx"}}}"#,
+		)
+		.unwrap();
+
+		pi_mcp_set_disabled("gui-test-toggle".into(), true, None).unwrap();
+		let raw: serde_json::Value = serde_json::from_str(
+			&std::fs::read_to_string(agent.dir.join("mcp.json")).unwrap(),
+		)
+		.unwrap();
+		assert_eq!(
+			raw["mcpServers"]["gui-test-toggle"]["disabled"],
+			serde_json::json!(true)
+		);
+		// The command key survived the flag write.
+		assert_eq!(
+			raw["mcpServers"]["gui-test-toggle"]["command"],
+			serde_json::json!("npx")
+		);
+
+		pi_mcp_set_disabled("gui-test-toggle".into(), false, None).unwrap();
+		let raw: serde_json::Value = serde_json::from_str(
+			&std::fs::read_to_string(agent.dir.join("mcp.json")).unwrap(),
+		)
+		.unwrap();
+		assert!(raw["mcpServers"]["gui-test-toggle"].get("disabled").is_none());
+		assert_eq!(
+			raw["mcpServers"]["gui-test-toggle"]["command"],
+			serde_json::json!("npx")
+		);
+
+		// Unknown server is an error, not a silently created file.
+		assert!(pi_mcp_set_disabled("gui-test-missing".into(), true, None).is_err());
+	}
+
+	#[test]
+	fn mcp_upsert_and_remove_project_scope() {
+		let agent = AgentDirGuard::new("project");
+		let project = agent.dir.join("proj");
+		std::fs::create_dir_all(&project).unwrap();
+		let project = project.to_string_lossy().into_owned();
+
+		pi_mcp_upsert_server(
+			"project".into(),
+			Some(project.clone()),
+			"gui-test-http".into(),
+			serde_json::json!({"url": "https://example.com/mcp", "headers": {"X": "y"}}),
+		)
+		.unwrap();
+		let servers = merged_mcp_servers(Some(&project)).unwrap();
+		let entry = servers
+			.iter()
+			.find(|s| s.name == "gui-test-http")
+			.unwrap();
+		assert_eq!(entry.transport, "http");
+		assert_eq!(entry.source, "shared-project");
+		assert!(entry.editable);
+
+		pi_mcp_remove_server("project".into(), Some(project.clone()), "gui-test-http".into())
+			.unwrap();
+		assert!(
+			!merged_mcp_servers(Some(&project))
+				.unwrap()
+				.iter()
+				.any(|s| s.name == "gui-test-http")
+		);
+
+		// A config without command/url/socket is rejected.
+		assert!(pi_mcp_upsert_server(
+			"global".into(),
+			None,
+			"gui-test-bad".into(),
+			serde_json::json!({"args": []}),
+		)
+		.is_err());
 	}
 }

@@ -305,6 +305,61 @@ export async function piRemoveCustomProvider(id: string): Promise<void> {
 	return invoke("pi_remove_custom_provider", { id });
 }
 
+/** Which config layer defines an MCP server (adapter precedence, low → high). */
+export type McpServerSource =
+	| "shared-global"
+	| "agents-global"
+	| "agents-nested-global"
+	| "pi-global"
+	| "shared-project"
+	| "pi-project";
+
+/** One MCP server merged across all pi-mcp-adapter config layers. */
+export interface McpServerEntry {
+	name: string;
+	/** Effective per-field merged config (command/args/env or url/headers…). */
+	config: Record<string, unknown>;
+	disabled: boolean;
+	/** Highest-precedence layer defining this server. */
+	source: McpServerSource;
+	/** Absolute path of that source file. */
+	sourcePath: string;
+	/** True when the GUI can edit/delete the entry in place. */
+	editable: boolean;
+	transport: "stdio" | "http" | "socket";
+}
+
+export async function piMcpServers(
+	project: string | null,
+): Promise<McpServerEntry[]> {
+	return invoke("pi_mcp_servers", { project });
+}
+
+export async function piMcpUpsertServer(
+	scope: "global" | "project",
+	project: string | null,
+	name: string,
+	config: Record<string, unknown>,
+): Promise<void> {
+	return invoke("pi_mcp_upsert_server", { scope, project, name, config });
+}
+
+export async function piMcpRemoveServer(
+	scope: "global" | "project",
+	project: string | null,
+	name: string,
+): Promise<void> {
+	return invoke("pi_mcp_remove_server", { scope, project, name });
+}
+
+export async function piMcpSetDisabled(
+	name: string,
+	disabled: boolean,
+	project: string | null,
+): Promise<void> {
+	return invoke("pi_mcp_set_disabled", { name, disabled, project });
+}
+
 export async function authSetKey(provider: string, key: string): Promise<void> {
 	return invoke("pi_auth_set_key", { provider, key });
 }

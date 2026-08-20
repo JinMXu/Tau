@@ -3172,6 +3172,13 @@ export default function App() {
 						trustDefault={trustDefault}
 						onSetProjectTrust={(d) => void setProjectTrust(d)}
 						onSetDefaultTrust={(v) => void setDefaultTrust(v)}
+						projects={Array.from(
+							new Set(
+								sessions
+									.map((s) => s.project)
+									.filter((p): p is string => !!p),
+							),
+						).sort()}
 						onCustomProvidersChanged={handleCustomProvidersChanged}
 					/>
 				)}

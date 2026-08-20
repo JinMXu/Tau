@@ -6,6 +6,9 @@ import {
 	authStatus,
 	piCustomProviders,
 	piInstalledSkills,
+	piMcpRemoveServer,
+	piMcpServers,
+	piMcpSetDisabled,
 	piPackageInstall,
 	piPackageRemove,
 	piPackages,
@@ -13,6 +16,7 @@ import {
 	piRemoveCustomProvider,
 	type AuthProviderStatus,
 	type CustomProviderEntry,
+	type McpServerEntry,
 	type PiPackageEntry,
 	type PiSkillEntry,
 } from "../pi";
@@ -35,17 +39,21 @@ import {
 	SparkleIcon,
 	TerminalIcon,
 	TrashIcon,
+	WrenchIcon,
 } from "../icons";
 import type { AppSettings, ColorScale, Density, Theme } from "../settings";
 import { ALL_AGENT_TOOLS } from "../settings";
 import { PACKAGES_CATALOG, formatDownloads } from "../packages-catalog";
 import { UsageStats } from "./UsageStats";
 import { CustomProviderDialog } from "./CustomProviderDialog";
+import { McpServerDialog } from "./McpServerDialog";
+import { ScopeSelect } from "./ScopeSelect";
 
 type SettingsPage =
 	| "general"
 	| "appearance"
 	| "providers"
+	| "mcp"
 	| "prompt"
 	| "extensions"
 	| "archived"
@@ -320,6 +328,7 @@ export function SettingsPanel({
 	trustDefault,
 	onSetProjectTrust,
 	onSetDefaultTrust,
+	projects,
 	onCustomProvidersChanged,
 }: {
 	t: MessageCatalog;
@@ -343,6 +352,8 @@ export function SettingsPanel({
 	trustDefault: string;
 	onSetProjectTrust: (decision: boolean | null) => void;
 	onSetDefaultTrust: (value: string) => void;
+	/** Known workspace paths (from sessions), for the MCP scope dropdown. */
+	projects: string[];
 	/** Fired after a custom provider is added/edited/deleted (models.json
 	 * changed). The host uses it to reconnect the running session so pi
 	 * re-reads the model catalog. */
@@ -389,6 +400,7 @@ export function SettingsPanel({
 			label: t.settings.groupAgent,
 			items: [
 				{ id: "providers", label: t.settings.providers, icon: <BoltIcon size={15} /> },
+				{ id: "mcp", label: t.settings.mcp, icon: <WrenchIcon size={15} /> },
 				{ id: "prompt", label: t.settings.systemPrompt, icon: <EditIcon size={15} /> },
 				{ id: "extensions", label: t.settings.extensions, icon: <GridIcon size={15} /> },
 			],
@@ -524,6 +536,112 @@ export function SettingsPanel({
 	};
 	const customIds = new Set(customProviders.map((c) => c.id));
 
+	// ---- MCP servers (pi-mcp-adapter config layers) ----
+	const [mcpServers, setMcpServers] = useState<McpServerEntry[]>([]);
+	const [mcpDialogOpen, setMcpDialogOpen] = useState(false);
+	const [mcpEditing, setMcpEditing] = useState<McpServerEntry | null>(null);
+	/** Two-step delete: first click arms, second click executes. */
+	const [mcpConfirmDelete, setMcpConfirmDelete] = useState<string | null>(null);
+	/** Scope dropdown: null = not chosen yet (falls back to the open
+	 * workspace), "" = user scope, otherwise a project path. */
+	const [mcpScopeSel, setMcpScopeSel] = useState<string | null>(null);
+	const [mcpQuery, setMcpQuery] = useState("");
+	const mcpScope = mcpScopeSel ?? workspace ?? "";
+
+	const refreshMcpServers = useCallback(() => {
+		piMcpServers(mcpScope || null)
+			.then(setMcpServers)
+			.catch(() => setMcpServers([]));
+	}, [mcpScope]);
+	useEffect(() => {
+		refreshMcpServers();
+	}, [refreshMcpServers]);
+
+	// Disarm a stale delete confirmation automatically.
+	useEffect(() => {
+		if (!mcpConfirmDelete) return;
+		const timer = window.setTimeout(() => setMcpConfirmDelete(null), 3000);
+		return () => window.clearTimeout(timer);
+	}, [mcpConfirmDelete]);
+
+	const toggleMcpServer = async (entry: McpServerEntry) => {
+		try {
+			await piMcpSetDisabled(entry.name, !entry.disabled, mcpScope || null);
+			refreshMcpServers();
+			notify(
+				(entry.disabled ? t.settings.mcpEnabled : t.settings.mcpDisabled).replace(
+					"{name}",
+					entry.name,
+				),
+			);
+		} catch (e) {
+			notifyError(String(e));
+		}
+	};
+
+	const deleteMcpServer = async (entry: McpServerEntry) => {
+		if (mcpConfirmDelete !== entry.name) {
+			setMcpConfirmDelete(entry.name);
+			return;
+		}
+		setMcpConfirmDelete(null);
+		try {
+			await piMcpRemoveServer(
+				entry.source === "shared-project" ? "project" : "global",
+				mcpScope || null,
+				entry.name,
+			);
+			refreshMcpServers();
+			notify(t.settings.mcpDeleted.replace("{name}", entry.name));
+		} catch (e) {
+			notifyError(String(e));
+		}
+	};
+
+	const mcpSourceLabel = (source: McpServerEntry["source"]): string => {
+		switch (source) {
+			case "shared-global":
+				return t.settings.mcpSourceSharedGlobal;
+			case "agents-global":
+			case "agents-nested-global":
+				return t.settings.mcpSourceAgentsGlobal;
+			case "shared-project":
+				return t.settings.mcpSourceProject;
+			case "pi-project":
+				return t.settings.mcpSourcePiProject;
+			default:
+				return t.settings.mcpSourcePiGlobal;
+		}
+	};
+
+	const mcpCommandPreview = (entry: McpServerEntry): string => {
+		const c = entry.config;
+		if (entry.transport === "http") return typeof c.url === "string" ? c.url : "";
+		if (entry.transport === "socket")
+			return typeof c.socket === "string" ? c.socket : "";
+		const args = Array.isArray(c.args)
+			? c.args.filter((a): a is string => typeof a === "string").join(" ")
+			: "";
+		return [typeof c.command === "string" ? c.command : "", args]
+			.filter(Boolean)
+			.join(" ");
+	};
+
+	// Scope dropdown options: known projects plus the open workspace (it may
+	// have no sessions yet and thus be missing from `projects`).
+	const mcpScopeOptions = Array.from(
+		new Set([...projects, ...(workspace ? [workspace] : [])]),
+	);
+
+	const mcpFiltered = mcpServers.filter((s) => {
+		const q = mcpQuery.trim().toLowerCase();
+		if (!q) return true;
+		return (
+			s.name.toLowerCase().includes(q) ||
+			mcpCommandPreview(s).toLowerCase().includes(q)
+		);
+	});
+
 	// ---- packages & skills ----
 	// Cache extension data for the app session so reopening the settings panel
 	// renders instantly instead of re-running `pi list` every time.
@@ -571,6 +689,7 @@ export function SettingsPanel({
 			.filter((p) => p.packageName)
 			.map((p) => p.packageName as string),
 	);
+	const mcpAdapterInstalled = installedNames.has("pi-mcp-adapter");
 	const installedSources = new Set(packages.map((p) => p.source));
 
 	const handleInstall = async (source: string) => {
@@ -1106,6 +1225,142 @@ export function SettingsPanel({
 						onSaved={notify}
 						onError={notifyError}
 						onChanged={onProvidersChanged}
+					/>
+					</section>
+					)}
+
+					{page === "mcp" && (
+					<section className="settings-section">
+						<div className="settings-section-title-row">
+							<h3>{t.settings.mcp}</h3>
+						<div className="settings-section-actions">
+							<button className="link-btn" onClick={refreshMcpServers}>
+								{t.sidebar.refresh}
+							</button>
+							<button
+								className="btn secondary small"
+								onClick={() => {
+									setMcpConfirmDelete(null);
+									setMcpEditing(null);
+									setMcpDialogOpen(true);
+								}}
+							>
+								<PlusIcon size={12} /> {t.settings.mcpAdd}
+							</button>
+						</div>
+					</div>
+					<p className="settings-hint">{t.settings.mcpHint}</p>
+
+					{!packagesLoading && !mcpAdapterInstalled && (
+						<div className="mcp-adapter-notice">
+							<span>{t.settings.mcpAdapterMissing}</span>
+							<button
+								className="btn secondary small"
+								disabled={busySource === "npm:pi-mcp-adapter"}
+								onClick={() => void handleInstall("npm:pi-mcp-adapter")}
+							>
+								{busySource === "npm:pi-mcp-adapter"
+									? t.settings.packageBusy
+									: t.settings.mcpAdapterInstall}
+							</button>
+						</div>
+					)}
+
+					<div className="mcp-toolbar">
+						<ScopeSelect
+							value={mcpScope}
+							options={mcpScopeOptions}
+							t={t}
+							onChange={setMcpScopeSel}
+						/>
+						<input
+							className="mcp-search"
+							value={mcpQuery}
+							placeholder={t.settings.mcpSearchPlaceholder}
+							spellCheck={false}
+							onChange={(e) => setMcpQuery(e.target.value)}
+						/>
+					</div>
+
+					{mcpServers.length === 0 ? (
+						<p className="settings-hint">{t.settings.mcpEmpty}</p>
+					) : (
+						<>
+							<h4 className="settings-sub">
+								{t.settings.mcpInstalled.replace(
+									"{count}",
+									String(mcpFiltered.length),
+								)}
+							</h4>
+							<ul className="provider-list">
+								{mcpFiltered.map((entry) => (
+									<li className="mcp-row" key={entry.name}>
+										<span className={`mcp-dot ${entry.disabled ? "off" : ""}`} />
+										<div className="mcp-info">
+											<div className="mcp-name-line">
+												<span className="provider-name">{entry.name}</span>
+												<span className="provider-status" title={entry.sourcePath}>
+													{mcpSourceLabel(entry.source)}
+												</span>
+											</div>
+											<span className="mcp-cmd mono">
+												{entry.transport} · {mcpCommandPreview(entry)}
+											</span>
+										</div>
+										<div className="mcp-actions">
+											{entry.editable && (
+												<>
+													<button
+														className="btn secondary small"
+														onClick={() => {
+															setMcpConfirmDelete(null);
+															setMcpEditing(entry);
+															setMcpDialogOpen(true);
+														}}
+													>
+														{t.settings.editProvider}
+													</button>
+													<button
+														className={`btn small ${
+															mcpConfirmDelete === entry.name ? "danger" : "secondary"
+														}`}
+														onClick={() => void deleteMcpServer(entry)}
+													>
+														{mcpConfirmDelete === entry.name
+															? t.settings.deleteProviderConfirm
+															: t.settings.deleteProvider}
+													</button>
+												</>
+											)}
+											<label className="switch-row">
+												<input
+													type="checkbox"
+													checked={!entry.disabled}
+													onChange={() => void toggleMcpServer(entry)}
+												/>
+												<span className="switch-track"><span /></span>
+											</label>
+										</div>
+									</li>
+								))}
+							</ul>
+							{mcpServers.some((e) => !e.editable) && (
+								<p className="settings-hint">{t.settings.mcpReadonlyHint}</p>
+							)}
+						</>
+					)}
+
+					<McpServerDialog
+						open={mcpDialogOpen}
+						editing={mcpEditing}
+						existingNames={mcpServers.map((s) => s.name)}
+						projects={mcpScopeOptions}
+						scopeProject={mcpScope || null}
+						t={t}
+						onClose={() => setMcpDialogOpen(false)}
+						onSaved={notify}
+						onError={notifyError}
+						onChanged={refreshMcpServers}
 					/>
 					</section>
 					)}

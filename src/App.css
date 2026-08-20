@@ -3928,6 +3928,222 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 	background: color-mix(in srgb, var(--status-ok) 8%, transparent);
 }
 
+.mcp-cmd {
+	font-size: var(--fs-xs);
+	color: var(--app-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+
+.mcp-adapter-notice {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--sp-3);
+	background: var(--hover);
+	border: 1px solid var(--card-border);
+	border-radius: var(--r-md);
+	padding: var(--sp-2) var(--sp-3);
+	font-size: var(--fs-sm);
+	margin-bottom: var(--sp-3);
+}
+
+.mcp-toolbar {
+	display: flex;
+	align-items: stretch;
+	gap: var(--sp-2);
+	margin: 0 0 var(--sp-3);
+}
+
+/* Stretch the scope trigger to the search input's height. */
+.mcp-toolbar .mcp-scope {
+	display: flex;
+}
+
+.mcp-toolbar .mcp-scope-btn {
+	padding: var(--sp-2) var(--sp-3);
+}
+
+.mcp-scope {
+	position: relative;
+	flex: none;
+}
+
+.mcp-scope.full {
+	width: 100%;
+}
+
+.mcp-scope-btn {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	max-width: 200px;
+	background: var(--input-bg);
+	border: 1px solid var(--card-border);
+	border-radius: var(--r-md);
+	padding: var(--sp-1) var(--sp-2);
+	font-size: var(--fs-sm);
+	color: inherit;
+	outline: none;
+	cursor: pointer;
+}
+
+.mcp-scope.full .mcp-scope-btn {
+	width: 100%;
+	max-width: none;
+	padding: var(--sp-2) var(--sp-3);
+}
+
+.mcp-scope-btn:hover:not(:disabled),
+.mcp-scope-btn.open {
+	border-color: var(--app-muted);
+}
+
+.mcp-scope-btn:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.mcp-scope-btn-label {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	text-align: left;
+}
+
+.mcp-scope-menu {
+	position: absolute;
+	top: calc(100% + 6px);
+	left: 0;
+	min-width: 100%;
+	width: max-content;
+	max-width: 280px;
+	max-height: 280px;
+	overflow-y: auto;
+	padding: var(--sp-1);
+	background: var(--menu-bg);
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-lg);
+	box-shadow: var(--shadow-2);
+	z-index: 70;
+}
+
+.mcp-scope-group {
+	padding: var(--sp-1) 9px 2px;
+	font-size: var(--fs-xs);
+	color: var(--app-muted);
+}
+
+.mcp-scope-item {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	width: 100%;
+	padding: 7px 9px;
+	border-radius: var(--r-sm);
+	font-size: var(--fs-sm);
+	color: var(--text-2);
+	text-align: left;
+}
+
+.mcp-scope-item:hover,
+.mcp-scope-item.active {
+	background: var(--hover);
+	color: var(--text-1);
+}
+
+.mcp-scope-item-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.mcp-search {
+	flex: 1;
+	min-width: 0;
+	background: var(--input-bg);
+	border: 1px solid var(--card-border);
+	border-radius: var(--r-md);
+	padding: var(--sp-2) var(--sp-3);
+	font-size: var(--fs-sm);
+	outline: none;
+	color: inherit;
+}
+
+.mcp-search:focus {
+	border-color: var(--app-muted);
+}
+
+.mcp-row {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-3);
+	background: var(--hover);
+	border-radius: var(--r-md);
+	padding: var(--sp-2) var(--sp-3);
+}
+
+.mcp-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--status-ok);
+	flex: none;
+}
+
+.mcp-dot.off {
+	background: var(--app-muted);
+}
+
+.mcp-info {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+	flex: 1;
+}
+
+.mcp-name-line {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	min-width: 0;
+}
+
+.mcp-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	flex: none;
+}
+
+.mcp-collapsible {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--sp-1);
+	background: none;
+	border: none;
+	padding: 0;
+	margin: var(--sp-1) 0;
+	font-size: var(--fs-sm);
+	color: var(--app-muted);
+	cursor: pointer;
+}
+
+.mcp-collapsible:hover {
+	color: inherit;
+}
+
+.mcp-json-editor {
+	min-height: 260px;
+}
+
 .provider-edit {
 	display: flex;
 	align-items: center;
