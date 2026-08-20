@@ -52,6 +52,7 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **自定义系统提示词** — 设置页内置 Markdown 编辑器，自定义 Pi 的系统指令，下次连接会话时通过 `--system-prompt` 生效。
 - **聊天内 API Key 提示** — 发送消息时若所选 Provider 未配置 Key，直接在聊天内弹窗填写，无需跳转设置页。
 - **模型提供商配置** — 设置页动态读取 Pi 内置的全部模型提供商（约 40 个：Anthropic/OpenAI/Gemini/DeepSeek/Kimi/OpenRouter 等，含 `models.json` 自定义提供商），可逐个配置 API Key，读写 `~/.pi/agent/auth.json`，与 Pi CLI 共享凭据，OAuth 登录状态同样可见。
+- **MCP 服务器管理** — 设置页「MCP 服务」合并展示 pi-mcp-adapter 各配置层（shared / .agents / pi，全局与项目）的服务器定义，标注来源层与传输类型；支持启停（镜像 `/mcp` 适配器语义，只读共享层通过覆盖实现）、在可写的全局 `~/.pi/agent/mcp.json` 或项目 `.mcp.json` 中新建/编辑/删除，表单与 JSON 双模式编辑。
 - **扩展 UI 对话框** — 处理 Pi 的 `extension_ui_request` 事件（select / confirm / input / notify），回传 `extension_ui_response`。
 
 ### 🪟 桌面体验
