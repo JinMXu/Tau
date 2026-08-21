@@ -47,6 +47,7 @@ import {
 	type SubagentRun,
 } from "./pi";
 import { getMessages, projectNameFromPath } from "./i18n";
+import { stripAnsi } from "./lib/ansi";
 import { loadSettings, resolveTheme, saveSettings, type AppSettings } from "./settings";
 import type {
 	Attachment,
@@ -959,7 +960,10 @@ export default function App() {
 				// Fire-and-forget UI methods.
 				if (method === "setStatus") {
 					const key = String(event.statusKey ?? "");
-					const text = event.statusText as string | undefined;
+					// Extension status text often carries ANSI color codes (meant
+					// for the TUI); the webview would render the raw escapes as
+					// tofu boxes + literal parameters.
+					const text = stripAnsi(String(event.statusText ?? "")) || undefined;
 					if (!key) return;
 					setExtensionStatus((prev) => {
 						const next = { ...prev };
@@ -972,7 +976,7 @@ export default function App() {
 				if (method === "setWidget") {
 					const key = String(event.widgetKey ?? "");
 					if (!key) return;
-					const lines = event.widgetLines as string[] | undefined;
+					const lines = (event.widgetLines as string[] | undefined)?.map(stripAnsi);
 					const placement = event.widgetPlacement === "belowEditor" ? "belowEditor" : "aboveEditor";
 					setExtensionWidgets((prev) => {
 						const next = { ...prev };
@@ -983,7 +987,7 @@ export default function App() {
 					return;
 				}
 				if (method === "setTitle") {
-					const title = String(event.title ?? "");
+					const title = stripAnsi(String(event.title ?? ""));
 					document.title = title || "Tau";
 					getCurrentWindow()
 						.setTitle(title || "Tau")
