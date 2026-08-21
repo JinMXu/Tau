@@ -3518,6 +3518,7 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			crate::rebuild_menu,
 			crate::log_frontend,
 			crate::log_frontend_info,
+			crate::export_diagnostics,
 		])
 }
 

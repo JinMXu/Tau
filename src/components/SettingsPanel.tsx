@@ -4,6 +4,7 @@ import {
 	authRemove,
 	authSetKey,
 	authStatus,
+	exportDiagnostics,
 	piCustomProviders,
 	piInstalledSkills,
 	piMcpRemoveServer,
@@ -26,15 +27,18 @@ import {
 	BarChartIcon,
 	BoltIcon,
 	CheckIcon,
+	ChevronDownIcon,
 	ChevronLeftIcon,
 	CopyIcon,
 	EditIcon,
 	EyeIcon,
+	FolderIcon,
 	GridIcon,
 	InfoIcon,
+	MoreIcon,
 	PlusIcon,
 	RefreshIcon,
-	RestoreIcon,
+	SearchIcon,
 	SettingsIcon,
 	SparkleIcon,
 	TerminalIcon,
@@ -156,6 +160,92 @@ function Row({
 				{hint && <p className="settings-hint">{hint}</p>}
 			</div>
 			<div className="settings-control">{children}</div>
+		</div>
+	);
+}
+
+/** "2026年8月13日，14:19" style timestamp for archived rows. */
+function formatArchivedDate(ms: number, lang: string): string {
+	const d = new Date(ms);
+	const locale = lang === "zh" ? "zh-CN" : "en-US";
+	const date = d.toLocaleDateString(locale, {
+		year: "numeric",
+		month: "long",
+		day: "numeric",
+	});
+	const time = d.toLocaleTimeString(locale, {
+		hour: "2-digit",
+		minute: "2-digit",
+	});
+	return `${date}${lang === "zh" ? "，" : ", "}${time}`;
+}
+
+/**
+ * Themed pill dropdown for the archived-page toolbar. Reuses the mcp-scope
+ * styles — a native <select> renders with OS chrome on Windows.
+ */
+function FilterSelect({
+	value,
+	options,
+	icon,
+	onChange,
+}: {
+	value: string;
+	options: { value: string; label: string }[];
+	icon?: React.ReactNode;
+	onChange: (value: string) => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const wrapRef = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		if (!open) return;
+		const onDown = (e: MouseEvent) => {
+			if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+				setOpen(false);
+			}
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setOpen(false);
+		};
+		document.addEventListener("mousedown", onDown);
+		document.addEventListener("keydown", onKey);
+		return () => {
+			document.removeEventListener("mousedown", onDown);
+			document.removeEventListener("keydown", onKey);
+		};
+	}, [open]);
+
+	const label = options.find((o) => o.value === value)?.label ?? value;
+
+	return (
+		<div className="mcp-scope" ref={wrapRef}>
+			<button
+				className={`mcp-scope-btn ${open ? "open" : ""}`}
+				aria-expanded={open}
+				onClick={() => setOpen((v) => !v)}
+			>
+				{icon}
+				<span className="mcp-scope-btn-label">{label}</span>
+				<ChevronDownIcon size={13} />
+			</button>
+			{open && (
+				<div className="mcp-scope-menu">
+					{options.map((o) => (
+						<button
+							key={o.value}
+							className={`mcp-scope-item ${value === o.value ? "active" : ""}`}
+							onClick={() => {
+								onChange(o.value);
+								setOpen(false);
+							}}
+						>
+							<span className="mcp-scope-item-name">{o.label}</span>
+							{value === o.value && <CheckIcon size={13} />}
+						</button>
+					))}
+				</div>
+			)}
 		</div>
 	);
 }
@@ -315,7 +405,8 @@ export function SettingsPanel({
 	archived,
 	onRestore,
 	onPurge,
-	onRestoreAll,
+	onPurgeAll,
+	onPurgeProject,
 	onViewArchived,
 	onCompactArchived,
 	onClose,
@@ -339,7 +430,8 @@ export function SettingsPanel({
 	archived: PiArchivedSession[];
 	onRestore: (path: string) => void;
 	onPurge: (path: string) => void;
-	onRestoreAll: () => void;
+	onPurgeAll: () => void;
+	onPurgeProject: (project: string | null) => void;
 	onViewArchived: (path: string, title: string) => void;
 	onCompactArchived: (path: string) => void;
 	onClose: () => void;
@@ -371,19 +463,36 @@ export function SettingsPanel({
 	];
 
 	const [page, setPage] = useState<SettingsPage>("general");
-	const [selectedArchived, setSelectedArchived] = useState<Set<string>>(
-		() => new Set(),
-	);
 	const [packageQuery, setPackageQuery] = useState("");
+	// Archived page: search / sort / project filter / per-project "..." menu.
+	const [archivedQuery, setArchivedQuery] = useState("");
+	const [archivedSort, setArchivedSort] = useState<"newest" | "oldest">(
+		"newest",
+	);
+	const [archivedProject, setArchivedProject] = useState("all");
+	const [archivedMenu, setArchivedMenu] = useState<string | null>(null);
+	const archivedMenuRef = useRef<HTMLDivElement>(null);
 
-	// Drop selections whose rows disappeared (restored or purged elsewhere).
 	useEffect(() => {
-		setSelectedArchived((prev) => {
-			const valid = new Set(archived.map((a) => a.path));
-			const next = new Set([...prev].filter((p) => valid.has(p)));
-			return next.size === prev.size ? prev : next;
-		});
-	}, [archived]);
+		if (archivedMenu === null) return;
+		const onDown = (e: MouseEvent) => {
+			if (
+				archivedMenuRef.current &&
+				!archivedMenuRef.current.contains(e.target as Node)
+			) {
+				setArchivedMenu(null);
+			}
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setArchivedMenu(null);
+		};
+		document.addEventListener("mousedown", onDown);
+		document.addEventListener("keydown", onKey);
+		return () => {
+			document.removeEventListener("mousedown", onDown);
+			document.removeEventListener("keydown", onKey);
+		};
+	}, [archivedMenu]);
 
 	const navGroups: {
 		label: string;
@@ -417,6 +526,35 @@ export function SettingsPanel({
 	const activePageLabel =
 		navGroups.flatMap((g) => g.items).find((i) => i.id === page)?.label ??
 		t.settings.title;
+
+	// ---- archived page: filter + group ----
+	// "" is the group key for sessions without a project; "all" = no filter.
+	const archivedProjects = [
+		...new Set(archived.map((a) => a.project ?? "")),
+	].sort();
+	const archivedFiltered = (() => {
+		const q = archivedQuery.trim().toLowerCase();
+		const list = archived
+			.filter(
+				(a) =>
+					archivedProject === "all" ||
+					(a.project ?? "") === archivedProject,
+			)
+			.filter((a) => !q || a.title.toLowerCase().includes(q));
+		list.sort((a, b) =>
+			archivedSort === "newest"
+				? b.mtimeMs - a.mtimeMs
+				: a.mtimeMs - b.mtimeMs,
+		);
+		return list;
+	})();
+	const archivedGroups = new Map<string, PiArchivedSession[]>();
+	for (const a of archivedFiltered) {
+		const key = a.project ?? "";
+		const list = archivedGroups.get(key);
+		if (list) list.push(a);
+		else archivedGroups.set(key, [a]);
+	}
 
 	// ---- provider auth ----
 	const [auth, setAuth] = useState<AuthProviderStatus[]>([]);
@@ -477,6 +615,24 @@ export function SettingsPanel({
 		window.clearTimeout(errorTimerRef.current);
 		errorTimerRef.current = window.setTimeout(() => setErrorMsg(null), 4000);
 	}, []);
+
+	// ---- diagnostics export (About page) ----
+	const [exportingDiag, setExportingDiag] = useState(false);
+	const handleExportDiagnostics = useCallback(async () => {
+		setExportingDiag(true);
+		try {
+			const r = await exportDiagnostics();
+			if (r.ok && !r.canceled) {
+				notify(t.settings.diagnosticsExported);
+			} else if (!r.ok) {
+				notifyError(r.error ?? "export failed");
+			}
+		} catch (e) {
+			notifyError(String(e));
+		} finally {
+			setExportingDiag(false);
+		}
+	}, [notify, notifyError, t]);
 
 	// ---- custom providers (models.json CRUD) ----
 	const [customProviders, setCustomProviders] = useState<CustomProviderEntry[]>(
@@ -1570,6 +1726,15 @@ export function SettingsPanel({
 							{sessionDir}
 						</button>
 					</Row>
+					<Row label={t.settings.diagnostics} hint={t.settings.diagnosticsHint}>
+						<button
+							className="btn secondary"
+							disabled={exportingDiag}
+							onClick={() => void handleExportDiagnostics()}
+						>
+							{t.settings.exportDiagnostics}
+						</button>
+					</Row>
 					</section>
 					)}
 
@@ -1583,23 +1748,15 @@ export function SettingsPanel({
 					{page === "archived" && (
 					<section className="settings-section">
 						<div className="settings-section-title-row">
-							<h3>{t.sidebar.archived}</h3>
+							<h3>{t.settings.archivedTitle}</h3>
 						{archived.length > 0 && (
 							<div className="settings-section-actions">
-								{selectedArchived.size > 0 && (
-									<button
-										className="link-btn"
-										onClick={() => {
-												const paths = [...selectedArchived];
-												setSelectedArchived(new Set());
-												paths.forEach((p) => onRestore(p));
-											}}
-									>
-										{t.settings.restoreSelected} ({selectedArchived.size})
-									</button>
-								)}
-								<button className="link-btn" onClick={onRestoreAll}>
-									{t.settings.restoreAll}
+								<button
+									className="btn danger archived-delete-all"
+									onClick={onPurgeAll}
+								>
+									<TrashIcon size={13} />
+									{t.settings.deleteAllArchived}
 								</button>
 							</div>
 						)}
@@ -1607,68 +1764,162 @@ export function SettingsPanel({
 					{archived.length === 0 ? (
 						<div className="settings-empty">{t.settings.emptyArchived}</div>
 					) : (
-						<ul className="archived-list">
-							{archived.map((a) => (
-								<li
-									key={a.path}
-									className={
-										selectedArchived.has(a.path) ? "archived-row selected" : "archived-row"
+						<>
+							<div className="archived-toolbar">
+								<div className="archived-search">
+									<SearchIcon size={14} />
+									<input
+										value={archivedQuery}
+										onChange={(e) => setArchivedQuery(e.target.value)}
+										placeholder={t.settings.searchArchived}
+									/>
+								</div>
+								<FilterSelect
+									value={archivedSort}
+									options={[
+										{ value: "newest", label: t.settings.sortNewest },
+										{ value: "oldest", label: t.settings.sortOldest },
+									]}
+									onChange={(v) =>
+										setArchivedSort(v as "newest" | "oldest")
 									}
-								>
-									<label className="archived-check">
-										<input
-											type="checkbox"
-											checked={selectedArchived.has(a.path)}
-											onChange={(e) =>
-												setSelectedArchived((prev) => {
-													const next = new Set(prev);
-													if (e.target.checked) next.add(a.path);
-													else next.delete(a.path);
-													return next;
-												})
-											}
-										/>
-										<span className="switch-check" />
-									</label>
-									<div className="archived-info">
-										<span className="archived-title">{a.title}</span>
-										<span className="archived-path" title={a.path}>
-											{a.project ?? a.originalPath}
-										</span>
+								/>
+								<FilterSelect
+									icon={<FolderIcon size={13} />}
+									value={archivedProject}
+									options={[
+										{ value: "all", label: t.settings.allProjects },
+										...archivedProjects.map((p) => ({
+											value: p,
+											label:
+												p === ""
+													? t.settings.noProject
+													: projectNameFromPath(p),
+										})),
+									]}
+									onChange={setArchivedProject}
+								/>
+							</div>
+							{archivedFiltered.length === 0 ? (
+								<div className="settings-empty">
+									{t.settings.emptyArchived}
+								</div>
+							) : (
+								[...archivedGroups].map(([project, list]) => (
+									<div
+										className="archived-group"
+										key={project || "__none__"}
+									>
+										<div className="archived-group-header">
+											<FolderIcon size={14} />
+											<span className="archived-group-name">
+												{project === ""
+													? t.settings.noProject
+													: projectNameFromPath(project)}
+											</span>
+											<span className="archived-group-count">
+												{t.settings.chatsCount.replace(
+													"{count}",
+													String(list.length),
+												)}
+											</span>
+											<div
+												className="archived-group-menu"
+												ref={
+													archivedMenu === project
+														? archivedMenuRef
+														: undefined
+												}
+											>
+												<button
+													className="icon-btn"
+													title={t.settings.deleteProjectArchived}
+													onClick={() =>
+														setArchivedMenu(
+															archivedMenu === project
+																? null
+																: project,
+														)
+													}
+												>
+													<MoreIcon size={14} />
+												</button>
+												{archivedMenu === project && (
+													<div className="archived-group-dropdown">
+														<button
+															className="archived-group-dropdown-item danger"
+															onClick={() => {
+																setArchivedMenu(null);
+																onPurgeProject(
+																	project === "" ? null : project,
+																);
+															}}
+														>
+															<TrashIcon size={13} />
+															{t.settings.deleteProjectArchived}
+														</button>
+													</div>
+												)}
+											</div>
+										</div>
+										<ul className="archived-list">
+											{list.map((a) => (
+												<li key={a.path} className="archived-row">
+													<div className="archived-info">
+														<button
+															className="archived-title"
+															title={a.title}
+															onClick={() =>
+																onViewArchived(a.path, a.title)
+															}
+														>
+															{a.title}
+														</button>
+														<span className="archived-path">
+															{formatArchivedDate(
+																a.mtimeMs,
+																settings.language,
+															)}
+														</span>
+													</div>
+													<div className="archived-actions">
+														<button
+															className="icon-btn"
+															title={t.sidebar.view}
+															onClick={() =>
+																onViewArchived(a.path, a.title)
+															}
+														>
+															<EyeIcon size={14} />
+														</button>
+														<button
+															className="icon-btn"
+															title={t.chat.compactImages}
+															onClick={() => onCompactArchived(a.path)}
+														>
+															<BoltIcon size={14} />
+														</button>
+														<button
+															className="icon-btn danger"
+															title={t.settings.deletePermanently}
+															onClick={() => onPurge(a.path)}
+														>
+															<TrashIcon size={14} />
+														</button>
+														<button
+															className="archived-unarchive"
+															onClick={() => onRestore(a.path)}
+														>
+															{t.settings.unarchive}
+														</button>
+													</div>
+												</li>
+											))}
+										</ul>
 									</div>
-									<div className="archived-actions">
-										<button
-											className="icon-btn"
-											title={t.sidebar.view}
-											onClick={() => onViewArchived(a.path, a.title)}
-										>
-											<EyeIcon size={14} />
-										</button>
-										<button
-											className="icon-btn"
-											title={t.chat.compactImages}
-											onClick={() => onCompactArchived(a.path)}
-										>
-											<BoltIcon size={14} />
-										</button>
-										<button
-											className="icon-btn"
-											title={t.sidebar.restore}
-											onClick={() => onRestore(a.path)}
-										>
-											<RestoreIcon size={14} />
-										</button>
-										<button
-											className="icon-btn danger"
-											title={t.settings.deletePermanently}
-											onClick={() => onPurge(a.path)}
-										>
-											<TrashIcon size={14} />
-										</button>
-									</div>
-								</li>
-							))}
-						</ul>
+								))
+							)}
+						</>
 					)}
 					</section>
 					)}

@@ -61,3 +61,34 @@ pub fn log_info(app: &AppHandle, message: &str) {
 pub fn log_error(app: &AppHandle, message: &str) {
 	log(app, "error", message);
 }
+
+/// Build a plain-text diagnostics bundle for the "导出诊断日志" settings
+/// action: a small environment header followed by the current log and the
+/// rotated previous log (when present), so a crash/freeze report is a single
+/// file the user can hand to developers.
+pub fn collect_bundle(app: &AppHandle) -> String {
+	let info = app.package_info();
+	let path = log_path(app);
+	let mut out = String::new();
+	out.push_str(&format!("app: {} {}\n", info.name, info.version));
+	out.push_str(&format!(
+		"os: {} {}\n",
+		std::env::consts::OS,
+		std::env::consts::ARCH
+	));
+	out.push_str(&format!("log path: {}\n", path.display()));
+	out.push_str("\n==== tau.log ====\n");
+	match fs::read_to_string(&path) {
+		Ok(s) => out.push_str(&s),
+		Err(e) => out.push_str(&format!("<unreadable: {e}>\n")),
+	}
+	let backup = path.with_extension("log.1");
+	if backup.exists() {
+		out.push_str("\n==== tau.log.1 (rotated) ====\n");
+		match fs::read_to_string(&backup) {
+			Ok(s) => out.push_str(&s),
+			Err(e) => out.push_str(&format!("<unreadable: {e}>\n")),
+		}
+	}
+	out
+}

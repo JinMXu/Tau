@@ -46,7 +46,7 @@ import {
 	type PiSessionInfo,
 	type SubagentRun,
 } from "./pi";
-import { getMessages } from "./i18n";
+import { getMessages, projectNameFromPath } from "./i18n";
 import { loadSettings, resolveTheme, saveSettings, type AppSettings } from "./settings";
 import type {
 	Attachment,
@@ -2458,16 +2458,54 @@ export default function App() {
 		[sessions, t, disconnect, refreshSessions, toast, workspace, connect],
 	);
 
-	const handleRestoreAll = useCallback(async () => {
-		for (const a of archived) {
-			try {
-				await restoreSession(a.path);
-			} catch {
-				/* continue */
-			}
-		}
-		await refreshSessions();
-	}, [archived, refreshSessions]);
+	const handlePurgeAll = useCallback(() => {
+		if (archived.length === 0) return;
+		setConfirmState({
+			title: t.confirm.purgeAllTitle,
+			body: t.confirm.purgeAllBody.replace("{count}", String(archived.length)),
+			confirmLabel: t.settings.deleteAllArchived,
+			onConfirm: async () => {
+				for (const a of archived) {
+					try {
+						await purgeSession(a.path);
+					} catch {
+						/* continue */
+					}
+				}
+				await refreshSessions();
+				toast(t.app.delete);
+			},
+		});
+	}, [archived, refreshSessions, toast, t]);
+
+	const handlePurgeProject = useCallback(
+		(project: string | null) => {
+			const targets = archived.filter((a) => a.project === project);
+			if (targets.length === 0) return;
+			const name = project
+				? projectNameFromPath(project)
+				: t.settings.noProject;
+			setConfirmState({
+				title: t.confirm.purgeProjectTitle,
+				body: t.confirm.purgeProjectBody
+					.replace("{project}", name)
+					.replace("{count}", String(targets.length)),
+				confirmLabel: t.app.delete,
+				onConfirm: async () => {
+					for (const a of targets) {
+						try {
+							await purgeSession(a.path);
+						} catch {
+							/* continue */
+						}
+					}
+					await refreshSessions();
+					toast(t.app.delete);
+				},
+			});
+		},
+		[archived, refreshSessions, toast, t],
+	);
 
 	const handleMoveSession = useCallback(
 		async (path: string) => {
@@ -3159,7 +3197,8 @@ export default function App() {
 						archived={archived}
 						onRestore={handleRestore}
 						onPurge={handlePurge}
-						onRestoreAll={handleRestoreAll}
+						onPurgeAll={handlePurgeAll}
+						onPurgeProject={handlePurgeProject}
 						onViewArchived={openArchivedPreview}
 						onCompactArchived={handleCompactArchived}
 						onClose={() => setSettingsOpen(false)}

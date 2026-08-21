@@ -220,6 +220,15 @@ export async function exportHtml(
 	return invoke("pi_export_html", { sessionPath });
 }
 
+export async function exportDiagnostics(): Promise<{
+	ok: boolean;
+	canceled?: boolean;
+	error?: string;
+	path?: string;
+}> {
+	return invoke("export_diagnostics");
+}
+
 export async function stop(): Promise<void> {
 	await invoke("pi_stop");
 }
