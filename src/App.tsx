@@ -125,6 +125,19 @@ const RESPONSE_TIMEOUTS: Record<string, number> = {
 	set_auto_retry: 15000,
 };
 
+/**
+ * Compare two session-path spellings. On Windows, pi's RPC `sessionFile` and
+ * the backend scan can disagree about drive-letter case or path separators;
+ * a strict `===` would silently never match and block the new-session
+ * promotion, so compare case- and separator-insensitively there. Other
+ * platforms compare strictly.
+ */
+function sameSessionPath(a: string, b: string): boolean {
+	if (a === b) return true;
+	if (!isWin) return false;
+	return a.replace(/\//g, "\\").toLowerCase() === b.replace(/\//g, "\\").toLowerCase();
+}
+
 function loadExpanded(): Set<string> {
 	try {
 		const raw = localStorage.getItem(STORAGE_KEYS.expanded);
@@ -730,15 +743,23 @@ export default function App() {
 				} catch {
 					/* pi may still be starting; keep polling */
 				}
-				// Only touch the refs/selection when the path actually changes
-				// (the loop also runs while the user may have switched sessions).
-				if (file && sessionPathRef.current !== file) {
-					sessionPathRef.current = file;
-					setSelectedSessionPath(file);
-					localStorage.setItem(STORAGE_KEYS.lastSession, file);
-				}
+				if (!file) continue;
 				const list = await refreshSessions();
-				if (file && list.some((s) => s.path === file)) {
+				// Promote only once the scan actually lists the file, and swap
+				// the selection + drop the placeholder in ONE batched update.
+				// Updating the selection first used to open a window where
+				// neither the pending row nor the real row matched workingPath,
+				// so the running spinner blinked off — and stayed off for the
+				// whole first run when the strict match kept failing (Windows
+				// path spellings differ between pi's RPC and the scan).
+				if (list.some((s) => sameSessionPath(s.path, file))) {
+					// Only touch the refs/selection when the path actually changes
+					// (the loop also runs while the user may have switched sessions).
+					if (sessionPathRef.current !== file) {
+						sessionPathRef.current = file;
+						setSelectedSessionPath(file);
+						localStorage.setItem(STORAGE_KEYS.lastSession, file);
+					}
 					setPendingSession(null);
 					return;
 				}
@@ -776,13 +797,29 @@ export default function App() {
 						tokensPerSec,
 					};
 				}
-				setStats(newStats);
+				// Mid-run polls (withPerf=false) must not wipe the perf block
+				// computed at the last settle — carry it over so the tooltip's
+				// cache-hit/TTFT/t/s rows stay visible while a run is in flight.
+				setStats((prev) =>
+					!withPerf && prev?.perf ? { ...newStats, perf: prev.perf } : newStats,
+				);
 			} catch {
 				/* older pi or no session */
 			}
 		},
 		[handleResponse],
 	);
+
+	// Live context ring: poll session stats while a run is in flight so the
+	// composer's context-usage ring advances as each message completes
+	// instead of jumping only when the turn settles. pi aggregates stats
+	// from in-memory entries, so mid-run reads are cheap and responsive.
+	useEffect(() => {
+		if (!connected || (!working && !streaming)) return;
+		void refreshStats(false);
+		const id = window.setInterval(() => void refreshStats(false), 1500);
+		return () => window.clearInterval(id);
+	}, [connected, working, streaming, refreshStats]);
 
 	// Serialize attachments into pi's ImageContent format.
 	const attachmentsToImages = useCallback((attachments: Attachment[]) => {
@@ -1508,6 +1545,14 @@ export default function App() {
 					// usable immediately instead of waiting on a big file read.
 					setMessages([]);
 					setConnected(true);
+					// Context ring: refresh for the session being opened right
+					// away. The init effect only reruns when `connected` flips —
+					// i.e. never when switching sessions while already connected —
+					// and its own stats fetch trails the slow provider probe, so
+					// without this the ring would show the previous session's
+					// numbers (or nothing on first entry) until a run settles.
+					setStats(null);
+					void refreshStats(false);
 					autoConnectStateRef.current.failures = 0;
 					if (effectiveSession) {
 						await loadHistory(effectiveSession).catch(() => {
@@ -1541,6 +1586,7 @@ export default function App() {
 		[
 			workspace,
 			loadHistory,
+			refreshStats,
 			settings.systemPrompt,
 			settings.appendSystemPrompt,
 			settings.customTools,
