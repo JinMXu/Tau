@@ -247,6 +247,57 @@ fn resolve_in_path(bin: &str) -> Option<PathBuf> {
 	None
 }
 
+/// Hard deadline for one `--version` probe. First launches after an install
+/// run these while antivirus is still scanning node.exe and its module tree;
+/// a hung candidate (broken shim, AV sandboxing, dead network PATH entry)
+/// must fail the probe instead of stalling the caller forever.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Like `Command::output()`, but gives up after `PROBE_TIMEOUT`: the pipes
+/// are drained on background threads (a chatty child must not deadlock on a
+/// full pipe buffer while we poll), the exit status is polled via
+/// `try_wait`, and a child that misses the deadline is killed. Returns
+/// `None` when the child cannot be spawned or misses the deadline — both
+/// mean "candidate unusable".
+fn probe_output(cmd: &mut Command) -> Option<std::process::Output> {
+	let mut child = cmd
+		.stdin(Stdio::null())
+		.stdout(Stdio::piped())
+		.stderr(Stdio::piped())
+		.spawn()
+		.ok()?;
+	fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> thread::JoinHandle<Vec<u8>> {
+		thread::spawn(move || {
+			let mut buf = Vec::new();
+			if let Some(mut pipe) = pipe {
+				let _ = pipe.read_to_end(&mut buf);
+			}
+			buf
+		})
+	}
+	let stdout = drain(child.stdout.take());
+	let stderr = drain(child.stderr.take());
+	let deadline = Instant::now() + PROBE_TIMEOUT;
+	loop {
+		match child.try_wait() {
+			Ok(Some(status)) => {
+				return Some(std::process::Output {
+					status,
+					stdout: stdout.join().unwrap_or_default(),
+					stderr: stderr.join().unwrap_or_default(),
+				});
+			}
+			Ok(None) if Instant::now() >= deadline => {
+				let _ = child.kill();
+				let _ = child.wait();
+				return None;
+			}
+			Ok(None) => thread::sleep(Duration::from_millis(25)),
+			Err(_) => return None,
+		}
+	}
+}
+
 /// Probe one pi candidate and figure out how to launch it safely.
 fn probe_candidate(bin: &str) -> Option<PiBinaryInfo> {
 	let (mut cmd, direct) =
@@ -335,7 +386,7 @@ fn probe_candidate(bin: &str) -> Option<PiBinaryInfo> {
 				_ => (Command::new(bin), None),
 			}
 		};
-	let out = no_console_window(&mut cmd).arg("--version").output().ok()?;
+	let out = probe_output(no_console_window(&mut cmd).arg("--version"))?;
 	if !out.status.success() {
 		return None;
 	}
@@ -1458,18 +1509,65 @@ fn read_session_messages(path: &Path) -> Vec<PiParsedMessage> {
 }
 
 #[tauri::command]
-fn pi_binary() -> Result<PiBinaryInfo, String> {
-	probe_pi().ok_or_else(|| {
-		"pi binary not found. Install pi via npm (https://github.com/earendil-works/pi) or set PI_BIN to the pi executable or its cli.js entrypoint.".into()
+async fn pi_binary() -> Result<PiBinaryInfo, String> {
+	// The first probe of a session can spawn several `--version` candidates,
+	// each possibly taking seconds on a cold first launch (antivirus scanning
+	// node.exe, stale PATH entries). Sync Tauri commands run on the main
+	// thread — probing there froze every window into "(Not Responding)" — so
+	// run it on the blocking pool instead.
+	run_blocking(|| {
+		probe_pi().ok_or_else(|| {
+			"pi binary not found. Install pi via npm (https://github.com/earendil-works/pi) or set PI_BIN to the pi executable or its cli.js entrypoint.".into()
+		})
 	})
+	.await
 }
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri command payload maps 1:1 to args
-fn pi_start(
+async fn pi_start(
 	window: WebviewWindow,
 	state: State<'_, PiState>,
 	workspace: String,
+	session_file: Option<String>,
+	fork_of: Option<String>,
+	session_name: Option<String>,
+	system_prompt: Option<String>,
+	tools: Option<Vec<String>>,
+	models: Option<String>,
+	excluded_tools: Option<Vec<String>>,
+	append_system_prompt: Option<String>,
+) -> Result<(), String> {
+	// Probe + spawn (and killing any replaced process) can block for seconds
+	// on a cold first launch (antivirus scanning node.exe, slow PATH
+	// entries). Sync Tauri commands run on the main thread, which would
+	// freeze every window into "(Not Responding)" — run the whole sequence
+	// on the blocking pool instead.
+	let inner = state.inner.clone();
+	run_blocking(move || {
+		pi_start_inner(
+			&window,
+			&inner,
+			&workspace,
+			session_file,
+			fork_of,
+			session_name,
+			system_prompt,
+			tools,
+			models,
+			excluded_tools,
+			append_system_prompt,
+		)
+	})
+	.await
+}
+
+/// Sync body of `pi_start`, executed on the blocking thread pool.
+#[allow(clippy::too_many_arguments)]
+fn pi_start_inner(
+	window: &WebviewWindow,
+	inner: &Arc<Mutex<HashMap<String, PiProcess>>>,
+	workspace: &str,
 	session_file: Option<String>,
 	fork_of: Option<String>,
 	session_name: Option<String>,
@@ -1486,7 +1584,7 @@ fn pi_start(
 	// the lock is released (kill() waits for the child to exit, which would
 	// otherwise block every other window's RPC commands).
 	let old: Option<PiProcess> = {
-		let mut map = lock_state(&state.inner);
+		let mut map = lock_state(inner);
 		// One pi process per session file: reject a second window opening the
 		// same JSONL (concurrent appends would corrupt it). Compare canonicalized
 		// paths so alternate spellings (symlinks, `..`, Windows `\\?\` prefixes)
@@ -1530,11 +1628,11 @@ fn pi_start(
 				.unwrap_or_else(|| "default".into()),
 		),
 	);
-	let mut map = lock_state(&state.inner);
+	let mut map = lock_state(inner);
 	let entry = map.entry(label.clone()).or_default();
 	entry.spawn(
 		&info,
-		&workspace,
+		workspace,
 		session_file.as_deref(),
 		fork_of.as_deref(),
 		session_name.as_deref(),
@@ -1543,9 +1641,9 @@ fn pi_start(
 		tools.as_deref(),
 		excluded_tools.as_deref(),
 		models.as_deref(),
-		state.inner.clone(),
+		inner.clone(),
 		label,
-		&window,
+		window,
 	)
 }
 
