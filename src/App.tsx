@@ -1363,6 +1363,29 @@ export default function App() {
 		};
 	}, [handleEvent, refreshSessions, pushStderr, toast]);
 
+	// The startup probe above runs while a fresh install's antivirus scan can
+	// still make `node --version` take tens of seconds — every probe candidate
+	// times out and binaryInfo() reports "pi binary not found" even though pi
+	// is installed. Keep retrying while the error is shown (the backend cache
+	// re-probes after its own backoff) so the banner clears itself once the
+	// scan settles instead of sticking until an app restart.
+	useEffect(() => {
+		if (binError === null) {
+			return;
+		}
+		const id = setInterval(() => {
+			binaryInfo()
+				.then((info) => {
+					setBinary(info);
+					setBinError(null);
+				})
+				.catch(() => {
+					/* keep the original error text; retry on the next tick */
+				});
+		}, 10000);
+		return () => clearInterval(id);
+	}, [binError]);
+
 	// ---- live subagent runs ----
 	// Poll the pi-subagents extension's on-disk run status while the session
 	// has activity (working, or a run seen recently). Idle sessions cost

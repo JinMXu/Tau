@@ -1509,18 +1509,24 @@ fn read_session_messages(path: &Path) -> Vec<PiParsedMessage> {
 }
 
 #[tauri::command]
-async fn pi_binary() -> Result<PiBinaryInfo, String> {
+async fn pi_binary(app: AppHandle) -> Result<PiBinaryInfo, String> {
 	// The first probe of a session can spawn several `--version` candidates,
 	// each possibly taking seconds on a cold first launch (antivirus scanning
 	// node.exe, stale PATH entries). Sync Tauri commands run on the main
 	// thread — probing there froze every window into "(Not Responding)" — so
 	// run it on the blocking pool instead.
-	run_blocking(|| {
+	let result = run_blocking(|| {
 		probe_pi().ok_or_else(|| {
 			"pi binary not found. Install pi via npm (https://github.com/earendil-works/pi) or set PI_BIN to the pi executable or its cli.js entrypoint.".into()
 		})
 	})
-	.await
+	.await;
+	// Probe failures are otherwise invisible (the frontend only shows a
+	// banner), which made cold-launch antivirus timeouts undebuggable.
+	if result.is_err() {
+		crate::runtime_log::log_error(&app, "pi probe failed: binary not found");
+	}
+	result
 }
 
 #[tauri::command]
