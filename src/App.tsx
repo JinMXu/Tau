@@ -1875,17 +1875,25 @@ export default function App() {
 	}, [connected, handleResponse]);
 
 	// ---- actions ----
-	const changeModel = useCallback(async (value: string) => {
-		const slash = value.indexOf("/");
-		const provider = value.slice(0, slash);
-		const modelId = value.slice(slash + 1);
-		setModel(value);
-		try {
-			await send({ type: "set_model", provider, modelId });
-		} catch (e) {
-			setError(String(e));
-		}
-	}, []);
+	const changeModel = useCallback(
+		async (value: string) => {
+			const slash = value.indexOf("/");
+			const provider = value.slice(0, slash);
+			const modelId = value.slice(slash + 1);
+			setModel(value);
+			try {
+				// Wait for the switch to settle before refetching stats: pi can
+				// answer a get_session_stats sent after set_model BEFORE the new
+				// model is applied, which would leave the context ring showing
+				// the old model's window.
+				await handleResponse({ type: "set_model", provider, modelId });
+				void refreshStats(false);
+			} catch (e) {
+				setError(String(e));
+			}
+		},
+		[handleResponse, refreshStats],
+	);
 
 	const changeThinkingLevel = useCallback(async (level: string) => {
 		setThinkingLevel(level);
@@ -1906,11 +1914,14 @@ export default function App() {
 			const data = r.data as { model?: ModelEntry | null } | undefined;
 			if (data?.model) {
 				setModel(`${data.model.provider}/${data.model.id}`);
+				// cycle_model already resolved, so the new model is applied —
+				// safe to refetch the context window right away.
+				void refreshStats(false);
 			}
 		} catch (e) {
 			setError(String(e));
 		}
-	}, [connected, handleResponse]);
+	}, [connected, handleResponse, refreshStats]);
 
 	// Cycle to the next thinking level (TUI Shift+Tab).
 	const cycleThinkingLevel = useCallback(async () => {
