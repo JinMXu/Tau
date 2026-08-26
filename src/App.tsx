@@ -810,16 +810,36 @@ export default function App() {
 		[handleResponse],
 	);
 
+	// Renderer visibility (mirrors main.tsx's visibilitychange diagnostics).
+	// Chromium marks a minimized / fully-occluded WebView2 page hidden, which
+	// on Windows happens as soon as the window goes behind others.
+	const [pageVisible, setPageVisible] = useState(
+		() => document.visibilityState !== "hidden",
+	);
+	useEffect(() => {
+		const onVis = () => setPageVisible(document.visibilityState !== "hidden");
+		document.addEventListener("visibilitychange", onVis);
+		return () => document.removeEventListener("visibilitychange", onVis);
+	}, []);
+
 	// Live context ring: poll session stats while a run is in flight so the
 	// composer's context-usage ring advances as each message completes
 	// instead of jumping only when the turn settles. pi aggregates stats
 	// from in-memory entries, so mid-run reads are cheap and responsive.
+	// Paused while the window is hidden: WebView2 keeps page timers running
+	// under occlusion, so a backgrounded long-running turn would otherwise
+	// fire 1.5s RPCs for hours. Re-showing re-arms instantly with one fresh
+	// read, so the context ring is up to date the moment the user looks.
 	useEffect(() => {
-		if (!connected || (!working && !streaming)) return;
+		if (!connected || !pageVisible || (!working && !streaming)) return;
 		void refreshStats(false);
-		const id = window.setInterval(() => void refreshStats(false), 1500);
+		const id = window.setInterval(() => {
+			// Skip a tick racing the hide transition (state flip not yet applied).
+			if (document.hidden) return;
+			void refreshStats(false);
+		}, 1500);
 		return () => window.clearInterval(id);
-	}, [connected, working, streaming, refreshStats]);
+	}, [connected, pageVisible, working, streaming, refreshStats]);
 
 	// Serialize attachments into pi's ImageContent format.
 	const attachmentsToImages = useCallback((attachments: Attachment[]) => {
