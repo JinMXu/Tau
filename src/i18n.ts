@@ -39,6 +39,7 @@ export const messages = {
 		sidebar: {
 			projects: "项目",
 			newTask: "新任务",
+			newTaskInProject: "在该项目新建任务",
 			collapse: "收起侧边栏",
 			expand: "展开侧边栏",
 			back: "后退",
@@ -629,6 +630,7 @@ export const messages = {
 		sidebar: {
 			projects: "Projects",
 			newTask: "New task",
+			newTaskInProject: "New task in this project",
 			collapse: "Collapse sidebar",
 			expand: "Expand sidebar",
 			back: "Back",

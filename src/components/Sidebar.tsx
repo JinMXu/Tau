@@ -58,6 +58,7 @@ export const Sidebar = memo(function Sidebar({
 	onTogglePin,
 	onArchiveSession,
 	onNewTask,
+	onNewTaskInProject,
 	onOpenWorkspace,
 	onOpenSettings,
 	onOpenSearch,
@@ -86,6 +87,7 @@ export const Sidebar = memo(function Sidebar({
 	onTogglePin: (path: string) => void;
 	onArchiveSession: (path: string) => void;
 	onNewTask: () => void;
+	onNewTaskInProject: (project: string) => void;
 	onOpenWorkspace: () => void;
 	onOpenSettings: () => void;
 	onOpenSearch: () => void;
@@ -246,6 +248,14 @@ export const Sidebar = memo(function Sidebar({
 							</button>
 							{project !== defaultKey && (
 								<div className="project-actions">
+									<button
+										className="icon-btn"
+										title={t.sidebar.newTaskInProject}
+										aria-label={t.sidebar.newTaskInProject}
+										onClick={() => onNewTaskInProject(project)}
+									>
+										<PlusIcon size={13} />
+									</button>
 									<button
 										className="icon-btn"
 										title={t.sidebar.showProjectInFolder}

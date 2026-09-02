@@ -1747,6 +1747,27 @@ export default function App() {
 		await connect({ sessionFile: null });
 	}, [connect, disconnect, pendingSession, toast, t]);
 
+	// New task pinned to a specific project dir (sidebar project "+"). Same
+	// fresh-task guard as newTask, but only when we're already on a blank
+	// task in that same workspace.
+	const newTaskInProject = useCallback(
+		(ws: string) => {
+			if (!sessionPathRef.current && !pendingSession && workspace === ws) {
+				toast(t.app.alreadyNewTask);
+				return;
+			}
+			// Expand the group so the pending session row is visible.
+			setExpandedProjects((prev) => new Set(prev).add(ws));
+			setWorkspace(ws);
+			void (async () => {
+				await disconnect();
+				setMessages([]);
+				await connect({ sessionFile: null, workspace: ws });
+			})();
+		},
+		[connect, disconnect, pendingSession, workspace, toast, t],
+	);
+
 	const openSession = useCallback(
 		async (session: PiSessionInfo) => {
 			pushNav(session.path);
@@ -3165,6 +3186,7 @@ export default function App() {
 			onTogglePin={togglePinSession}
 			onArchiveSession={archiveSessionByPath}
 			onNewTask={newTask}
+			onNewTaskInProject={newTaskInProject}
 			onOpenWorkspace={pickWorkspace}
 			onOpenSettings={() => setSettingsOpen(true)}
 			onOpenSearch={() => setSearchOpen(true)}
