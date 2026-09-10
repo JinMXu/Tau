@@ -716,6 +716,17 @@ export const MessageList = memo(function MessageList({
 		return null;
 	}, [messages, streaming]);
 
+	// Submit-gap live chip: shown ONLY while the current turn has produced
+	// no content at all (the last message is still the user's own) — the
+	// first-token wait. Once any assistant/tool content arrives it never
+	// comes back for the rest of the turn: mid-turn pauses (between tool
+	// results and the next message) have their own live signals, and a
+	// permanent chip there read as noise.
+	const gapLive =
+		shownWorking &&
+		messages.length > 0 &&
+		messages[messages.length - 1].role === "user" &&
+		!rows.some((r) => r.kind === "group" && r.entries.some((e) => e.running));
 	// The last assistant message carrying text — the ONLY one that gets
 	// actions (percho showActions = turn-final text id): intermediate
 	// narration between tool bursts renders bare; the turn's final answer
@@ -731,11 +742,6 @@ export const MessageList = memo(function MessageList({
 		return null;
 	}, [messages, streaming]);
 
-	// Submit-gap live chip: between submit and the new turn's first block
-	// nothing else renders, so the MetaGroup-style live header stands in.
-	// It sits BEFORE the trailing turn footer row (never after it).
-	const gapLive =
-		shownWorking && !rows.some((r) => r.kind === "group" && r.entries.some((e) => e.running));
 
 	return (
 		<div ref={scrollRef} className="messages">
