@@ -1,6 +1,6 @@
 import MarkdownRender, { type SmoothMarkdownStreamOptions } from "markstream-react";
 import "markstream-react/index.css";
-import { useRef, type MouseEvent } from "react";
+import { memo, useRef, type MouseEvent } from "react";
 import { useSyncExternalStore } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -81,7 +81,7 @@ function onMarkdownClick(event: MouseEvent<HTMLDivElement>) {
 	}
 }
 
-export function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
+export const Markdown = memo(function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
 	const isDark = useSyncExternalStore(subscribeTheme, getThemeSnapshot) === "dark";
 	// Mount-time lock (percho): enable smoothing only for messages that were
 	// already streaming when mounted — history messages render instantly and
@@ -112,4 +112,4 @@ export function Markdown({ text, streaming }: { text: string; streaming?: boolea
 			/>
 		</div>
 	);
-}
+});

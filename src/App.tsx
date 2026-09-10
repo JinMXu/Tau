@@ -1358,12 +1358,17 @@ export default function App() {
 						message.stopReason === "error" && !isUserAbortError(message.errorMessage ?? "")
 							? buildLlmUiError(message.errorMessage ?? "error", Date.now())
 							: undefined;
-					patchLast((m) => ({
-						...m,
-						blocks,
-						streaming: false,
-						error: errorMsg,
-					}));
+								patchLast((m) => {
+									const next = { ...m, streaming: false, error: errorMsg };
+									// Keep the streamed block objects when the
+									// authoritative content is identical: fresh
+									// identities here re-render every row (and re-run
+									// the markdown final pass) for zero visual change.
+									if (JSON.stringify(m.blocks) !== JSON.stringify(blocks)) {
+										next.blocks = blocks;
+									}
+									return next;
+								});
 				} else if (message?.role === "toolResult") {
 					const text = (message.content ?? [])
 						.filter((item) => item.type === "text")

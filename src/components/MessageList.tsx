@@ -7,6 +7,8 @@ import { ErrorNote } from "./ErrorNote";
 import { splitOnQuery } from "./message-utils";
 import { ToolCard, ThinkingBlock } from "./ToolCard";
 import { MetaGroup, TurnDiffRow } from "./MetaGroup";
+import { ThinkingOrb } from "thinking-orbs";
+import { PreviewTicker } from "./PreviewTicker";
 import {
 	attachToolResults,
 	buildChatRows,
@@ -768,6 +770,22 @@ export const MessageList = memo(function MessageList({
 					/>
 				);
 			})}
+			{/* Submit gap: the agent is working (turn timer ticks) but the new
+			    turn's first assistant block has not arrived yet — nothing else
+			    would render, reading as a multi-second freeze. Show the same
+			    live header MetaGroup uses until a running entry takes over. */}
+			{shownWorking &&
+				!rows.some((r) => r.kind === "group" && r.entries.some((e) => e.running)) && (
+					<div className="meta-group live" aria-hidden="true">
+						<div className="meta-head" style={{ cursor: "default" }}>
+							<ThinkingOrb state="working" size={20} paused={false} />
+							<span className="meta-label">{t.chat.metaThinking}</span>
+							<span className="meta-preview">
+								<PreviewTicker items={[]} reserveSpace />
+							</span>
+						</div>
+					</div>
+				)}
 		</div>
 	);
 });
