@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Block, ChatMessage } from "../chat-types";
 import type { SubagentRun } from "../pi";
 import type { MessageCatalog } from "../i18n";
@@ -443,6 +443,23 @@ const MessageRow = memo(function MessageRow({
 	);
 });
 
+/** Live chip shown in the submit gap: the agent is working but the new
+ * turn's first assistant block has not arrived yet. Same visual as
+ * MetaGroup's live header, so the hand-off is seamless. */
+const GapLiveChip = memo(function GapLiveChip({ t }: { t: MessageCatalog }) {
+	return (
+		<div className="meta-group live" aria-hidden="true">
+			<div className="meta-head" style={{ cursor: "default" }}>
+				<ThinkingOrb state="working" size={20} paused={false} />
+				<span className="meta-label">{t.chat.metaThinking}</span>
+				<span className="meta-preview">
+					<PreviewTicker items={[]} reserveSpace />
+				</span>
+			</div>
+		</div>
+	);
+});
+
 export const MessageList = memo(function MessageList({
 	messages,
 	streaming,
@@ -714,21 +731,31 @@ export const MessageList = memo(function MessageList({
 		return null;
 	}, [messages, streaming]);
 
+	// Submit-gap live chip: between submit and the new turn's first block
+	// nothing else renders, so the MetaGroup-style live header stands in.
+	// It sits BEFORE the trailing turn footer row (never after it).
+	const gapLive =
+		shownWorking && !rows.some((r) => r.kind === "group" && r.entries.some((e) => e.running));
+
 	return (
 		<div ref={scrollRef} className="messages">
-			{rows.map((row) => {
+			{rows.map((row, i) => {
 				if (row.kind === "turn") {
+					const gapChip =
+						gapLive && i === rows.length - 1 ? <GapLiveChip t={t} /> : null;
 					return (
-						<TurnDiffRow
-							key={row.key}
-							changes={row.changes}
-							startedAt={row.startedAt}
-							endedAt={row.endedAt}
-							live={row.live}
-							liveStart={turnStartTime ?? null}
-							onOpenDiff={onOpenDiff}
-							t={t}
-						/>
+						<Fragment key={row.key}>
+							{gapChip}
+							<TurnDiffRow
+								changes={row.changes}
+								startedAt={row.startedAt}
+								endedAt={row.endedAt}
+								live={row.live}
+								liveStart={turnStartTime ?? null}
+								onOpenDiff={onOpenDiff}
+								t={t}
+							/>
+						</Fragment>
 					);
 				}
 				if (row.kind === "group") {
@@ -770,22 +797,10 @@ export const MessageList = memo(function MessageList({
 					/>
 				);
 			})}
-			{/* Submit gap: the agent is working (turn timer ticks) but the new
-			    turn's first assistant block has not arrived yet — nothing else
-			    would render, reading as a multi-second freeze. Show the same
-			    live header MetaGroup uses until a running entry takes over. */}
-			{shownWorking &&
-				!rows.some((r) => r.kind === "group" && r.entries.some((e) => e.running)) && (
-					<div className="meta-group live" aria-hidden="true">
-						<div className="meta-head" style={{ cursor: "default" }}>
-							<ThinkingOrb state="working" size={20} paused={false} />
-							<span className="meta-label">{t.chat.metaThinking}</span>
-							<span className="meta-preview">
-								<PreviewTicker items={[]} reserveSpace />
-							</span>
-						</div>
-					</div>
-				)}
+			{/* Fallback: same chip when the list ends without a turn row. */}
+			{gapLive && (rows.length === 0 || rows[rows.length - 1].kind !== "turn") && (
+				<GapLiveChip t={t} />
+			)}
 		</div>
 	);
 });
