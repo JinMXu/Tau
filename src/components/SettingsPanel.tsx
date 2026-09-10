@@ -1940,15 +1940,31 @@ function SidecarStatus({ t }: { t: MessageCatalog }) {
 
 	useEffect(() => {
 		let live = true;
-		sidecarPing()
-			.then((r) => {
-				if (live) setStatus(`pi ${r.pi} · node ${r.node}`);
-			})
-			.catch(() => {
-				if (live) setStatus(t.settings.sdkSidecarError);
-			});
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let tries = 0;
+		const attempt = () => {
+			tries++;
+			sidecarPing()
+				.then((r) => {
+					if (live) setStatus(`pi ${r.pi} · node ${r.node}`);
+				})
+				.catch(() => {
+					if (!live) return;
+					// First launch after an install can keep the sidecar busy
+					// for minutes (antivirus scanning the vendored runtime);
+					// the Rust side also warms it at startup — retry here.
+					if (tries < 8) {
+						setStatus(t.settings.sdkSidecarWarming);
+						timer = setTimeout(attempt, 8000);
+					} else {
+						setStatus(t.settings.sdkSidecarError);
+					}
+				});
+		};
+		attempt();
 		return () => {
 			live = false;
+			if (timer) clearTimeout(timer);
 		};
 	}, [t]);
 

@@ -210,6 +210,45 @@ fn call(method: &str, params: Value) -> Result<Value, String> {
 	}
 }
 
+/// Background warmup: spawn the sidecar and keep pinging until it answers.
+/// On first launch after an install, antivirus scans the whole vendored
+/// node_modules tree when node first reads it, which can hold the SDK
+/// import for minutes — far past the 30s per-call timeout. Warming at app
+/// startup absorbs that cost before any feature needs the sidecar; later
+/// calls ride the already-imported process and answer instantly.
+pub(crate) fn start_warmup(app: tauri::AppHandle) {
+	std::thread::spawn(move || {
+		let deadline = std::time::Instant::now() + Duration::from_secs(180);
+		let mut attempt = 0u32;
+		loop {
+			attempt += 1;
+			let t0 = std::time::Instant::now();
+			match call("ping", serde_json::json!({})) {
+				Ok(_) => {
+					crate::runtime_log::log_info(
+						&app,
+						&format!(
+							"sidecar warm after {attempt} attempt(s) (last call {}ms)",
+							t0.elapsed().as_millis()
+						),
+					);
+					return;
+				}
+				Err(e) => {
+					if std::time::Instant::now() >= deadline {
+						crate::runtime_log::log_error(&app, &format!("sidecar warmup gave up: {e}"));
+						return;
+					}
+					// The timed-out process stays alive (a call timeout does
+					// not mark the connection dead) and finishes its import
+					// in the background; the next attempt rides it.
+					std::thread::sleep(Duration::from_secs(5));
+				}
+			}
+		}
+	});
+}
+
 /// SDK sidecar liveness/version probe: `pi` (SDK version), `node` runtime,
 /// `agentDir` (~/.pi/agent) — proves the vendored-SDK channel end to end.
 #[tauri::command]

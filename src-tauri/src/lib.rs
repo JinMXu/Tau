@@ -368,6 +368,11 @@ pub fn run() {
 				eprintln!("{msg}");
 				runtime_log::log_error(&handle, &msg);
 			}));
+			// Pre-warm the SDK sidecar in the background: the first launch
+			// after an install pays an antivirus scan of the whole vendored
+			// node_modules tree (minutes), which must not surface as a
+			// timed-out ping when the user opens Settings.
+			sidecar::start_warmup(app.handle().clone());
 			runtime_log::log_info(app.handle(), "app started");
 			let _ = build_menu(app.handle(), "zh");
 			// Heartbeat: a hard-killed process leaves no exit trace; the last
