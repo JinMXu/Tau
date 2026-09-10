@@ -1,6 +1,7 @@
 mod extras;
 mod pi;
 mod runtime_log;
+mod sidecar;
 mod window_state;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};

@@ -33,7 +33,10 @@ import {
 	XIcon,
 } from "../icons";
 import { Composer, type ModelEntry } from "./Composer";
-import { MessageList, SubagentLivePanel, TurnStatus } from "./MessageList";
+import { MessageList, SubagentLivePanel } from "./MessageList";
+import { TodoPanel } from "./TodoPanel";
+import { DiffSidebar, type DiffScope } from "./DiffSidebar";
+import { deriveTurnChanges, extractTodos } from "./chat-rows";
 import { searchMessages } from "./message-utils";
 import { isMac } from "../platform";
 
@@ -118,6 +121,7 @@ export const ChatArea = memo(function ChatArea({
 	session,
 	messages,
 	streaming,
+	textStreaming,
 	working,
 	subagentRuns,
 	connected,
@@ -153,7 +157,6 @@ export const ChatArea = memo(function ChatArea({
 	gitState,
 	onCheckoutBranch,
 	onCreateBranch,
-	onForkFromMessage,
 	stats,
 	workspace,
 	workspaces,
@@ -184,11 +187,19 @@ export const ChatArea = memo(function ChatArea({
 	externalDraft,
 	onExternalDraftConsumed,
 	onCycleThinking,
+	onCopyMessage,
+	onRecallMessage,
+	onForkMessage,
+	onRetryMessage,
+	onCompactSession,
+	openSettings,
 }: {
 	t: MessageCatalog;
 	session: PiSessionInfo | null;
 	messages: ChatMessage[];
 	streaming: boolean;
+	/** Assistant TEXT streaming (see App) — ends the live group instantly. */
+	textStreaming?: boolean;
 	working: boolean;
 	subagentRuns: SubagentRun[];
 	connected: boolean;
@@ -229,7 +240,6 @@ export const ChatArea = memo(function ChatArea({
 	gitState: GitBranchState | null;
 	onCheckoutBranch: (name: string) => void;
 	onCreateBranch: (name: string) => void;
-	onForkFromMessage: (entryId: string) => void;
 	stats: SessionStats | null;
 	workspace: string | null;
 	workspaces: string[];
@@ -260,6 +270,14 @@ export const ChatArea = memo(function ChatArea({
 	externalDraft: string | null;
 	onExternalDraftConsumed: () => void;
 	onCycleThinking: () => void;
+	/** Copy a single message's plain text (separate from copying the whole conversation). */
+	onCopyMessage: (text: string) => void;
+	/** Recall (drop) the last user message and put its text back in the composer. */
+	onRecallMessage: (msg: ChatMessage) => void;
+	onForkMessage: (msg: ChatMessage) => void;
+	onRetryMessage: (msg: ChatMessage) => void;
+	onCompactSession: () => void;
+	openSettings: () => void;
 }) {
 	const [menuOpen, setMenuOpen] = useState(false);
 	const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
@@ -299,6 +317,15 @@ export const ChatArea = memo(function ChatArea({
 			setTurnStartTime(null);
 		}
 	}, [turnActive]);
+
+	// ---- task list + turn changes + diff sidebar (Percho ports) ----
+	// Todos: the latest `todo` tool call in the stream (empty → panel hidden).
+	const todos = useMemo(() => extractTodos(messages), [messages]);
+	// Per-turn file changes: one derivation shared by the turn footer rows
+	// and the diff sidebar.
+	const turnChanges = useMemo(() => deriveTurnChanges(messages), [messages]);
+	const [diffOpen, setDiffOpen] = useState(false);
+	const [diffScope, setDiffScope] = useState<DiffScope>("all");
 
 	// Ctrl+F opens/focuses the search bar; capture-phase Escape closes it
 	// before the global Escape-interrupt handler sees the key.
@@ -667,48 +694,66 @@ export const ChatArea = memo(function ChatArea({
 				</div>
 			)}
 
-			<div className="chat-scroll">
-				<MessageList
-					messages={messages}
-					streaming={streaming}
-					onFork={onForkFromMessage}
+			<div className="chat-main-row">
+				<div className="chat-col">
+					<div className="chat-scroll">
+						<MessageList
+							messages={messages}
+							streaming={streaming}
+							textStreaming={textStreaming}
+							working={working}
+							t={t}
+							searchQuery={searchOpen ? searchQuery : undefined}
+							searchActiveMessageId={activeMessageId}
+							turnStartTime={turnStartTime}
+							turnChanges={turnChanges}
+							onOpenDiff={() => setDiffOpen(true)}
+							onCopyMessage={onCopyMessage}
+							onRecallMessage={onRecallMessage}
+							onForkMessage={onForkMessage}
+							onRetryMessage={onRetryMessage}
+							onCompact={onCompactSession}
+							onOpenSettings={openSettings}
+						/>
+						{subagentRuns.length > 0 && <SubagentLivePanel runs={subagentRuns} t={t} />}
+					</div>
+					<TodoPanel todos={todos} agentActive={working} t={t} />
+					{Object.values(extensionWidgets)
+						.filter((w) => w.placement === "aboveEditor")
+						.map((w, i) => (
+							<div className="ext-widget" key={`above-${i}`}>
+								{w.lines.map((line, j) => (
+									<div className="ext-widget-line" key={j}>
+										{line}
+									</div>
+								))}
+							</div>
+						))}
+
+					{composerEl}
+
+					{Object.values(extensionWidgets)
+						.filter((w) => w.placement === "belowEditor")
+						.map((w, i) => (
+							<div className="ext-widget below" key={`below-${i}`}>
+								{w.lines.map((line, j) => (
+									<div className="ext-widget-line" key={j}>
+										{line}
+									</div>
+								))}
+							</div>
+						))}
+				</div>
+				<DiffSidebar
+					open={diffOpen}
+					turns={turnChanges}
+					scope={diffScope}
+					onScopeChange={setDiffScope}
+					onClose={() => setDiffOpen(false)}
+					branch={gitState?.isRepository ? (gitState.currentBranch ?? null) : null}
 					t={t}
-					searchQuery={searchOpen ? searchQuery : undefined}
-					searchActiveMessageId={activeMessageId}
 				/>
-				{subagentRuns.length > 0 && <SubagentLivePanel runs={subagentRuns} t={t} />}
-				{turnStartTime !== null && (
-					<div className="turn-status-wrap">
-						<TurnStatus startTime={turnStartTime} />
-					</div>
-				)}
 			</div>
-
-			{Object.values(extensionWidgets)
-				.filter((w) => w.placement === "aboveEditor")
-				.map((w, i) => (
-					<div className="ext-widget" key={`above-${i}`}>
-						{w.lines.map((line, j) => (
-							<div className="ext-widget-line" key={j}>
-								{line}
-							</div>
-						))}
-					</div>
-				))}
-
-			{composerEl}
-
-			{Object.values(extensionWidgets)
-				.filter((w) => w.placement === "belowEditor")
-				.map((w, i) => (
-					<div className="ext-widget below" key={`below-${i}`}>
-						{w.lines.map((line, j) => (
-							<div className="ext-widget-line" key={j}>
-								{line}
-							</div>
-						))}
-					</div>
-				))}
 		</main>
 	);
 });

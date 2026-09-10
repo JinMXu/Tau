@@ -35,6 +35,7 @@ import {
 	trustDefaultGet,
 	trustDefaultSet,
 	trustGet,
+	forkSessionAt,
 	trustSet,
 	type AuthProviderStatus,
 	type GitBranchState,
@@ -57,6 +58,7 @@ import type {
 	SendBehavior,
 	SessionStats,
 } from "./chat-types";
+import { buildLlmUiError, isUserAbortError } from "./errors";
 import { Sidebar } from "./components/Sidebar";
 import { ChatArea } from "./components/ChatArea";
 import { TitleBar } from "./components/TitleBar";
@@ -75,7 +77,7 @@ import { LlamaDialog } from "./components/LlamaDialog";
 import type { ModelEntry } from "./components/Composer";
 import "./App.css";
 import { formatBytes } from "./format";
-import { isMac, isWin } from "./platform";
+import { isMac, isWin, sameSessionPath } from "./platform";
 
 let nextId = 1;
 
@@ -126,17 +128,8 @@ const RESPONSE_TIMEOUTS: Record<string, number> = {
 };
 
 /**
- * Compare two session-path spellings. On Windows, pi's RPC `sessionFile` and
- * the backend scan can disagree about drive-letter case or path separators;
- * a strict `===` would silently never match and block the new-session
- * promotion, so compare case- and separator-insensitively there. Other
- * platforms compare strictly.
+ * Session-path comparison moved to platform.ts (shared with the Sidebar).
  */
-function sameSessionPath(a: string, b: string): boolean {
-	if (a === b) return true;
-	if (!isWin) return false;
-	return a.replace(/\//g, "\\").toLowerCase() === b.replace(/\//g, "\\").toLowerCase();
-}
 
 function loadExpanded(): Set<string> {
 	try {
@@ -190,6 +183,11 @@ export default function App() {
 	const [selectedSessionPath, setSelectedSessionPath] = useState<string | null>(null);
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [streaming, setStreaming] = useState(false);
+	// Assistant TEXT streaming (percho streaming.text): true from text_start
+	// until message_end / settle. Distinct from `streaming`, which is already
+	// true during the thinking phase (message_start) — the live group must
+	// keep its "Thinking" state while only thinking deltas are arriving.
+	const [textStreaming, setTextStreaming] = useState(false);
 	const [working, setWorking] = useState(false);
 	// Live pi-subagents runs for the current session (polled while working).
 	const [subagentRuns, setSubagentRuns] = useState<SubagentRun[]>([]);
@@ -377,6 +375,36 @@ export default function App() {
 	// stop clobbering the new selection.
 	const navEpochRef = useRef(0);
 
+	// ---- concurrent session channels ----
+	// Every session runs on its own pi process (a "channel", identified by a
+	// frontend-generated id). The displayed channel streams into the UI;
+	// background channels keep running when the user switches away — their
+	// state-only events (agent start/settle, session info) are still routed,
+	// while transcript events are ignored and rebuilt from the session JSONL
+	// when the user switches back (re-attach).
+	interface ChannelEntry {
+		/** Session JSONL path; null until pi flushes a brand-new session's file. */
+		sessionFile: string | null;
+		workspace: string;
+		working: boolean;
+		queue: QueuedChatMessage[];
+		queuePaused: boolean;
+		pendingExtension: ExtensionRequest | null;
+	}
+	/** Concurrent pi processes allowed per window (working ones are never evicted). */
+	const MAX_CHANNELS = 5;
+	const chanSeqRef = useRef(0);
+	const channelsRef = useRef<Map<string, ChannelEntry>>(new Map());
+	const chanRef = useRef<string | null>(null);
+	// Mirror of chanRef for effects that must re-run when the displayed
+	// channel changes (model list, stats ring, ...).
+	const [activeChan, setActiveChan] = useState<string | null>(null);
+	// Session paths (sidebar spelling) with a run in flight — includes
+	// background channels so the sidebar can spin every running session.
+	const [workingPaths, setWorkingPaths] = useState<string[]>([]);
+	// Which channel owns the extension dialog currently shown.
+	const extensionRequestChanRef = useRef<string | null>(null);
+
 	// ---- perf tracking: TTFT, generation speed, cache hit rate ----
 	const turnStartRef = useRef<number | null>(null);
 	const firstTokenRef = useRef<number | null>(null);
@@ -410,10 +438,15 @@ export default function App() {
 		statsRef.current = stats;
 	}, [stats]);
 
-	// Hot-apply the auto-retry toggle without reconnecting.
+	// Hot-apply the auto-retry toggle without reconnecting (to the displayed
+	// session's channel).
 	useEffect(() => {
 		if (!connected) return;
-		send({ type: "set_auto_retry", enabled: settings.autoRetryOnFailure }).catch(() => {
+		send(
+			{ type: "set_auto_retry", enabled: settings.autoRetryOnFailure },
+			undefined,
+			chanRef.current,
+		).catch(() => {
 			/* older pi */
 		});
 	}, [settings.autoRetryOnFailure, connected]);
@@ -421,19 +454,31 @@ export default function App() {
 	// Hot-apply queue delivery modes + auto-compaction without reconnecting.
 	useEffect(() => {
 		if (!connected) return;
-		send({ type: "set_steering_mode", mode: settings.steeringMode }).catch(() => {
+		send(
+			{ type: "set_steering_mode", mode: settings.steeringMode },
+			undefined,
+			chanRef.current,
+		).catch(() => {
 			/* older pi */
 		});
 	}, [settings.steeringMode, connected]);
 	useEffect(() => {
 		if (!connected) return;
-		send({ type: "set_follow_up_mode", mode: settings.followUpMode }).catch(() => {
+		send(
+			{ type: "set_follow_up_mode", mode: settings.followUpMode },
+			undefined,
+			chanRef.current,
+		).catch(() => {
 			/* older pi */
 		});
 	}, [settings.followUpMode, connected]);
 	useEffect(() => {
 		if (!connected) return;
-		send({ type: "set_auto_compaction", enabled: settings.autoCompaction }).catch(() => {
+		send(
+			{ type: "set_auto_compaction", enabled: settings.autoCompaction },
+			undefined,
+			chanRef.current,
+		).catch(() => {
 			/* older pi */
 		});
 	}, [settings.autoCompaction, connected]);
@@ -682,6 +727,72 @@ export default function App() {
 		void refreshGit(workspace);
 	}, [workspace, refreshGit]);
 
+	// ---- concurrent-channel helpers ----
+	const syncWorkingPaths = useCallback(() => {
+		setWorkingPaths(
+			[...channelsRef.current.values()]
+				.filter((e) => e.working && e.sessionFile)
+				.map((e) => e.sessionFile!),
+		);
+	}, []);
+
+	// Set the working flag for one channel (displayed or background). The
+	// registry entry is the source of truth; the displayed `working` state
+	// mirrors it so the UI keeps a single flag for the visible session.
+	const setChanWorking = useCallback(
+		(c: string | null, v: boolean) => {
+			if (!c) return;
+			const entry = channelsRef.current.get(c);
+			if (entry && entry.working !== v) {
+				entry.working = v;
+				syncWorkingPaths();
+			}
+			if (c === chanRef.current) setWorking(v);
+		},
+		[syncWorkingPaths],
+	);
+
+	// Replace the DISPLAYED channel's queue (registry + UI in one step).
+	// Background queues are mutated directly on their registry entries.
+	const setQueueFor = useCallback((items: QueuedChatMessage[]) => {
+		const c = chanRef.current;
+		const entry = c ? channelsRef.current.get(c) : null;
+		if (entry) entry.queue = items;
+		queuedRef.current = items;
+		setQueuedMessages(items);
+	}, []);
+
+	const setQueuePausedFor = useCallback((v: boolean) => {
+		const c = chanRef.current;
+		const entry = c ? channelsRef.current.get(c) : null;
+		if (entry) entry.queuePaused = v;
+		queuePausedRef.current = v;
+		setQueuePaused(v);
+	}, []);
+
+	// Stop every channel of this window that is idle (not working, no queue,
+	// not displayed) until we are under the concurrency cap. Working sessions
+	// are never touched; if everything is busy the caller gets false and
+	// refuses to start yet another session.
+	const enforceChannelCapacity = useCallback(
+		async (displayedChan: string | null): Promise<boolean> => {
+			for (const [c, entry] of [...channelsRef.current.entries()]) {
+				if (channelsRef.current.size < MAX_CHANNELS) break;
+				if (c === displayedChan || c === chanRef.current) continue;
+				if (entry.working || entry.queue.length > 0) continue;
+				channelsRef.current.delete(c);
+				syncWorkingPaths();
+				try {
+					await stop(c);
+				} catch {
+					/* already gone */
+				}
+			}
+			return channelsRef.current.size < MAX_CHANNELS;
+		},
+		[syncWorkingPaths],
+	);
+
 	// ---- pi event handling ----
 	const patchLast = useCallback((fn: (m: ChatMessage) => ChatMessage) => {
 		setMessages((prev) => {
@@ -696,7 +807,10 @@ export default function App() {
 	}, []);
 
 	const handleResponse = useCallback(
-		async (command: Record<string, unknown>, opts?: { id?: string }): Promise<PiEvent> => {
+		async (
+			command: Record<string, unknown>,
+			opts?: { id?: string; chan?: string },
+		): Promise<PiEvent> => {
 			// A caller-provided id lets `bash` stream events be correlated with
 			// the originating command (bash_execution_update carries the id).
 			const id = opts?.id ?? `gui-${nextId++}`;
@@ -723,20 +837,22 @@ export default function App() {
 		[],
 	);
 
-	// Poll for the on-disk session file of a just-created task so the sidebar
-	// can promote its optimistic placeholder to the real session as soon as pi
-	// flushes the file (usually within a second of the first prompt).
+	// Poll for the on-disk session file of a just-created session on the given
+	// channel so the sidebar can promote its optimistic placeholder to the
+	// real session as soon as pi flushes the file (usually within a second of
+	// the first prompt). Also binds the file to the channel registry so the
+	// session can be re-attached (or shown as working) from anywhere.
 	const discoverNewSession = useCallback(
-		async (navEpoch: number) => {
+		async (c: string, navEpoch: number) => {
 			for (let i = 0; i < 20; i++) {
-				// The user switched sessions / disconnected / started a new task
-				// while we were polling — stop promoting the just-created session
-				// over their new selection.
-				if (navEpochRef.current !== navEpoch) return;
+				const entry = channelsRef.current.get(c);
+				// The channel stopped/exited, or another loop already bound the
+				// file — nothing left to discover.
+				if (!entry || entry.sessionFile) return;
 				await new Promise((r) => setTimeout(r, 350));
 				let file: string | null = null;
 				try {
-					const r = await handleResponse({ type: "get_state" });
+					const r = await handleResponse({ type: "get_state" }, { chan: c });
 					file =
 						((r.data as { sessionFile?: string | null } | undefined)?.sessionFile as
 							string | null | undefined) ?? null;
@@ -753,19 +869,33 @@ export default function App() {
 				// whole first run when the strict match kept failing (Windows
 				// path spellings differ between pi's RPC and the scan).
 				if (list.some((s) => sameSessionPath(s.path, file))) {
-					// Only touch the refs/selection when the path actually changes
-					// (the loop also runs while the user may have switched sessions).
-					if (sessionPathRef.current !== file) {
+					// Bind the file to the channel registry FIRST: this is what
+					// makes the session re-attachable and lets the sidebar show
+					// its spinner even while it runs in the background.
+					const bound = channelsRef.current.get(c);
+					if (bound && !bound.sessionFile) {
+						bound.sessionFile = file;
+						syncWorkingPaths();
+					}
+					// Only touch the selection when this channel is still the one
+					// displayed and the user has not navigated since the poll
+					// started (switching away must never yank the selection back;
+					// background channels still get their file bound above).
+					if (
+						navEpochRef.current === navEpoch &&
+						chanRef.current === c &&
+						sessionPathRef.current !== file
+					) {
 						sessionPathRef.current = file;
 						setSelectedSessionPath(file);
 						localStorage.setItem(STORAGE_KEYS.lastSession, file);
 					}
-					setPendingSession(null);
+					if (chanRef.current === c) setPendingSession(null);
 					return;
 				}
 			}
 		},
-		[handleResponse, refreshSessions],
+		[handleResponse, refreshSessions, syncWorkingPaths],
 	);
 
 	const refreshStats = useCallback(
@@ -800,9 +930,7 @@ export default function App() {
 				// Mid-run polls (withPerf=false) must not wipe the perf block
 				// computed at the last settle — carry it over so the tooltip's
 				// cache-hit/TTFT/t/s rows stay visible while a run is in flight.
-				setStats((prev) =>
-					!withPerf && prev?.perf ? { ...newStats, perf: prev.perf } : newStats,
-				);
+				setStats((prev) => (!withPerf && prev?.perf ? { ...newStats, perf: prev.perf } : newStats));
 			} catch {
 				/* older pi or no session */
 			}
@@ -813,9 +941,7 @@ export default function App() {
 	// Renderer visibility (mirrors main.tsx's visibilitychange diagnostics).
 	// Chromium marks a minimized / fully-occluded WebView2 page hidden, which
 	// on Windows happens as soon as the window goes behind others.
-	const [pageVisible, setPageVisible] = useState(
-		() => document.visibilityState !== "hidden",
-	);
+	const [pageVisible, setPageVisible] = useState(() => document.visibilityState !== "hidden");
 	useEffect(() => {
 		const onVis = () => setPageVisible(document.visibilityState !== "hidden");
 		document.addEventListener("visibilitychange", onVis);
@@ -864,81 +990,104 @@ export default function App() {
 		return fullText;
 	}, []);
 
-	// Send one already-dequeued message: push the optimistic user message,
-	// bump the run epoch, mark working, and dispatch the RPC. On failure the
-	// optimistic message is marked with an error (never left as a silent
-	// ghost). Shared by deliverQueuedNext and queueSendNow.
+	// Send one already-dequeued message: push the optimistic user message
+	// (displayed channel only — a background channel's transcript is rebuilt
+	// from the session file on re-attach), bump the run epoch, mark the
+	// channel working, and dispatch the RPC to that channel's process. On
+	// failure the optimistic message is marked with an error (never left as a
+	// silent ghost). Shared by deliverQueuedNext and queueSendNow.
 	const sendQueuedMessage = useCallback(
-		async (item: QueuedChatMessage, sender: "steer" | "prompt") => {
+		async (item: QueuedChatMessage, sender: "steer" | "prompt", c: string) => {
 			const message = item.text + attachmentsToText(item.attachments);
 			const images = attachmentsToImages(item.attachments);
-			turnStartRef.current = Date.now();
-			firstTokenRef.current = null;
-			msgGenStartRef.current = null;
-			totalGenTimeRef.current = 0;
-			prevOutputTokensRef.current = statsRef.current?.tokens?.output ?? 0;
-			setMessages((prev) => [
-				...prev,
-				{
-					id: nextId++,
-					role: "user",
-					blocks: [{ kind: "text", text: message }],
-					streaming: false,
-				},
-			]);
+			const isCurrent = c === chanRef.current;
+			if (isCurrent) {
+				turnStartRef.current = Date.now();
+				firstTokenRef.current = null;
+				msgGenStartRef.current = null;
+				totalGenTimeRef.current = 0;
+				prevOutputTokensRef.current = statsRef.current?.tokens?.output ?? 0;
+				setMessages((prev) => [
+					...prev,
+					{
+						id: nextId++,
+						role: "user",
+						blocks: [{ kind: "text", text: message }],
+						streaming: false,
+						timestamp: new Date().toISOString(),
+						images: images.map(({ mimeType, data }) => ({ mimeType, data })),
+					},
+				]);
+			}
 			runEpochRef.current += 1;
-			setWorking(true);
+			setChanWorking(c, true);
 			try {
-				await send({ type: sender, message, images });
+				await send({ type: sender, message, images }, undefined, c);
 			} catch (e) {
+				setChanWorking(c, false);
+				if (!isCurrent) return;
 				setError(String(e));
 				setMessages((prev) => {
 					const next = [...prev];
 					for (let i = next.length - 1; i >= 0; i--) {
 						if (next[i].role === "user") {
-							next[i] = { ...next[i], error: String(e) };
+							next[i] = { ...next[i], error: buildLlmUiError(String(e), Date.now()) };
 							break;
 						}
 					}
 					return next;
 				});
-				setWorking(false);
 			}
 		},
-		[attachmentsToImages, attachmentsToText],
+		[attachmentsToImages, attachmentsToText, setChanWorking],
 	);
 
-	// Take the first queued message and send it to pi. `sender` picks the RPC
-	// command: "steer" when the agent is mid-turn (delivered after the current
-	// tool call), "prompt" when it is idle. The queue ref is updated
-	// synchronously so back-to-back delivery triggers can't double-send.
+	// Take the first queued message of one channel and send it to that
+	// channel's pi. `sender` picks the RPC command: "steer" when the agent is
+	// mid-turn (delivered after the current tool call), "prompt" when it is
+	// idle. The entry's queue is updated synchronously so back-to-back
+	// delivery triggers can't double-send. Defaults to the displayed channel.
 	const deliverQueuedNext = useCallback(
-		async (sender: "steer" | "prompt") => {
-			if (queuePausedRef.current) return;
-			const next = queuedRef.current[0];
+		async (sender: "steer" | "prompt", c?: string | null) => {
+			const target = c ?? chanRef.current;
+			if (!target) return;
+			const entry = channelsRef.current.get(target);
+			if (!entry || entry.queuePaused) return;
+			const next = entry.queue[0];
 			if (!next) return;
-			queuedRef.current = queuedRef.current.slice(1);
-			setQueuedMessages(queuedRef.current);
-			if (editingQueueId === next.id) setEditingQueueId(null);
+			entry.queue = entry.queue.slice(1);
+			if (target === chanRef.current) {
+				queuedRef.current = entry.queue;
+				setQueuedMessages(entry.queue);
+				if (editingQueueId === next.id) setEditingQueueId(null);
+			}
 			// Resolve the effective sender BEFORE sendQueuedMessage sets
-			// working=true: workingRef still reflects the pre-delivery state.
-			const effective = sender === "steer" && workingRef.current ? "steer" : "prompt";
-			await sendQueuedMessage(next, effective);
+			// working=true: the entry's working flag still reflects the
+			// pre-delivery state.
+			const effective = sender === "steer" && entry.working ? "steer" : "prompt";
+			await sendQueuedMessage(next, effective, target);
 		},
 		[editingQueueId, sendQueuedMessage],
 	);
 
-	// Queue operations exposed to the composer.
+	// Queue operations exposed to the composer (always on the displayed
+	// channel — the queue UI only ever shows the visible session's queue).
 	const queueSendNow = useCallback(
 		async (id: string) => {
-			const item = queuedRef.current.find((m) => m.id === id);
+			const c = chanRef.current;
+			const entry = c ? channelsRef.current.get(c) : null;
+			if (!c || !entry) return;
+			const item = entry.queue.find((m) => m.id === id);
 			if (!item) return;
-			queuedRef.current = queuedRef.current.filter((m) => m.id !== id);
-			setQueuedMessages(queuedRef.current);
+			entry.queue = entry.queue.filter((m) => m.id !== id);
+			queuedRef.current = entry.queue;
+			setQueuedMessages(entry.queue);
+			entry.queuePaused = false;
+			queuePausedRef.current = false;
 			setQueuePaused(false);
 			setEditingQueueId((cur) => (cur === id ? null : cur));
 			const effective = workingRef.current ? "steer" : "prompt";
-			await sendQueuedMessage(item, effective);
+			await sendQueuedMessage(item, effective, c);
 		},
 		[sendQueuedMessage],
 	);
@@ -947,26 +1096,37 @@ export default function App() {
 		setEditingQueueId((cur) => (cur === id ? null : id));
 	}, []);
 
-	const queueDelete = useCallback((id: string) => {
-		queuedRef.current = queuedRef.current.filter((m) => m.id !== id);
-		setQueuedMessages(queuedRef.current);
-		setEditingQueueId((cur) => (cur === id ? null : cur));
-	}, []);
+	const queueDelete = useCallback(
+		(id: string) => {
+			const next = queuedRef.current.filter((m) => m.id !== id);
+			setQueueFor(next);
+			setEditingQueueId((cur) => (cur === id ? null : cur));
+		},
+		[setQueueFor],
+	);
 
-	const queueReorder = useCallback((activeId: string, overId: string) => {
-		if (activeId === overId) return;
-		const from = queuedRef.current.findIndex((m) => m.id === activeId);
-		const to = queuedRef.current.findIndex((m) => m.id === overId);
-		if (from < 0 || to < 0) return;
-		const next = [...queuedRef.current];
-		const [moved] = next.splice(from, 1);
-		next.splice(to, 0, moved);
-		queuedRef.current = next;
-		setQueuedMessages(next);
-	}, []);
+	const queueReorder = useCallback(
+		(activeId: string, overId: string) => {
+			if (activeId === overId) return;
+			const from = queuedRef.current.findIndex((m) => m.id === activeId);
+			const to = queuedRef.current.findIndex((m) => m.id === overId);
+			if (from < 0 || to < 0) return;
+			const next = [...queuedRef.current];
+			const [moved] = next.splice(from, 1);
+			next.splice(to, 0, moved);
+			setQueueFor(next);
+		},
+		[setQueueFor],
+	);
 
 	const handleEvent = useCallback(
-		(event: PiEvent) => {
+		(event: PiEvent, chan: string) => {
+			// Events are tagged with their session channel. Transcript content
+			// (messages, tool output, extension UI) only applies to the
+			// displayed channel; background channels still get their state-only
+			// events (agent settle, session info) so their spinners and queues
+			// stay accurate while they run unseen.
+			const isCurrent = chan === chanRef.current;
 			if (event.type === "response") {
 				const id = event.id;
 				if (id && pendingRef.current.has(id)) {
@@ -988,18 +1148,25 @@ export default function App() {
 					method === "input" ||
 					method === "editor"
 				) {
-					// A newer request overwrites the dialog; explicitly cancel the
-					// still-pending one so its extension doesn't hang waiting for a
-					// response that will never come.
-					const previous = extensionRequestRef.current;
+					// Extension dialogs are per-channel: a newer request on the
+					// SAME channel overwrites the pending one (explicitly cancel
+					// it so its extension doesn't hang waiting forever); requests
+					// from background channels are parked on their entry and
+					// shown when the user switches back to that session.
+					const entry = channelsRef.current.get(chan) ?? null;
+					const previous = entry?.pendingExtension ?? null;
 					if (previous) {
 						const payload =
 							previous.method === "confirm" ? { confirmed: false } : { cancelled: true };
-						void send({
-							type: "extension_ui_response",
-							id: previous.id,
-							...payload,
-						}).catch(() => {});
+						void send(
+							{
+								type: "extension_ui_response",
+								id: previous.id,
+								...payload,
+							},
+							undefined,
+							chan,
+						).catch(() => {});
 					}
 					const next: ExtensionRequest = {
 						id: String(event.id),
@@ -1010,11 +1177,19 @@ export default function App() {
 						placeholder: event.placeholder as string | undefined,
 						prefill: event.prefill as string | undefined,
 					};
-					extensionRequestRef.current = next;
-					setExtensionRequest(next);
+					if (entry) entry.pendingExtension = next;
+					if (isCurrent) {
+						extensionRequestRef.current = next;
+						extensionRequestChanRef.current = chan;
+						setExtensionRequest(next);
+					} else {
+						toast(tRef.current.app.backgroundAsk);
+					}
 					return;
 				}
-				// Fire-and-forget UI methods.
+				// Fire-and-forget UI methods paint the displayed session's
+				// chrome only.
+				if (!isCurrent) return;
 				if (method === "setStatus") {
 					const key = String(event.statusKey ?? "");
 					// Extension status text often carries ANSI color codes (meant
@@ -1061,6 +1236,8 @@ export default function App() {
 			}
 			if (event.type === "bash_execution_update") {
 				// Stream direct `bash` command output into the open bash card.
+				// Background channels have no open card; skip.
+				if (!isCurrent) return;
 				const id = event.id;
 				const delta = (event.delta as string | undefined) ?? "";
 				if (id && activeBashRef.current?.id === id) {
@@ -1088,7 +1265,10 @@ export default function App() {
 			}
 			if (event.type === "message_start") {
 				// A new message begins: drop any deltas that never flushed
-				// (they belong to the previous message).
+				// (they belong to the previous message). Transcript events from
+				// background channels are dropped — re-attaching rebuilds the
+				// transcript from the session file instead.
+				if (!isCurrent) return;
 				clearPendingDeltas();
 				const message = event.message as { role?: string; id?: string } | undefined;
 				if (message?.role === "assistant") {
@@ -1099,6 +1279,7 @@ export default function App() {
 							role: "assistant",
 							blocks: [],
 							streaming: true,
+							timestamp: new Date().toISOString(),
 						},
 					]);
 					setStreaming(true);
@@ -1110,6 +1291,7 @@ export default function App() {
 							role: "tool",
 							blocks: [],
 							streaming: true,
+							timestamp: new Date().toISOString(),
 						},
 					]);
 				} else if (message?.role === "user") {
@@ -1132,6 +1314,8 @@ export default function App() {
 				return;
 			}
 			if (event.type === "message_end") {
+				if (!isCurrent) return;
+				setTextStreaming(false);
 				// The authoritative block list replaces the streamed one;
 				// discard any deltas still waiting to flush.
 				clearPendingDeltas();
@@ -1171,12 +1355,14 @@ export default function App() {
 						})
 						.filter((b): b is Block => b !== null);
 					const errorMsg =
-						message.stopReason === "error" ? (message.errorMessage ?? "error") : undefined;
+						message.stopReason === "error" && !isUserAbortError(message.errorMessage ?? "")
+							? buildLlmUiError(message.errorMessage ?? "error", Date.now())
+							: undefined;
 					patchLast((m) => ({
 						...m,
 						blocks,
 						streaming: false,
-						error: errorMsg ?? m.error,
+						error: errorMsg,
 					}));
 				} else if (message?.role === "toolResult") {
 					const text = (message.content ?? [])
@@ -1201,10 +1387,12 @@ export default function App() {
 				return;
 			}
 			if (event.type === "message_update") {
+				if (!isCurrent) return;
 				const ame = event.assistantMessageEvent;
 				if (!ame) return;
 				switch (ame.type) {
 					case "text_start":
+						setTextStreaming(true);
 						patchLast((m) => ({
 							...m,
 							blocks: [...m.blocks, { kind: "text", text: "" }],
@@ -1295,33 +1483,50 @@ export default function App() {
 				event.type === "agent_settled" ||
 				event.type === "agent_error"
 			) {
-				clearPendingDeltas();
-				patchLast((m) => ({ ...m, streaming: false }));
-				setStreaming(false);
-				setWorking(false);
-				setPendingSession(null);
-				setAborting(false);
+				// The run on THIS channel settled. For the displayed channel
+				// that means the usual UI reset; for a background channel it
+				// just flips the sidebar spinner off (its transcript will be
+				// rebuilt from the JSONL when the user switches back).
+				setChanWorking(chan, false);
+				setTextStreaming(false);
+				if (isCurrent) {
+					clearPendingDeltas();
+					patchLast((m) => ({ ...m, streaming: false }));
+					setStreaming(false);
+					setWorking(false);
+					setPendingSession(null);
+					setAborting(false);
+					void refreshStats(true);
+				}
 				void refreshSessions();
-				void refreshStats(true);
 				// agent_settled is emitted in a `finally` block after every run
 				// (success, error, abort or compaction) — the only reliable point
-				// where pi is truly idle, so deliver the next queued message.
+				// where pi is truly idle, so deliver the next queued message (if
+				// any) on the channel that just settled.
 				if (event.type === "agent_settled") {
-					void deliverQueuedNext("prompt");
+					void deliverQueuedNext("prompt", chan);
 				}
 				return;
 			}
 			if (event.type === "tool_execution_end") {
 				// Steering messages are delivered between tool calls: if the head
-				// of the queue is a steer message, deliver it now (pi waits until
-				// the current tool call finishes). Follow-ups wait for settle.
-				if (queuedRef.current[0]?.mode === "steer") {
-					void deliverQueuedNext("steer");
+				// of this channel's queue is a steer message, deliver it now (pi
+				// waits until the current tool call finishes). Follow-ups wait
+				// for settle.
+				const entry = channelsRef.current.get(chan);
+				if (entry && !entry.queuePaused && entry.queue[0]?.mode === "steer") {
+					void deliverQueuedNext("steer", chan);
 				}
 				return;
 			}
 			if (event.type === "session_info_changed") {
 				void refreshSessions();
+				// A brand-new session just got its file flushed (or renamed):
+				// bind it to the channel so the session becomes re-attachable.
+				const entry = channelsRef.current.get(chan);
+				if (entry && !entry.sessionFile) {
+					void discoverNewSession(chan, navEpochRef.current);
+				}
 				return;
 			}
 		},
@@ -1333,6 +1538,8 @@ export default function App() {
 			toast,
 			clearPendingDeltas,
 			scheduleDeltaFlush,
+			setChanWorking,
+			discoverNewSession,
 		],
 	);
 
@@ -1340,23 +1547,51 @@ export default function App() {
 		const unlisteners: Promise<() => void>[] = [];
 		(async () => {
 			unlisteners.push(
-				listen<PiEvent>("pi://event", (e) => handleEvent(e.payload)),
-				listen<string>("pi://stderr", (e) => pushStderr(e.payload)),
-				listen<unknown>("pi://exit", () => {
-					setConnected(false);
-					setStreaming(false);
-					setWorking(false);
-					turnStartRef.current = null;
-					firstTokenRef.current = null;
-					msgGenStartRef.current = null;
-					totalGenTimeRef.current = 0;
-					prevOutputTokensRef.current = 0;
-					ttftHistoryRef.current = [];
-					setPendingSession(null);
-					// The backend only emits this on real crashes (deliberate
-					// stops are flagged), so surface it; the auto-connect effect
-					// below will try to resume the session.
-					toast(tRef.current.app.piExited);
+				listen<{ chan?: string; ev?: PiEvent }>("pi://event", (e) => {
+					// The backend wraps every pi event in a { chan, ev } envelope
+					// so concurrent sessions can be routed by channel.
+					const payload = e.payload;
+					if (payload && typeof payload === "object" && payload.chan && payload.ev) {
+						handleEvent(payload.ev, payload.chan);
+					}
+				}),
+				listen<{ chan?: string; line?: string }>("pi://stderr", (e) => {
+					const line = e.payload?.line;
+					if (typeof line === "string") pushStderr(line);
+				}),
+				listen<{ chan?: string }>("pi://exit", (e) => {
+					const c = e.payload?.chan ?? null;
+					const entry = c ? channelsRef.current.get(c) : undefined;
+					if (c) {
+						channelsRef.current.delete(c);
+						syncWorkingPaths();
+					}
+					if (!c || c === chanRef.current) {
+						// The displayed channel (or a legacy untagged exit) died.
+						chanRef.current = null;
+						setActiveChan(null);
+						setConnected(false);
+						setStreaming(false);
+						setTextStreaming(false);
+						setWorking(false);
+						turnStartRef.current = null;
+						firstTokenRef.current = null;
+						msgGenStartRef.current = null;
+						totalGenTimeRef.current = 0;
+						prevOutputTokensRef.current = 0;
+						ttftHistoryRef.current = [];
+						setPendingSession(null);
+						// The backend only emits this on real crashes (deliberate
+						// stops are flagged), so surface it; the auto-connect effect
+						// below will try to resume the session.
+						toast(tRef.current.app.piExited);
+					} else if (entry?.working) {
+						// A background session crashed mid-run: the user is not
+						// looking at it, but they should know it died.
+						toast(tRef.current.app.piExited);
+					}
+					// A background IDLE channel exiting (evicted to stay under the
+					// concurrency cap) exits silently — nothing was lost.
 				}),
 			);
 			try {
@@ -1381,7 +1616,7 @@ export default function App() {
 		return () => {
 			unlisteners.forEach((p) => p.then((fn) => fn()));
 		};
-	}, [handleEvent, refreshSessions, pushStderr, toast]);
+	}, [handleEvent, refreshSessions, pushStderr, toast, syncWorkingPaths]);
 
 	// The startup probe above runs while a fresh install's antivirus scan can
 	// still make `node --version` take tens of seconds — every probe candidate
@@ -1449,9 +1684,12 @@ export default function App() {
 							? "tool"
 							: "assistant";
 				const blocks: Block[] = [];
+				const images: { mimeType: string; data: string }[] = [];
 				let resultText = "";
 				for (const b of p.blocks) {
-					if (b.kind === "tool") {
+					if (b.kind === "image") {
+						if (b.image) images.push(b.image);
+					} else if (b.kind === "tool") {
 						blocks.push({ kind: "tool", name: b.name ?? "tool", args: b.text });
 					} else if (b.kind === "thinking") {
 						blocks.push({ kind: "thinking", text: b.text });
@@ -1484,6 +1722,7 @@ export default function App() {
 					replay: true,
 					timestamp: p.timestamp ?? undefined,
 					entryId: p.entryId ?? null,
+					...(images.length > 0 ? { images } : {}),
 				});
 			}
 			setMessages(items);
@@ -1491,6 +1730,47 @@ export default function App() {
 			setMessages([]);
 		}
 	}, []);
+
+	// Attach the UI to an already-running background channel: rebuild the
+	// transcript from the session file (streamed events were not applied
+	// while the channel was backgrounded) and mirror its live state (queue,
+	// extension dialog, working spinner). No process is touched — this is
+	// what lets a run continue while another session is displayed.
+	const attachChannel = useCallback(
+		async (c: string, entry: ChannelEntry, sessionFile: string) => {
+			navEpochRef.current += 1;
+			chanRef.current = c;
+			setActiveChan(c);
+			sessionPathRef.current = sessionFile;
+			setSelectedSessionPath(sessionFile);
+			setPendingSession(null);
+			localStorage.setItem(STORAGE_KEYS.lastSession, sessionFile);
+			isNewSessionRef.current = false;
+			setWorkspace(entry.workspace);
+			setConnected(true);
+			setError(null);
+			setMessages([]);
+			setStreaming(false);
+			setTextStreaming(false);
+			setAborting(false);
+			setWorking(entry.working);
+			// Mirror the channel's parked queue / extension dialog.
+			queuedRef.current = entry.queue;
+			setQueuedMessages(entry.queue);
+			queuePausedRef.current = entry.queuePaused;
+			setQueuePaused(entry.queuePaused);
+			extensionRequestRef.current = entry.pendingExtension;
+			extensionRequestChanRef.current = entry.pendingExtension ? c : null;
+			setExtensionRequest(entry.pendingExtension);
+			setEditingQueueId(null);
+			setStats(null);
+			void refreshStats(false);
+			await loadHistory(sessionFile).catch(() => {
+				/* history is best-effort; the connection is already up */
+			});
+		},
+		[loadHistory, refreshStats],
+	);
 
 	const connect = useCallback(
 		async (opts?: ConnectOpts): Promise<boolean> => {
@@ -1506,10 +1786,9 @@ export default function App() {
 			const task = (async () => {
 				setBusy(true);
 				setError(null);
-				// A fresh pi process starts with no run in flight; reset so a
-				// mid-run session switch doesn't leave the working state stuck.
-				setStreaming(false);
-				setWorking(false);
+				// Channel id for this attempt; on failure the (dead) entry is
+				// removed so it can never be re-attached later.
+				let spawnedChan: string | null = null;
 				try {
 					let ws = opts?.workspace ?? workspace;
 					const explicitWs = opts?.workspace ?? null;
@@ -1542,6 +1821,25 @@ export default function App() {
 							setWorkspace(ws);
 						}
 					}
+					// Re-attach: the target session is already running on another
+					// channel of this window. Just switch the UI over to it — no
+					// spawn, no kill. This is what keeps background runs alive.
+					if (sessionFile) {
+						const existing = [...channelsRef.current.entries()].find(
+							([, e]) => e.sessionFile && sameSessionPath(e.sessionFile, sessionFile),
+						);
+						if (existing) {
+							const [c, entry] = existing;
+							if (c === chanRef.current) {
+								// Already displayed: nothing to do (re-clicking the
+								// current session must NOT restart it — that would
+								// kill a run in progress).
+								return true;
+							}
+							await attachChannel(c, entry, entry.sessionFile!);
+							return true;
+						}
+					}
 					if (sessionFile) setPendingSession(null);
 					navEpochRef.current += 1;
 					sessionPathRef.current = sessionFile;
@@ -1552,6 +1850,48 @@ export default function App() {
 					} else {
 						localStorage.removeItem(STORAGE_KEYS.lastSession);
 					}
+					// Concurrency cap: make room by stopping idle background
+					// channels first; refuse only when everything is busy.
+					const prevChanBeforeCap = chanRef.current;
+					if (!(await enforceChannelCapacity(prevChanBeforeCap))) {
+						toast(tRef.current.app.concurrentLimit);
+						return false;
+					}
+					// Switch-away lifecycle: an idle previous channel is stopped
+					// (its transcript lives in the JSONL; nothing to preserve).
+					// A working or queued channel keeps running in the background.
+					const prevChan = chanRef.current;
+					const prevEntry = prevChan ? channelsRef.current.get(prevChan) : null;
+					if (prevChan && prevEntry && !prevEntry.working && prevEntry.queue.length === 0) {
+						channelsRef.current.delete(prevChan);
+						syncWorkingPaths();
+						void stop(prevChan).catch(() => {});
+					}
+					const c = `c${++chanSeqRef.current}`;
+					spawnedChan = c;
+					chanRef.current = c;
+					setActiveChan(c);
+					channelsRef.current.set(c, {
+						sessionFile,
+						workspace: ws,
+						working: false,
+						queue: [],
+						queuePaused: false,
+						pendingExtension: null,
+					});
+					syncWorkingPaths();
+					// A fresh pi process starts with no run in flight; reset so a
+					// mid-run session switch doesn't leave the working state stuck.
+					setStreaming(false);
+					setTextStreaming(false);
+					setWorking(false);
+					setAborting(false);
+					setQueueFor([]);
+					setQueuePausedFor(false);
+					setEditingQueueId(null);
+					extensionRequestRef.current = null;
+					extensionRequestChanRef.current = null;
+					setExtensionRequest(null);
 					const startOpts = {
 						forkOf: opts?.forkOf ?? null,
 						sessionName: opts?.sessionName ?? null,
@@ -1563,12 +1903,12 @@ export default function App() {
 						models: settings.scopedModels.length ? settings.scopedModels.join(",") : null,
 					};
 					// A session file can only be driven by ONE pi process (the
-					// backend rejects a second window opening the same JSONL).
-					// Fall back to a fresh session instead so a new window is
+					// backend rejects a second channel opening the same JSONL).
+					// Fall back to a fresh session instead so the window is
 					// still usable while the other window owns the session.
 					let effectiveSession = sessionFile;
 					try {
-						await start(ws, effectiveSession, startOpts);
+						await start(ws, effectiveSession, startOpts, c);
 					} catch (e) {
 						if (effectiveSession && String(e).includes("already open in another window")) {
 							localStorage.removeItem(STORAGE_KEYS.lastSession);
@@ -1576,9 +1916,12 @@ export default function App() {
 							sessionPathRef.current = null;
 							setSelectedSessionPath(null);
 							isNewSessionRef.current = true;
+							const entry = channelsRef.current.get(c);
+							if (entry) entry.sessionFile = null;
+							syncWorkingPaths();
 							toast(tRef.current.app.sessionBusy);
 							effectiveSession = null;
-							await start(ws, null, startOpts);
+							await start(ws, null, startOpts, c);
 						} else {
 							throw e;
 						}
@@ -1589,11 +1932,11 @@ export default function App() {
 					setMessages([]);
 					setConnected(true);
 					// Context ring: refresh for the session being opened right
-					// away. The init effect only reruns when `connected` flips —
-					// i.e. never when switching sessions while already connected —
-					// and its own stats fetch trails the slow provider probe, so
-					// without this the ring would show the previous session's
-					// numbers (or nothing on first entry) until a run settles.
+					// away. The init effect only reruns when the displayed channel
+					// changes — and its own stats fetch trails the slow provider
+					// probe, so without this the ring would show the previous
+					// session's numbers (or nothing on first entry) until a run
+					// settles.
 					setStats(null);
 					void refreshStats(false);
 					autoConnectStateRef.current.failures = 0;
@@ -1606,6 +1949,12 @@ export default function App() {
 				} catch (e) {
 					setError(String(e));
 					autoConnectStateRef.current.failures += 1;
+					// Drop the dead channel entry so it can't be re-attached or
+					// counted against the concurrency cap later.
+					if (spawnedChan) {
+						channelsRef.current.delete(spawnedChan);
+						syncWorkingPaths();
+					}
 					return false;
 				} finally {
 					setBusy(false);
@@ -1637,6 +1986,11 @@ export default function App() {
 			settings.scopedModels,
 			sessions,
 			toast,
+			attachChannel,
+			enforceChannelCapacity,
+			syncWorkingPaths,
+			setQueueFor,
+			setQueuePausedFor,
 		],
 	);
 
@@ -1658,22 +2012,33 @@ export default function App() {
 		// pi_stop can reject if the process already exited (crash, external
 		// kill). disconnect must never throw — several callers fire-and-forget
 		// it — so swallow the stop failure and still reset the local state.
+		const c = chanRef.current;
 		try {
-			await stop();
+			await stop(c);
 		} catch {
 			/* pi already dead; proceed with the local reset */
 		}
+		if (c) {
+			channelsRef.current.delete(c);
+			syncWorkingPaths();
+		}
+		chanRef.current = null;
+		setActiveChan(null);
 		setConnected(false);
 		setStreaming(false);
+		setTextStreaming(false);
 		setWorking(false);
 		setPendingSession(null);
 		setAborting(false);
+		extensionRequestRef.current = null;
+		extensionRequestChanRef.current = null;
+		setExtensionRequest(null);
 		// The queue belongs to the running session; drop it on disconnect.
 		queuedRef.current = [];
 		setQueuedMessages([]);
 		setEditingQueueId(null);
 		setQueuePaused(false);
-	}, []);
+	}, [syncWorkingPaths]);
 
 	const pickWorkspace = useCallback(async () => {
 		const ws = await openWorkspace();
@@ -1875,27 +2240,34 @@ export default function App() {
 			}
 			try {
 				// Best-effort auto-retry toggle (transient errors).
-				await send({
-					type: "set_auto_retry",
-					enabled: settingsRef.current.autoRetryOnFailure,
-				});
+				await send(
+					{
+						type: "set_auto_retry",
+						enabled: settingsRef.current.autoRetryOnFailure,
+					},
+					undefined,
+					chanRef.current,
+				);
 			} catch {
 				/* older pi */
 			}
 			try {
 				// Queue delivery modes + auto-compaction (TUI /settings).
-				await send({
-					type: "set_steering_mode",
-					mode: settingsRef.current.steeringMode,
-				});
-				await send({
-					type: "set_follow_up_mode",
-					mode: settingsRef.current.followUpMode,
-				});
-				await send({
-					type: "set_auto_compaction",
-					enabled: settingsRef.current.autoCompaction,
-				});
+				await send(
+					{ type: "set_steering_mode", mode: settingsRef.current.steeringMode },
+					undefined,
+					chanRef.current,
+				);
+				await send(
+					{ type: "set_follow_up_mode", mode: settingsRef.current.followUpMode },
+					undefined,
+					chanRef.current,
+				);
+				await send(
+					{ type: "set_auto_compaction", enabled: settingsRef.current.autoCompaction },
+					undefined,
+					chanRef.current,
+				);
 			} catch {
 				/* older pi */
 			}
@@ -1913,7 +2285,9 @@ export default function App() {
 		return () => {
 			cancelled = true;
 		};
-	}, [connected, handleResponse]);
+		// Re-run per displayed channel: each concurrent session is its own pi
+		// process with its own model list, thinking levels, stats and settings.
+	}, [connected, activeChan, handleResponse]);
 
 	// ---- actions ----
 	const changeModel = useCallback(
@@ -1939,7 +2313,7 @@ export default function App() {
 	const changeThinkingLevel = useCallback(async (level: string) => {
 		setThinkingLevel(level);
 		try {
-			await send({ type: "set_thinking_level", level });
+			await send({ type: "set_thinking_level", level }, undefined, chanRef.current);
 		} catch (e) {
 			setError(String(e));
 		}
@@ -2066,6 +2440,8 @@ export default function App() {
 	const runBash = useCallback(
 		async (command: string, excludeFromContext: boolean) => {
 			setError(null);
+			const c = chanRef.current;
+			if (!c) return;
 			const id = `gui-bash-${nextId++}`;
 			const messageId = nextId++;
 			setMessages((prev) => [
@@ -2086,7 +2462,7 @@ export default function App() {
 			]);
 			activeBashRef.current = { id, messageId };
 			runEpochRef.current += 1;
-			setWorking(true);
+			setChanWorking(c, true);
 			try {
 				const r = await handleResponse(
 					{
@@ -2094,8 +2470,11 @@ export default function App() {
 						command,
 						excludeFromContext,
 					},
-					{ id },
+					{ id, chan: c },
 				);
+				// The user may have switched away while the command ran: the
+				// result card belongs to the session it was started in.
+				if (chanRef.current !== c) return;
 				const data = r.data as
 					| {
 							output?: string;
@@ -2131,18 +2510,21 @@ export default function App() {
 					),
 				);
 			} catch (e) {
+				if (chanRef.current !== c) return;
 				setMessages((prev) =>
-					prev.map((m) => (m.id === messageId ? { ...m, streaming: false, error: String(e) } : m)),
+					prev.map((m) =>
+						(m.id === messageId ? { ...m, streaming: false, error: buildLlmUiError(String(e), Date.now()) } : m),
+					),
 				);
 				setError(String(e));
 			} finally {
 				if (activeBashRef.current?.messageId === messageId) {
 					activeBashRef.current = null;
 				}
-				setWorking(false);
+				setChanWorking(c, false);
 			}
 		},
-		[handleResponse],
+		[handleResponse, setChanWorking],
 	);
 
 	const submit = useCallback(
@@ -2159,10 +2541,9 @@ export default function App() {
 				const next = queuedRef.current.map((m) =>
 					m.id === editingQueueIdArg ? { ...m, text, attachments } : m,
 				);
-				queuedRef.current = next;
-				setQueuedMessages(next);
+				setQueueFor(next);
 				setEditingQueueId(null);
-				setQueuePaused(false);
+				setQueuePausedFor(false);
 				return true;
 			}
 
@@ -2208,14 +2589,14 @@ export default function App() {
 						attachments,
 						mode,
 					};
-					const next = [...queuedRef.current, item];
-					queuedRef.current = next;
-					setQueuedMessages(next);
-					setQueuePaused(false);
+					setQueueFor([...queuedRef.current, item]);
+					setQueuePausedFor(false);
 					return true;
 				}
 			}
 
+			const c = chanRef.current;
+			if (!c) return false;
 			setMessages((prev) => [
 				...prev,
 				{
@@ -2223,10 +2604,11 @@ export default function App() {
 					role: "user",
 					blocks: [{ kind: "text", text: fullText }],
 					streaming: false,
+					images: images.map(({ mimeType, data }) => ({ mimeType, data })),
 				},
 			]);
 			runEpochRef.current += 1;
-			setWorking(true);
+			setChanWorking(c, true);
 			turnStartRef.current = Date.now();
 			firstTokenRef.current = null;
 			msgGenStartRef.current = null;
@@ -2259,7 +2641,7 @@ export default function App() {
 			}
 
 			try {
-				await send({ type: "prompt", message: fullText, images });
+				await send({ type: "prompt", message: fullText, images }, undefined, c);
 				if (isNew) {
 					isNewSessionRef.current = false;
 					try {
@@ -2267,25 +2649,29 @@ export default function App() {
 						// the resulting session_info_changed event + the polling in
 						// discoverNewSession() refresh the sidebar then. A refresh
 						// right here would race ahead of pi and scan an empty dir.
-						await send({ type: "set_session_name", name: title });
+						await send({ type: "set_session_name", name: title }, undefined, c);
 					} catch {
 						/* ignore */
 					}
-					void discoverNewSession(navEpoch);
+					void discoverNewSession(c, navEpoch);
 				}
 			} catch (e) {
+				setChanWorking(c, false);
+				// The user may have switched away while the prompt was in
+				// flight — don't paint this session's failure onto the one
+				// now being displayed.
+				if (chanRef.current !== c) return true;
 				setError(String(e));
 				setMessages((prev) => {
 					const next = [...prev];
 					for (let i = next.length - 1; i >= 0; i--) {
 						if (next[i].role === "user") {
-							next[i] = { ...next[i], error: String(e) };
+							next[i] = { ...next[i], error: buildLlmUiError(String(e), Date.now()) };
 							break;
 						}
 					}
 					return next;
 				});
-				setWorking(false);
 				setPendingSession(null);
 			}
 			return true;
@@ -2301,27 +2687,38 @@ export default function App() {
 			working,
 			sendDuringRun,
 			runBash,
+			setQueueFor,
+			setQueuePausedFor,
+			setChanWorking,
 		],
 	);
+
+	const recallMessageRef = useRef<(msg: ChatMessage) => Promise<void>>(null);
+	const recallMessage = useCallback(async (msg: ChatMessage) => {
+		const fn = recallMessageRef.current;
+		if (fn) await fn(msg);
+	}, []);
 
 	const abortWatchdogRef = useRef<number>(0);
 
 	const abort = useCallback(async () => {
+		const c = chanRef.current;
+		if (!c) return;
 		// After an interrupt, pause auto-delivery of the queue unless the
 		// "continue after interrupt" setting is on.
-		setQueuePaused(!settingsRef.current.continueQueuedAfterInterrupt);
+		setQueuePausedFor(!settingsRef.current.continueQueuedAfterInterrupt);
 		setAborting(true);
 		// Best-effort: abort the run, any running bash command, and a pending
 		// auto-retry delay — any of these can be the thing that's stuck.
 		let alive = true;
 		try {
-			await send({ type: "abort" });
+			await send({ type: "abort" }, undefined, c);
 		} catch {
 			alive = false; // pi is already dead — the UI state is stuck
 		}
 		if (alive) {
-			send({ type: "abort_bash" }).catch(() => {});
-			send({ type: "abort_retry" }).catch(() => {});
+			send({ type: "abort_bash" }, undefined, c).catch(() => {});
+			send({ type: "abort_retry" }, undefined, c).catch(() => {});
 		}
 		// Watchdog: if pi hasn't settled shortly after the abort (hung network
 		// request, unresponsive provider, unkillable bash), force-kill the
@@ -2344,15 +2741,19 @@ export default function App() {
 				}
 			})();
 		}, 5000);
-	}, [disconnect, connect, toast, t]);
+	}, [disconnect, connect, toast, t, setQueuePausedFor]);
 
 	const compact = useCallback(
 		async (customInstructions?: string) => {
 			try {
-				await send({
-					type: "compact",
-					...(customInstructions ? { customInstructions } : {}),
-				});
+				await send(
+					{
+						type: "compact",
+						...(customInstructions ? { customInstructions } : {}),
+					},
+					undefined,
+					chanRef.current,
+				);
 				toast(t.chat.compacting);
 			} catch (e) {
 				setError(String(e));
@@ -2372,11 +2773,69 @@ export default function App() {
 		}
 	}, [messages]);
 
+	const copyMessage = useCallback((text: string) => {
+		// The MessageActions button already writes to the clipboard
+		// (navigator.clipboard) — this hook exists for telemetry / menu
+		// wiring parity so future code (e.g. a toast on success) can plug
+		// in without touching the renderer.
+		void text;
+	}, []);
+
+	const recallMessageImpl = useCallback(
+		async (msg: ChatMessage) => {
+			// Compose the plain-text form of the recalled user message so we
+			// can put it back in the composer — strip attachment metadata,
+			// just keep the joined text blocks.
+			const text = msg.blocks
+				.filter((b): b is Extract<typeof b, { kind: "text" }> => b.kind === "text")
+				.map((b) => b.text)
+				.join("\n\n")
+				.trim();
+			// Trim the transcript back to before this user message (inclusive —
+			// we drop the recalled message too, since it's no longer "sent").
+			// If the agent is mid-run we abort first so it doesn't keep
+			// producing output for a message we're throwing away.
+			if (working || streaming) {
+				try {
+					await abort();
+				} catch {
+					// best effort — even if the abort fails, dropping the
+					// local message still gives the user a clean composer.
+				}
+			}
+			setMessages((prev) => {
+				const idx = prev.findIndex((m) => m.id === msg.id);
+				if (idx < 0) return prev;
+				return prev.slice(0, idx);
+			});
+			if (text) setExternalDraft(text);
+		},
+		[working, streaming, abort],
+	);
+
+	useEffect(() => {
+		recallMessageRef.current = recallMessageImpl;
+	}, [recallMessageImpl]);
+
+	const retryLastUserMessage = useCallback(
+		async (msg: ChatMessage) => {
+			if (!connected) return;
+			const text = msg.blocks
+				.filter((b): b is Extract<typeof b, { kind: "text" }> => b.kind === "text")
+				.map((b) => b.text)
+				.join("\n\n")
+				.trim();
+			if (!text) return;
+			await submit(text, [], "normal");
+		},
+		[connected, submit],
+	);
+
 	const renameSession = useCallback(
 		async (name: string) => {
 			if (!connected || !name.trim()) return;
 			try {
-				await send({ type: "set_session_name", name: name.trim() });
+				await send({ type: "set_session_name", name: name.trim() }, undefined, chanRef.current);
 				await refreshSessions();
 			} catch (e) {
 				setError(String(e));
@@ -2607,9 +3066,7 @@ export default function App() {
 		(project: string | null) => {
 			const targets = archived.filter((a) => a.project === project);
 			if (targets.length === 0) return;
-			const name = project
-				? projectNameFromPath(project)
-				: t.settings.noProject;
+			const name = project ? projectNameFromPath(project) : t.settings.noProject;
 			setConfirmState({
 				title: t.confirm.purgeProjectTitle,
 				body: t.confirm.purgeProjectBody
@@ -2726,10 +3183,17 @@ export default function App() {
 
 	const handleExtensionRespond = useCallback(
 		async (id: string, payload: Record<string, unknown>) => {
+			// The response must go back to the channel that asked for it —
+			// normally the displayed one, but a parked background request
+			// answered after switching belongs to its own channel.
+			const target = extensionRequestChanRef.current ?? chanRef.current;
 			extensionRequestRef.current = null;
+			extensionRequestChanRef.current = null;
 			setExtensionRequest(null);
+			const entry = target ? channelsRef.current.get(target) : null;
+			if (entry && entry.pendingExtension?.id === id) entry.pendingExtension = null;
 			try {
-				await send({ type: "extension_ui_response", id, ...payload });
+				await send({ type: "extension_ui_response", id, ...payload }, undefined, target);
 			} catch (e) {
 				setError(String(e));
 			}
@@ -2746,6 +3210,7 @@ export default function App() {
 					?.sessionFile;
 				setMessages([]);
 				setStreaming(false);
+				setTextStreaming(false);
 				setWorking(false);
 				await refreshSessions();
 				if (sessionFile) {
@@ -2760,6 +3225,42 @@ export default function App() {
 		},
 		[handleResponse, refreshSessions, loadHistory, toast, t],
 	);
+
+	// 消息分叉（轮次末尾 assistant）：pi 的 fork RPC 固定 position:"before"、
+	// 只接受 user 条目，对 assistant 条目必报 "Invalid entry ID"。改由宿主侧
+	// pi_fork_session 落盘新会话文件（含该条目），再 switch_session 切换。
+	const handleForkMessage = useCallback(async () => {
+		const from = sessionPathRef.current;
+		if (!from) return;
+		try {
+			const res = await forkSessionAt(from);
+			await send(
+				{ type: "switch_session", sessionPath: res.sessionFile },
+				undefined,
+				chanRef.current,
+			);
+			setMessages([]);
+			setStreaming(false);
+			setTextStreaming(false);
+			setWorking(false);
+			sessionPathRef.current = res.sessionFile;
+			setSelectedSessionPath(res.sessionFile);
+			localStorage.setItem(STORAGE_KEYS.lastSession, res.sessionFile);
+			// channel 条目的 sessionFile 必须同步：re-attach/并发容量/重复打开
+			// 检查都读这里——漏掉会让侧栏点击新会话时误判"无人占用"，试图再开
+			// 一个 pi 进程 resume 同一文件而被后端拒绝（表现为点击无反应）。
+			const forkedChan = chanRef.current ? channelsRef.current.get(chanRef.current) : null;
+			if (forkedChan) {
+				forkedChan.sessionFile = res.sessionFile;
+				syncWorkingPaths();
+			}
+			await refreshSessions();
+			await loadHistory(res.sessionFile);
+			toast(t.chat.forked);
+		} catch (e) {
+			setError(String(e));
+		}
+	}, [send, refreshSessions, loadHistory, toast, t]);
 
 	// ---- /tree: build the session tree from the JSONL file and open the
 	// navigator. The RPC get_tree is not used: pi serializes the tree as one
@@ -3154,7 +3655,14 @@ export default function App() {
 		return [pendingSession, ...sessions];
 	}, [sessions, pendingSession]);
 	const effectiveSelectedPath = selectedSessionPath ?? pendingSession?.path ?? null;
-	const workingPath = working ? effectiveSelectedPath : null;
+	// Sidebar spinners: every session with a run in flight — the displayed
+	// one (even before pi has flushed its file, hence the pending path) plus
+	// any background channels still working.
+	const allWorkingPaths = useMemo(() => {
+		const paths = new Set(workingPaths);
+		if (working && effectiveSelectedPath) paths.add(effectiveSelectedPath);
+		return [...paths];
+	}, [workingPaths, working, effectiveSelectedPath]);
 
 	const showTurnWait = working && !streaming && connected;
 
@@ -3164,7 +3672,7 @@ export default function App() {
 			lang={settings.language}
 			sessions={sidebarSessions}
 			selectedPath={effectiveSelectedPath}
-			workingPath={workingPath}
+			workingPaths={allWorkingPaths}
 			expandedProjects={expandedProjects}
 			sessionOrder={sessionOrder}
 			onReorderSession={setSessionOrder}
@@ -3241,6 +3749,7 @@ export default function App() {
 						session={selectedSession}
 						messages={messages}
 						streaming={streaming}
+						textStreaming={textStreaming}
 						working={working}
 						subagentRuns={subagentRuns}
 						connected={connected}
@@ -3278,7 +3787,6 @@ export default function App() {
 						gitState={gitState}
 						onCheckoutBranch={handleCheckoutBranch}
 						onCreateBranch={handleCreateBranch}
-						onForkFromMessage={handleForkFromMessage}
 						stats={stats}
 						workspace={workspace}
 						workspaces={workspaces}
@@ -3311,6 +3819,12 @@ export default function App() {
 						externalDraft={externalDraft}
 						onExternalDraftConsumed={() => setExternalDraft(null)}
 						onCycleThinking={cycleThinkingLevel}
+						onCopyMessage={copyMessage}
+						onRecallMessage={recallMessage}
+						onForkMessage={() => void handleForkMessage()}
+						onRetryMessage={retryLastUserMessage}
+						onCompactSession={() => void compact()}
+						openSettings={() => setSettingsOpen(true)}
 					/>
 				</div>
 				{settingsOpen && (
@@ -3338,11 +3852,7 @@ export default function App() {
 						onSetProjectTrust={(d) => void setProjectTrust(d)}
 						onSetDefaultTrust={(v) => void setDefaultTrust(v)}
 						projects={Array.from(
-							new Set(
-								sessions
-									.map((s) => s.project)
-									.filter((p): p is string => !!p),
-							),
+							new Set(sessions.map((s) => s.project).filter((p): p is string => !!p)),
 						).sort()}
 						onCustomProvidersChanged={handleCustomProvidersChanged}
 					/>

@@ -8,14 +8,7 @@ import type { PiParsedMessage } from "../pi";
  */
 
 /** Keys worth surfacing as the one-line summary of a tool call. */
-export const SUMMARY_KEYS = [
-	"path",
-	"file_path",
-	"command",
-	"pattern",
-	"query",
-	"url",
-];
+export const SUMMARY_KEYS = ["path", "file_path", "command", "pattern", "query", "url"];
 
 export function toolSummary(args: string): string | null {
 	try {
@@ -82,17 +75,14 @@ export function computeLineDiff(oldText: string, newText: string): DiffLine[] {
  * hunk becomes its own block. Returns null for non-file tools or while the
  * JSON is still streaming in.
  */
-export function diffBlocksFromArgs(
-	args: string,
-): { label: string; lines: DiffLine[] }[] | null {
+export function diffBlocksFromArgs(args: string): { label: string; lines: DiffLine[] }[] | null {
 	let parsed: Record<string, unknown>;
 	try {
 		parsed = JSON.parse(args) as Record<string, unknown>;
 	} catch {
 		return null; // args may be partial while streaming
 	}
-	const { edits, old_string, new_string, content, path, file_path, command } =
-		parsed;
+	const { edits, old_string, new_string, content, path, file_path, command } = parsed;
 	const blocks: { label: string; lines: DiffLine[] }[] = [];
 	if (Array.isArray(edits) && edits.length > 0) {
 		const multi = edits.length > 1;
@@ -110,8 +100,13 @@ export function diffBlocksFromArgs(
 		}
 		return blocks.length ? blocks : null;
 	}
-	if (typeof old_string === "string" && typeof new_string === "string") {
-		return [{ label: "", lines: computeLineDiff(old_string, new_string) }];
+	if (
+		(typeof old_string === "string" && typeof new_string === "string") ||
+		(typeof parsed.oldText === "string" && typeof parsed.newText === "string")
+	) {
+		const o = typeof parsed.oldText === "string" ? parsed.oldText : (old_string as string);
+		const n = typeof parsed.newText === "string" ? parsed.newText : (new_string as string);
+		return [{ label: "", lines: computeLineDiff(o, n) }];
 	}
 	if (
 		typeof content === "string" &&
@@ -144,10 +139,7 @@ export interface SearchHit {
  * (text/thinking/tool). Returns every occurrence so the UI can navigate and
  * highlight them.
  */
-export function searchMessages(
-	messages: ChatMessage[],
-	query: string,
-): SearchHit[] {
+export function searchMessages(messages: ChatMessage[], query: string): SearchHit[] {
 	const q = query.trim().toLowerCase();
 	if (!q) return [];
 	const hits: SearchHit[] = [];
@@ -171,10 +163,7 @@ export function searchMessages(
 }
 
 /** Split a plain string on a (case-insensitive) query for <mark> rendering. */
-export function splitOnQuery(
-	text: string,
-	query: string,
-): { text: string; match: boolean }[] {
+export function splitOnQuery(text: string, query: string): { text: string; match: boolean }[] {
 	const q = query.trim();
 	if (!q) return [{ text, match: false }];
 	const lower = text.toLowerCase();
@@ -202,8 +191,7 @@ export function splitOnQuery(
 
 function blockToMarkdown(b: Block): string {
 	if (b.kind === "text") return b.text;
-	if (b.kind === "thinking")
-		return `<details><summary>thinking</summary>\n\n${b.text}\n</details>`;
+	if (b.kind === "thinking") return `<details><summary>thinking</summary>\n\n${b.text}\n</details>`;
 	return `<details><summary>tool: ${b.name}</summary>\n\n\`\`\`json\n${b.args}\n\`\`\`\n</details>`;
 }
 

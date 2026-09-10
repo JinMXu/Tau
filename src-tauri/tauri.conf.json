@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run vendor:pi && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -33,6 +33,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "resources/pi-runtime/": "pi-runtime/",
+      "resources/agent-sidecar/": "agent-sidecar/"
+    },
     "windows": {
       "nsis": {
         "installMode": "both",

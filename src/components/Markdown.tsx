@@ -1,36 +1,33 @@
-import { memo, startTransition, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { MouseEvent } from "react";
-import { Streamdown } from "streamdown";
-import type { ThemeInput } from "streamdown";
-import { createCodePlugin } from "@streamdown/code";
-import "streamdown/styles.css";
+import MarkdownRender, { type SmoothMarkdownStreamOptions } from "markstream-react";
+import "markstream-react/index.css";
+import { useRef, type MouseEvent } from "react";
+import { useSyncExternalStore } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-const LIGHT_THEME: ThemeInput = "github-light";
-const DARK_THEME: ThemeInput = "github-dark";
-
-/// Messages longer than this render as plain text instead of going through
-/// Streamdown's full re-parse + syntax highlighting (see the degraded branch
-/// in the component).
-const MAX_MARKDOWN_CHARS = 300_000;
-
 /**
- * Deterministic streaming cadence: render the latest text at most every
- * 80ms while a block streams. This replaces `useDeferredValue`, whose
- * transition scheduling renders in unpredictable bursts — text would freeze
- * and then jump forward, with a final "snap" when the stream settled. The
- * throttle keeps updates small, regular and near-real-time; updates are
- * wrapped in `startTransition` so composer typing can still preempt a heavy
- * parse.
+ * Markdown 渲染：markstream-react（percho 同款）——增量解析 + 自适应速率的
+ * 字符级平滑 streaming（大 chunk 连续滑出而非整块蹦现）+ 新内容淡入。
+ * 替换掉之前的 Streamdown 方案（每 80ms 全量 re-parse，文字一格一格跳）。
+ *
+ * 流式丝滑性（两层，与 percho 相同）：
+ * 1. smoothStreaming：内容经自适应速率控制器逐字放出。只对「挂载时就在流式」
+ *    的消息启用——历史/固化后打开的消息直出（mount 初值锁定，否则整篇重播）。
+ * 2. fade：新块节点 enter 淡入 + 文本节点新增内容交替淡入。
  */
-const STREAM_UPDATE_INTERVAL_MS = 80;
 
-const LINK_SAFETY = { enabled: false } as const;
-const CONTROLS = {
-	code: { copy: true, download: false },
-	table: false,
-	mermaid: false,
-} as const;
+/** 平滑输出速率参数（percho 同值）：小 delta 基速 80cps，backlog <600 字
+ * 900ms 内追平；超过则 350ms 快进（≤1000cps）——不积压也不跳变。 */
+const SMOOTH_OPTIONS: SmoothMarkdownStreamOptions = {
+	minCharsPerSecond: 80,
+};
+
+/** 减速动效偏好：直接关闭 pacing（直出）；库 CSS 自带 animation:none 处理淡入 */
+const REDUCED_MOTION =
+	typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/// Messages longer than this render as plain text instead of the full
+/// incremental renderer (see the degraded branch in the component).
+const MAX_MARKDOWN_CHARS = 300_000;
 
 // A single shared theme store: every <Markdown> block subscribes to one
 // MutationObserver on <html> instead of each creating its own (a session with
@@ -67,7 +64,8 @@ function subscribeTheme(onStoreChange: () => void): () => void {
  * Open external links in the system browser instead of navigating the
  * webview. In-page anchors (#…) fall through to the default scroll
  * behaviour; other non-external links (file:, relative) are swallowed so
- * the webview never navigates away from the app.
+ * the webview never navigates away from the app. (markstream renders plain
+ * anchors — capture the click at the host div.)
  */
 function onMarkdownClick(event: MouseEvent<HTMLDivElement>) {
 	const anchor = (event.target as Element | null)?.closest?.("a[href]");
@@ -83,74 +81,35 @@ function onMarkdownClick(event: MouseEvent<HTMLDivElement>) {
 	}
 }
 
-export const Markdown = memo(function Markdown({
-	text,
-	streaming = false,
-}: {
-	text: string;
-	streaming?: boolean;
-}) {
-	const theme = useSyncExternalStore(subscribeTheme, getThemeSnapshot);
-	// Throttled streaming text (see STREAM_UPDATE_INTERVAL_MS). Settled
-	// messages render `text` directly — no stale state, no final burst.
-	const [displayText, setDisplayText] = useState(text);
-	const latestRef = useRef(text);
-	latestRef.current = text;
-	useEffect(() => {
-		if (!streaming) return;
-		let rafId = 0;
-		let last = 0;
-		const tick = (now: number) => {
-			rafId = requestAnimationFrame(tick);
-			if (now - last < STREAM_UPDATE_INTERVAL_MS) return;
-			last = now;
-			const latest = latestRef.current;
-			startTransition(() => setDisplayText(latest));
-		};
-		rafId = requestAnimationFrame(tick);
-		return () => cancelAnimationFrame(rafId);
-	}, [streaming]);
-	const shown = streaming ? displayText : text;
-	const codePlugin = useMemo(() => {
-		// Pass the active theme as both entries so token colors work without
-		// Tailwind's `dark:` variant (see the CSS shims in App.css).
-		const themes: [ThemeInput, ThemeInput] =
-			theme === "dark" ? [DARK_THEME, DARK_THEME] : [LIGHT_THEME, LIGHT_THEME];
-		return createCodePlugin({ themes });
-	}, [theme]);
-
-	// Degraded rendering for very large messages: Streamdown re-parses the
-	// whole document (and highlights code) on every update. For huge replies
-	// that parse spike is exactly what tips the webview over the edge —
-	// render them as plain pre-formatted text instead (still selectable).
-	if (shown.length > MAX_MARKDOWN_CHARS) {
+export function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
+	const isDark = useSyncExternalStore(subscribeTheme, getThemeSnapshot) === "dark";
+	// Mount-time lock (percho): enable smoothing only for messages that were
+	// already streaming when mounted — history messages render instantly and
+	// never replay the typing animation.
+	const smoothableRef = useRef<boolean>(Boolean(streaming) && !REDUCED_MOTION);
+	// Degraded rendering for very large messages.
+	if (text.length > MAX_MARKDOWN_CHARS) {
 		return (
 			<div className="markdown-host">
-				<pre className="markdown-plain">{shown}</pre>
+				<pre className="markdown-plain">{text}</pre>
 			</div>
 		);
 	}
-
 	return (
-		<div className="markdown-host" onClick={onMarkdownClick}>
-			{/* `mode="streaming"` is kept across the whole lifetime so the
-			 * message_end transition never re-parses the document in "static"
-			 * mode — that re-render is what made a finished answer visibly
-			 * refresh. Streaming-mode parsing is identical for complete
-			 * markdown; `isAnimating` only controls the word-by-word typing
-			 * animation, which simply stops at the end. */}
-			<Streamdown
-				mode="streaming"
-				animated
-				isAnimating={streaming}
-				plugins={{ code: codePlugin }}
-				controls={CONTROLS}
-				linkSafety={LINK_SAFETY}
-				lineNumbers={false}
-				className="ousia-chat-markdown"
-			>
-				{shown}
-			</Streamdown>
+		<div className="markdown-host markdown-body" onClick={onMarkdownClick}>
+			{/* deferNodesUntilVisible=false: markstream 0.0.55's deferred-node
+			    bug leaves placeholder bars behind once streaming stops. */}
+			<MarkdownRender
+				content={text}
+				final={!streaming}
+				fade={!REDUCED_MOTION}
+				smoothStreaming={smoothableRef.current}
+				smoothStreamingOptions={SMOOTH_OPTIONS}
+				isDark={isDark}
+				codeBlockLightTheme="vitesse-light"
+				codeBlockDarkTheme="vitesse-dark"
+				deferNodesUntilVisible={false}
+			/>
 		</div>
 	);
-});
+}

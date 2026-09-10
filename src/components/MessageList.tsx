@@ -1,408 +1,84 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { openPath } from "@tauri-apps/plugin-opener";
 import type { Block, ChatMessage } from "../chat-types";
 import type { SubagentRun } from "../pi";
 import type { MessageCatalog } from "../i18n";
+import { BranchIcon, CheckIcon, CopyIcon, SparkleIcon, UndoIcon } from "../icons";
+import { ErrorNote } from "./ErrorNote";
+import { splitOnQuery } from "./message-utils";
+import { ToolCard, ThinkingBlock } from "./ToolCard";
+import { MetaGroup, TurnDiffRow } from "./MetaGroup";
 import {
-	BoltIcon,
-	BranchIcon,
-	CheckIcon,
-	ChevronDownIcon,
-	CopyIcon,
-	FileIcon,
-	FolderOpenIcon,
-	SearchIcon,
-	SparkleIcon,
-	TerminalIcon,
-} from "../icons";
+	attachToolResults,
+	buildChatRows,
+	deriveTurnChanges,
+	deriveTurnTimings,
+	searchBypassIds,
+	type MessageItem,
+	type TurnChanges,
+} from "./chat-rows";
 import { Markdown } from "./Markdown";
-import {
-	diffBlocksFromArgs,
-	splitOnQuery,
-	chatMessageToMarkdown,
-	chatMessageToPlainText,
-	toolSummary,
-	type DiffLine,
-} from "./message-utils";
-
-const toolIcon = (name: string, size = 14) => {
-	const key = name.toLowerCase();
-	if (key.startsWith("bash") || key.startsWith("exec") || key.startsWith("shell"))
-		return <TerminalIcon size={size} />;
-	if (key.startsWith("read") || key.startsWith("ls") || key.startsWith("find"))
-		return <FolderOpenIcon size={size} />;
-	if (key.startsWith("write") || key.startsWith("edit")) return <FileIcon size={size} />;
-	if (key.startsWith("grep") || key.startsWith("search") || key.startsWith("web"))
-		return <SearchIcon size={size} />;
-	if (key.includes("apply") || key.includes("patch")) return <BoltIcon size={size} />;
-	return <SparkleIcon size={size} />;
-};
-
-type ToolBlockT = Extract<Block, { kind: "tool" }>;
 
 /**
- * Read-only / low-signal tools whose result content nobody reads (cd, read,
- * grep, ls, find…). Their output is hidden behind a click instead of
- * occupying the stream with content that only contributes visual noise.
+ * Chat transcript renderer. Messages are folded into rows (see chat-rows.ts):
+ * assistant thinking/tool calls collapse into MetaGroup lines, turns close
+ * with a timer + file-changes footer row, text stays as regular message rows.
+ * All the scroll-follow / search / copy machinery is unchanged.
  */
-function isQuietTool(name: string): boolean {
-	const key = name.toLowerCase();
-	return (
-		key === "cd" ||
-		key.startsWith("read") ||
-		key.startsWith("grep") ||
-		key.startsWith("ls") ||
-		key.startsWith("find") ||
-		key === "pwd" ||
-		key.startsWith("glob") ||
-		key.startsWith("search") ||
-		key.startsWith("cat") ||
-		key.startsWith("head") ||
-		key.startsWith("tail") ||
-		key.startsWith("wc") ||
-		key.startsWith("tree") ||
-		key.startsWith("which") ||
-		key.startsWith("where") ||
-		key.startsWith("type")
-	);
-}
 
 /**
- * Tools whose body renders as a structured line diff (not raw io JSON).
- * For these the card waits until the diff is ready and then opens directly
- * onto the final form — no partial-JSON → diff content swap mid-stream.
+ * working→worked hysteresis (port of percho useShownWorking): the live
+ * signal lingers for HYSTERESIS_MS after `working` drops so turn/tool gaps
+ * don't flicker the group shell; `endImmediately` (final-answer text
+ * streaming) flips it right away. `resetKey` change (session switch) resets
+ * instantly without leaking the previous session's pending timer.
  */
-function isDiffTool(name: string): boolean {
-	const key = name.toLowerCase();
-	return (
-		key === "edit" ||
-		key === "write" ||
-		key.includes("apply") ||
-		key.includes("patch")
-	);
-}
+const HYSTERESIS_MS = 1500;
 
-const DiffView = memo(function DiffView({
-	lines,
-	label,
-}: {
-	lines: DiffLine[];
-	label?: string;
-}) {
-	// DSH diff card: code-surface block, optional hunk label banner.
-	return (
-		<div className="tool-diff">
-			{label && <div className="diff-label">{label}</div>}
-			<pre>
-				{lines.map((l, i) => (
-					<span key={i} className={`diff-line ${l.type}`}>
-						<span className="diff-sign">
-							{l.type === "add" ? "+" : l.type === "del" ? "-" : " "}
-						</span>
-						{l.text}
-					</span>
-				))}
-			</pre>
-		</div>
-	);
-});
-
-const ToolCard = memo(function ToolCard({
-	block,
-	result,
-	running,
-	t,
-}: {
-	block: ToolBlockT;
-	/** The call's output — attached from the following tool-result message,
-	 * or the block itself when this card renders an orphan result. */
-	result?: ToolBlockT | null;
-	running: boolean;
-	t: MessageCatalog;
-}) {
-	// Stable streaming model (no open/close flapping): the card opens at
-	// most once, never auto-closes, and the expanded content stays put when
-	// the run settles — the output the user just watched keeps streaming in
-	// place instead of vanishing. Collapsing is always the user's choice.
-	const [bodyOpen, setBodyOpen] = useState(false);
-	const quiet = useMemo(() => isQuietTool(block.name), [block.name]);
-	const diffTool = useMemo(() => isDiffTool(block.name), [block.name]);
-	const prettyName = useMemo(
-		() =>
-			block.name
-				.split("_")
-				.map((s) => s[0]?.toUpperCase() + s.slice(1))
-				.join(" "),
-		[block.name],
-	);
-	// For tool results the body is the tool's output, not call arguments, so
-	// skip the argument summary and the "open file" quick action.
-	const { filePath, summary } = useMemo(() => {
-		if (block.result) return { filePath: null, summary: null };
-		let fp: string | null = null;
-		try {
-			const parsed = JSON.parse(block.args) as { path?: unknown };
-			if (typeof parsed.path === "string" && parsed.path.trim()) {
-				fp = parsed.path.trim();
-			}
-		} catch {
-			/* args may be partial while streaming */
-		}
-		return { filePath: fp, summary: toolSummary(block.args) };
-	}, [block.args, block.result]);
-	const resultLineCount = useMemo(() => {
-		if (!result || !quiet) return 0;
-		return result.args ? result.args.split("\n").length : 0;
-	}, [result, quiet]);
-	const error = block.error || result?.error;
-	// Edit/write-style calls surface their changes as inline line diffs.
-	// The diff depends only on the args being complete: while the call
-	// streams, args are partial JSON and parse to null; once toolcall_end
-	// lands the args are final and the diff becomes stable — it must NOT
-	// reset while the attached result streams afterwards, or the body would
-	// swap diff ↔ io cards mid-flight (a visible "refresh").
-	const diffBlocks = useMemo(
-		() => (block.result ? null : diffBlocksFromArgs(block.args)),
-		[block.result, block.args],
-	);
-	// Open-once rule:
-	// - quiet tools (read/grep/ls…) never open on their own — the row's live
-	//   line count and shimmer carry the activity, exactly like DSH;
-	// - diff tools (edit/write/apply/patch) open when the structured diff is
-	//   ready, so the final form appears directly (no JSON → diff swap);
-	// - everything else (bash, …) opens when the call starts running and the
-	//   output then streams into place.
+function useShownWorking(working: boolean, endImmediately: boolean, resetKey?: number): boolean {
+	const [shown, setShown] = useState(working);
+	const timerRef = useRef<number | null>(null);
+	const prevKeyRef = useRef<number | undefined>(resetKey);
 	useEffect(() => {
-		if (quiet || block.result) return;
-		if (diffTool) {
-			if (diffBlocks && diffBlocks.length > 0) setBodyOpen(true);
+		if (prevKeyRef.current !== resetKey) {
+			prevKeyRef.current = resetKey;
+			if (timerRef.current !== null) {
+				window.clearTimeout(timerRef.current);
+				timerRef.current = null;
+			}
+			setShown(working);
 			return;
 		}
-		if (running) setBodyOpen(true);
-	}, [quiet, diffTool, running, diffBlocks, block.result]);
-	const { diffAdd, diffDel } = useMemo(() => {
-		let add = 0;
-		let del = 0;
-		if (diffBlocks) {
-			for (const b of diffBlocks) {
-				for (const l of b.lines) {
-					if (l.type === "add") add++;
-					else if (l.type === "del") del++;
-				}
+		if (working) {
+			if (timerRef.current !== null) {
+				window.clearTimeout(timerRef.current);
+				timerRef.current = null;
+			}
+			setShown(true);
+		} else if (shown) {
+			if (endImmediately) {
+				setShown(false);
+				return;
+			}
+			if (timerRef.current === null) {
+				timerRef.current = window.setTimeout(() => {
+					timerRef.current = null;
+					setShown(false);
+				}, HYSTERESIS_MS);
 			}
 		}
-		return { diffAdd: add, diffDel: del };
-	}, [diffBlocks]);
-	const outputText = result?.args ? result.args.replace(/\n+$/, "") : "";
-	// Once a diff tool has revealed its structured diff, the remaining result
-	// stream is a trivial acknowledgement — keep the settled card still
-	// instead of restarting the running shimmer on it.
-	const showRunning =
-		running && !(diffTool && diffBlocks !== null && diffBlocks.length > 0);
-	// Anchored output follow (DSH's anchored max-height output): while the
-	// output streams the section stays pinned to the newest line; scrolling
-	// up inside it un-pins, scrolling back to the bottom re-pins.
-	const outputSectionRef = useRef<HTMLElement>(null);
-	const outputAnchorRef = useRef(true);
-	useEffect(() => {
-		const el = outputSectionRef.current;
-		// `bodyOpen` in the deps re-anchors to the newest line when the card
-		// is re-opened mid-stream (the remounted section would otherwise
-		// start at the top of the buffer).
-		if (el && outputAnchorRef.current) el.scrollTop = el.scrollHeight;
-	}, [outputText, bodyOpen]);
-	const onOutputScroll = useCallback(() => {
-		const el = outputSectionRef.current;
-		if (!el) return;
-		outputAnchorRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 12;
-	}, []);
-	return (
-		<div
-			className={`tool-card${showRunning ? " running" : ""}${block.result ? " result" : ""}${quiet && block.result ? " quiet" : ""}${error ? " error" : ""}${bodyOpen ? " open" : ""}`}
-			data-state={showRunning ? "running" : error ? "error" : "ok"}
-		>
-			<button
-				type="button"
-				className="tool-head"
-				aria-expanded={bodyOpen}
-				onClick={() => setBodyOpen((v) => !v)}
-			>
-				<span className="tool-icon">{toolIcon(block.name)}</span>
-				<span className="tool-name">{prettyName || t.chat.tool}</span>
-				<span className="tool-sep" />
-				{summary && <span className="tool-summary">{summary}</span>}
-				{result && (
-					<span className="tool-summary-suffix">
-						{error
-							? t.chat.error
-							: quiet
-								? resultLineCount > 0
-									? t.chat.outputLines.replace("{count}", String(resultLineCount))
-									: t.chat.noOutput
-								: t.chat.result}
-					</span>
-				)}
-				{diffBlocks && (diffAdd > 0 || diffDel > 0) && (
-					<span className="diff-stats">
-						{diffDel > 0 && <span className="del">-{diffDel}</span>}
-						{diffAdd > 0 && <span className="add">+{diffAdd}</span>}
-					</span>
-				)}
-				<ChevronDownIcon size={12} className={`tool-chevron${bodyOpen ? " open" : ""}`} />
-			</button>
-			{bodyOpen && (
-				<>
-					{diffBlocks && diffBlocks.length > 0 ? (
-						<div className="tool-diffs">
-							{diffBlocks.map((b, i) => (
-								<DiffView key={i} lines={b.lines} label={b.label || undefined} />
-							))}
-						</div>
-					) : (
-						<div className="tool-io-card">
-							{!block.result && (
-								<section className="io-section">
-									<span className="io-label">{t.chat.ioInput}</span>
-									<div className="io-text">
-										{block.args.trim() ? block.args : t.chat.noOutput}
-									</div>
-								</section>
-							)}
-							{result && !quiet && (
-								<>
-									{!block.result && <div className="io-divider" />}
-									<section
-										ref={outputSectionRef}
-										className="io-section"
-										onScroll={onOutputScroll}
-									>
-										<span className="io-label">{t.chat.ioOutput}</span>
-										<div className="io-text" data-error={error || undefined}>
-											{outputText ? outputText : t.chat.noOutput}
-										</div>
-									</section>
-								</>
-							)}
-							{!block.result && filePath && (
-								<div className="tool-file-actions">
-									<button onClick={() => void openPath(filePath)}>
-										<FileIcon size={12} />
-										<span>{filePath}</span>
-									</button>
-								</div>
-							)}
-						</div>
-					)}
-				</>
-			)}
-		</div>
+	}, [working, endImmediately, shown, resetKey]);
+	// Clear the pending timer on unmount.
+	useEffect(
+		() => () => {
+			if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+		},
+		[],
 	);
-});
-
-const ThinkingBlock = memo(function ThinkingBlock({
-	text,
-	streaming,
-	t,
-}: {
-	text: string;
-	streaming: boolean;
-	t: MessageCatalog;
-}) {
-	// DSH ReasoningRow verbatim behaviour: the block stays collapsed unless
-	// the user opens it. While running, the collapsed summary shows the
-	// *latest* line and follows its end; once settled it shows the first
-	// line, left-aligned. No auto expand/collapse — the user owns the state.
-	const [expanded, setExpanded] = useState(false);
-	const summaryRef = useRef<HTMLSpanElement>(null);
-	const summary = useMemo(() => {
-		const trimmed = text.trimEnd();
-		if (streaming) {
-			const nl = trimmed.lastIndexOf("\n");
-			return nl === -1 ? trimmed : trimmed.slice(nl + 1);
-		}
-		const nl = text.indexOf("\n");
-		return nl === -1 ? text : text.slice(0, nl);
-	}, [text, streaming]);
-	// Frame-throttled follow of the collapsed summary, mirroring DSH's
-	// useThrottledVisualUpdate (every 3rd frame): streaming deltas arrive
-	// faster than a frame, so coalescing avoids a forced layout per token.
-	const pendingFrameRef = useRef<number | null>(null);
-	const cancelFollow = useCallback(() => {
-		if (pendingFrameRef.current !== null) {
-			cancelAnimationFrame(pendingFrameRef.current);
-			pendingFrameRef.current = null;
-		}
-	}, []);
-	useEffect(() => cancelFollow, [cancelFollow]);
-	useEffect(() => {
-		cancelFollow();
-		if (streaming) {
-			let remaining = 3;
-			const advance = () => {
-				remaining -= 1;
-				if (remaining > 0) {
-					pendingFrameRef.current = requestAnimationFrame(advance);
-					return;
-				}
-				pendingFrameRef.current = null;
-				const el = summaryRef.current;
-				if (el) el.scrollLeft = el.scrollWidth - el.clientWidth;
-			};
-			pendingFrameRef.current = requestAnimationFrame(advance);
-		} else {
-			const el = summaryRef.current;
-			if (el) el.scrollLeft = 0;
-		}
-	}, [summary, streaming, cancelFollow]);
-	return (
-		<div
-			className={`think-card${streaming ? " running" : ""}`}
-			data-state={streaming ? "running" : "ok"}
-		>
-			<button
-				type="button"
-				className="think-head"
-				aria-expanded={expanded}
-				onClick={() => setExpanded((v) => !v)}
-			>
-				<ChevronDownIcon size={12} className={`think-chevron${expanded ? " open" : ""}`} />
-				<SparkleIcon size={14} className="think-icon" />
-				<span className="think-title">{t.chat.thinking}</span>
-				{!expanded && (
-					<>
-						<span className="think-sep" />
-						<span
-							ref={summaryRef}
-							className={`think-summary${streaming ? " follow-end" : ""}`}
-						>
-							{summary}
-						</span>
-					</>
-				)}
-			</button>
-			{expanded && <div className="think-body">{text}</div>}
-		</div>
-	);
-});
-
-function AssistantFooter({ message, t }: { message: ChatMessage; t: MessageCatalog }) {
-	return (
-		<div className="assistant-footer">
-			<span className="assistant-name">Pi</span>
-			{message.replay && <span className="replay-badge">{t.chat.history}</span>}
-		</div>
-	);
-}
-
-function formatTime(ts?: string): string | null {
-	if (!ts) return null;
-	const d = new Date(ts);
-	if (Number.isNaN(d.getTime())) return null;
-	return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	return shown;
 }
 
 /** Compact elapsed duration for the live "working…" status: `42s`, `1:05`. */
-function formatDuration(ms: number): string {
+function formatElapsed(ms: number): string {
 	const total = Math.max(0, Math.floor(ms / 1000));
 	const minutes = Math.floor(total / 60);
 	const seconds = total % 60;
@@ -415,6 +91,9 @@ function formatDuration(ms: number): string {
  * of the chat column (port of DSH's ChatView TurnStatus pattern). Plain
  * content-font styling; an elapsed clock appears after 15s and counts from
  * the turn start, retained across the thinking / tool / text phases.
+ *
+ * Hidden while the turn's live footer row (timer chip) is showing — the two
+ * would duplicate each other (see ChatArea).
  */
 export function TurnStatus({ startTime }: { startTime: number }) {
 	const [mountedAt] = useState(() => Date.now());
@@ -432,7 +111,7 @@ export function TurnStatus({ startTime }: { startTime: number }) {
 			Working...
 			{showClock && (
 				<span className="turn-status-clock" aria-hidden="true">
-					{formatDuration(elapsedMs)}
+					{formatElapsed(elapsedMs)}
 				</span>
 			)}
 		</div>
@@ -446,13 +125,7 @@ export function TurnStatus({ startTime }: { startTime: number }) {
  * doing — per-step status, latest tool call and turn/tool counts — instead
  * of staring at a static "running" tool card for minutes.
  */
-export function SubagentLivePanel({
-	runs,
-	t,
-}: {
-	runs: SubagentRun[];
-	t: MessageCatalog;
-}) {
+export function SubagentLivePanel({ runs, t }: { runs: SubagentRun[]; t: MessageCatalog }) {
 	const statusLabels = t.chat.subagentStatus as Record<string, string>;
 	return (
 		<div className="subagent-live" role="status" aria-live="polite">
@@ -472,13 +145,10 @@ export function SubagentLivePanel({
 									<span className="subagent-step-agent"> ({s.agent})</span>
 								) : null}
 							</span>
-							<span className="subagent-step-status">
-								{statusLabels[s.status] ?? s.status}
-							</span>
+							<span className="subagent-step-status">{statusLabels[s.status] ?? s.status}</span>
 							{(s.turnCount > 0 || s.toolCount > 0) && (
 								<span className="subagent-step-counts">
-									{s.turnCount} {t.chat.subagentTurns} · {s.toolCount}{" "}
-									{t.chat.subagentTools}
+									{s.turnCount} {t.chat.subagentTurns} · {s.toolCount} {t.chat.subagentTools}
 								</span>
 							)}
 							{s.lastTool && (
@@ -495,30 +165,339 @@ export function SubagentLivePanel({
 	);
 }
 
-export const MessageList = memo(function MessageList({
-	messages,
-	streaming,
-	autoScroll,
+type MessageImage = { mimeType: string; data: string };
+
+const imageSrc = (img: MessageImage) => `data:${img.mimeType};base64,${img.data}`;
+
+/** Percho UserMessage image grid: 1 = contain (144/192px), <=3 = 96px
+ * squares, <=6 = 80px, else 64px; click opens the fullscreen overlay. */
+function MessageImages({ images }: { images: MessageImage[] }) {
+	const [preview, setPreview] = useState<number | null>(null);
+	const count = images.length;
+	const sizeCls =
+		count === 1 ? "msg-img single" : count <= 3 ? "msg-img md" : count <= 6 ? "msg-img sm" : "msg-img xs";
+	useEffect(() => {
+		if (preview === null) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setPreview(null);
+			if (e.key === "ArrowRight") setPreview((v) => (v === null ? v : (v + 1) % images.length));
+			if (e.key === "ArrowLeft")
+				setPreview((v) => (v === null ? v : (v - 1 + images.length) % images.length));
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [preview, images.length]);
+	return (
+		<>
+		<div className="msg-images">
+			{images.map((img, i) => (
+				<button
+					key={i}
+					type="button"
+					className="msg-img-btn"
+					aria-label={`image ${i + 1}/${count}`}
+					onClick={() => setPreview(i)}
+				>
+					{/* biome-ignore lint/suspicious/noArrayIndexKey: image list is immutable */}
+					<img src={imageSrc(img)} alt="" className={sizeCls} />
+				</button>
+			))}
+		</div>
+		{preview !== null && (
+			<div className="img-overlay" onClick={() => setPreview(null)}>
+				<img src={imageSrc(images[preview])} alt="" />
+				{count > 1 && (
+					<span className="img-overlay-count">
+						{preview + 1} / {count}
+					</span>
+				)}
+			</div>
+		)}
+		</>
+	);
+}
+
+function messageText(m: ChatMessage): string {
+	return m.blocks
+		.filter((b): b is Extract<Block, { kind: "text" }> => b.kind === "text")
+		.map((b) => b.text)
+		.join("\n\n")
+		.trim();
+}
+
+function MessageActions({
+	text,
+	canRecall,
+	canFork,
+	onCopy,
+	onRecall,
 	onFork,
+	t,
+}: {
+	text: string;
+	canRecall: boolean;
+	canFork: boolean;
+	onCopy?: (text: string) => void;
+	onRecall?: () => void;
+	onFork?: () => void;
+	t: MessageCatalog;
+}) {
+	const [copied, setCopied] = useState(false);
+	const timerRef = useRef<number | null>(null);
+	useEffect(() => () => {
+		if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+	}, []);
+	if (!text || (!canRecall && !canFork)) return null;
+	const copy = () => {
+		if (!text) return;
+		void navigator.clipboard.writeText(text).then(() => {
+			setCopied(true);
+			if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+			timerRef.current = window.setTimeout(() => setCopied(false), 1200);
+		}).catch(() => {});
+		onCopy?.(text);
+	};
+	return (
+		<div className="message-actions">
+			{text && (
+				<button type="button" className="message-action" aria-label={copied ? t.chat.copied : t.chat.copyText} title={copied ? t.chat.copied : t.chat.copyText} onClick={copy}>
+					{copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
+				</button>
+			)}
+			{canFork && (
+				<button type="button" className="message-action" aria-label={t.chat.fork} title={t.chat.fork} onClick={() => onFork?.()}>
+					<BranchIcon size={14} />
+				</button>
+			)}
+			{canRecall && (
+				<button type="button" className="message-action" aria-label={t.chat.recall} title={t.chat.recall} onClick={() => onRecall?.()}>
+					<UndoIcon size={14} />
+				</button>
+			)}
+		</div>
+	);
+}
+
+/** One message row (user / assistant text / orphan tool results) with search
+ * highlighting and the streaming cursor. `skip` lists block indices folded
+ * into a meta group. No author footer, no hover buttons — matches the
+ * Percho transcript (groups + text, nothing else). */
+const MessageRow = memo(function MessageRow({
+	item,
+	skip,
+	textAllow,
+	last,
 	t,
 	searchQuery,
 	searchActiveMessageId,
+	refCb,
+	onCopy,
+	onRecall,
+	canRecall,
+	canFork,
+	onFork,
+	onRetry,
+	onCompact,
+	onOpenSettings,
 }: {
-	messages: ChatMessage[];
-	streaming: boolean;
-	autoScroll?: boolean;
-	onFork?: (entryId: string) => void;
+	item: MessageItem;
+	skip: Set<number>;
+	/** When the message was split into text segments, only these text blocks
+	 * render on this row. */
+	textAllow?: Set<number>;
+	/** The message's final row: carries the streaming cursor and error. */
+	last: boolean;
 	t: MessageCatalog;
 	searchQuery?: string;
 	searchActiveMessageId?: number | null;
+	refCb: (id: number, el: HTMLDivElement | null) => void;
+	onCopy?: (text: string) => void;
+	onRecall?: () => void;
+	canRecall: boolean;
+	canFork: boolean;
+	onFork?: () => void;
+	onRetry?: () => void;
+	onCompact?: () => void;
+	onOpenSettings?: () => void;
+}) {
+	const m = item.msg;
+	const isSearchTarget =
+		searchQuery != null && searchActiveMessageId != null && m.id === searchActiveMessageId;
+	return (
+		<div
+			ref={(el) => refCb(m.id, el)}
+			className={`message ${m.role}${isSearchTarget ? " message-search-target" : ""}`}
+		>
+			{m.role === "user" && m.images && m.images.length > 0 && (
+				<MessageImages images={m.images} />
+			)}
+			{m.blocks.map((b: Block, i: number) => {
+				if (item.consumed.has(i) || skip.has(i)) return null;
+				if (b.kind === "text") {
+					if (textAllow && !textAllow.has(i)) return null;
+					if (m.role === "tool") {
+						// Tool result text streaming in. Nobody reads
+						// this mid-stream — the assistant's running
+						// tool card already shows the state. Keep the
+						// message empty (only the cursor) until the
+						// authoritative ToolOutput replaces it, so the
+						// DOM doesn't grow and reflow every frame.
+						// Exception: in-session search highlights the
+						// content the user is actively looking for.
+						if (isSearchTarget && searchQuery) {
+							return (
+								<div className="text-block highlighted-text" key={i}>
+									{splitOnQuery(b.text, searchQuery).map((p, j) =>
+										p.match ? (
+											<mark key={j} className="session-search-hit">
+												{p.text}
+											</mark>
+										) : (
+											<span key={j}>{p.text}</span>
+										),
+									)}
+								</div>
+							);
+						}
+						return null;
+					}
+					if (isSearchTarget && searchQuery) {
+						// Plain-text rendering with highlighted matches for
+						// the focused message (markdown stays on elsewhere).
+						return (
+							<div className="text-block highlighted-text" key={i}>
+								{splitOnQuery(b.text, searchQuery).map((p, j) =>
+									p.match ? (
+										<mark key={j} className="session-search-hit">
+											{p.text}
+										</mark>
+									) : (
+										<span key={j}>{p.text}</span>
+									),
+								)}
+							</div>
+						);
+					}
+					return (
+						<div className="text-block" key={i}>
+								{/* Percho UserMessage: user input is always plain text
+								    (whitespace-pre-wrap) - no markdown pass. */}
+								{m.role === "user" ? (
+									b.text
+								) : (
+									<Markdown text={b.text} streaming={m.streaming} />
+								)}
+						</div>
+					);
+				}
+				if (b.kind === "thinking") {
+					if (isSearchTarget && searchQuery) {
+						// Highlight matches inside thinking blocks too, so a
+						// hit there is visible (not just counted).
+						return (
+							<div className="text-block thinking highlighted-text" key={i}>
+								{splitOnQuery(b.text, searchQuery).map((p, j) =>
+									p.match ? (
+										<mark key={j} className="session-search-hit">
+											{p.text}
+										</mark>
+									) : (
+										<span key={j}>{p.text}</span>
+									),
+								)}
+							</div>
+						);
+					}
+					return <ThinkingBlock key={i} text={b.text} t={t} />;
+				}
+				return (
+					<ToolCard
+						key={i}
+						block={b}
+						result={b.result ? b : (item.attached.get(i) ?? null)}
+						running={
+							(m.streaming && i === m.blocks.length - 1) || (item.attachedStreaming.get(i) ?? false)
+						}
+						t={t}
+					/>
+				);
+			})}
+			{last && m.error && typeof m.error !== "string" && (
+				<ErrorNote error={m.error} t={t} onRetry={onRetry} onCompact={onCompact} onOpenSettings={onOpenSettings} />
+			)}
+			{last && typeof m.error === "string" && <div className="msg-error">error: {m.error}</div>}
+			{!m.streaming && (m.role === "user" || canFork) && (
+				<MessageActions
+					text={messageText(m)}
+					canRecall={m.role === "user" && canRecall}
+					canFork={canFork}
+					onCopy={onCopy}
+					onRecall={onRecall}
+					onFork={onFork}
+					t={t}
+				/>
+			)}
+		</div>
+	);
+});
+
+export const MessageList = memo(function MessageList({
+	messages,
+	streaming,
+	working,
+	textStreaming,
+	autoScroll,
+	t,
+	searchQuery,
+	searchActiveMessageId,
+	turnStartTime,
+	turnChanges,
+	onOpenDiff,
+	onCopyMessage,
+	onRecallMessage,
+	onForkMessage,
+	onRetryMessage,
+	onCompact,
+	onOpenSettings,
+}: {
+	messages: ChatMessage[];
+	streaming: boolean;
+	/** Whether the agent is mid-run (drives live group / live turn flags). */
+	working: boolean;
+	/** Whether assistant TEXT is streaming right now (percho streaming.text):
+	 * ends the live group immediately when the final answer starts. */
+	textStreaming?: boolean;
+	autoScroll?: boolean;
+	t: MessageCatalog;
+	searchQuery?: string;
+	searchActiveMessageId?: number | null;
+	/** Live turn anchor (Date.now at submit) for the ticking footer timer. */
+	turnStartTime?: number | null;
+	/** Shared per-turn changes (same source as the diff sidebar). */
+	turnChanges?: TurnChanges[];
+	/** Open the diff sidebar (turn footer file rows / chips). */
+	onOpenDiff?: () => void;
+	/** Copy a message's plain text to the system clipboard. */
+	onCopyMessage?: (text: string) => void;
+	/** Recall (delete) a specific user message and put its text back into the composer. */
+	onRecallMessage?: (msg: ChatMessage) => void;
+	/** Fork a new session ending at the given assistant message. */
+	onForkMessage?: (msg: ChatMessage) => void;
+	/** Retry (resend) the user message that preceded a failed turn. */
+	onRetryMessage?: (msg: ChatMessage) => void;
+	onCompact?: () => void;
+	onOpenSettings?: () => void;
 }) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const msgElsRef = useRef(new Map<number, HTMLDivElement>());
-	const [copiedId, setCopiedId] = useState<string | null>(null);
+	// working→done hysteresis (percho useShownWorking): keep the live group
+	// (orb + label + dots) through turn/tool gaps so it never flickers; end
+	// immediately once the final answer text starts streaming. Switching
+	// sessions resets instantly (first message id changes).
+	const shownWorking = useShownWorking(working, textStreaming ?? false, messages[0]?.id);
 	// Start "stuck" so the view lands at the latest message when a session
 	// (or history) is loaded; only the user's own scrolling can unstick it.
 	const stickRef = useRef(true);
-	const copyTimerRef = useRef<number>(0);
 
 	// The ref element (`.messages`) grows with content; the actual scroll
 	// container is its parent `.chat-scroll`, so scroll that instead.
@@ -656,70 +635,6 @@ export const MessageList = memo(function MessageList({
 		};
 	}, [follow]);
 
-	// Attach each tool-result message to the tool call that produced it, so a
-	// call and its output render as one card instead of two disconnected
-	// strips. Results arrive after the calls, in order; a new assistant
-	// message means earlier calls can no longer produce results.
-	const items = useMemo(() => {
-		const list: {
-			msg: ChatMessage;
-			attached: Map<number, ToolBlockT>;
-			/** Whether the tool-result message feeding this slot is streaming. */
-			attachedStreaming: Map<number, boolean>;
-			consumed: Set<number>;
-		}[] = [];
-		let pending: { item: (typeof list)[number]; index: number }[] = [];
-		for (const msg of messages) {
-			if (msg.role === "assistant") pending = [];
-			const item = {
-				msg,
-				attached: new Map<number, ToolBlockT>(),
-				attachedStreaming: new Map<number, boolean>(),
-				consumed: new Set<number>(),
-			};
-			if (msg.role === "tool") {
-				msg.blocks.forEach((b, i) => {
-					if (b.kind !== "tool") return;
-					const slot = pending.shift();
-					if (slot) {
-						slot.item.attached.set(slot.index, b);
-						slot.item.attachedStreaming.set(slot.index, msg.streaming);
-						item.consumed.add(i);
-					}
-				});
-				// Drop the message entirely once every block was attached.
-				if (item.consumed.size < msg.blocks.length) list.push(item);
-				continue;
-			}
-			list.push(item);
-			if (msg.role === "assistant") {
-				msg.blocks.forEach((b, i) => {
-					if (b.kind === "tool" && !b.result) pending.push({ item, index: i });
-				});
-			}
-		}
-		return list;
-	}, [messages]);
-
-	const copyMessage = useCallback(async (m: ChatMessage, mode: "md" | "text") => {
-		const content = mode === "md" ? chatMessageToMarkdown(m) : chatMessageToPlainText(m);
-		if (!content) return;
-		const key = `${m.id}-${mode}`;
-		try {
-			await navigator.clipboard.writeText(content);
-			setCopiedId(key);
-			window.clearTimeout(copyTimerRef.current);
-			copyTimerRef.current = window.setTimeout(() => {
-				setCopiedId((cur) => (cur === key ? null : cur));
-			}, 1200);
-		} catch {
-			/* clipboard unavailable */
-		}
-	}, []);
-
-	// Clear the copied-indicator timer on unmount.
-	useEffect(() => () => window.clearTimeout(copyTimerRef.current), []);
-
 	// Scroll the active search hit into view within the chat scroller (its
 	// parent `.chat-scroll`), not via scrollIntoView (which can also scroll
 	// ancestor containers). Jumping to a hit is explicit user intent: stop
@@ -741,138 +656,127 @@ export const MessageList = memo(function MessageList({
 		}
 	}, [searchActiveMessageId]);
 
+	const refCb = useCallback((id: number, el: HTMLDivElement | null) => {
+		if (el) msgElsRef.current.set(id, el);
+		else msgElsRef.current.delete(id);
+	}, []);
+
+	// ---- row derivation ----
+	const items = useMemo(() => attachToolResults(messages), [messages]);
+	const changes = useMemo(
+		() => turnChanges ?? deriveTurnChanges(messages),
+		[turnChanges, messages],
+	);
+	const rows = useMemo(
+		() =>
+			buildChatRows(items, {
+				working,
+				streaming,
+				bypassIds: searchBypassIds(messages, searchQuery),
+				turnChanges: changes,
+				turnTimings: deriveTurnTimings(messages),
+			}),
+		[items, working, streaming, messages, searchQuery, changes],
+	);
+	// The last group is the "live" one while the agent works with no text
+	// streaming yet (text closes the group — see chat-rows.ts).
+	// The group the agent is currently working in: scan backwards for the
+	// nearest group row, stopping at a message whose TEXT is streaming right
+	// now (percho streaming.text) — while the final answer is flowing the
+	// group folds; the moment the text ends (text_end, agent still active)
+	// the group lights back up while it thinks about the next step.
+	const lastGroupKey = useMemo(() => {
+		for (let i = rows.length - 1; i >= 0; i--) {
+			const row = rows[i];
+			if (row.kind === "group") return row.key;
+			if (row.kind === "msg") {
+				if (textStreaming && row.item.msg.role === "assistant") break;
+			}
+		}
+		return null;
+	}, [rows, textStreaming]);
+
+	// The most recent user message id — the only one that can be recalled
+	// (percho: recallMessage applies to the trailing user turn; older ones
+	// stay in place). Frozen mid-stream so the live group doesn't keep
+	// changing the target behind the user's hand.
+	const lastUserMessageId = useMemo(() => {
+		if (streaming) return null;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			if (messages[i].role === "user") return messages[i].id;
+		}
+		return null;
+	}, [messages, streaming]);
+
+	// The last assistant message carrying text — the ONLY one that gets
+	// actions (percho showActions = turn-final text id): intermediate
+	// narration between tool bursts renders bare; the turn's final answer
+	// carries Copy + Fork.
+	const turnFinalAssistantId = useMemo(() => {
+		if (streaming) return null;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const m = messages[i];
+			if (m.role === "assistant" && m.blocks.some((b) => b.kind === "text" && b.text.trim())) {
+				return m.id;
+			}
+		}
+		return null;
+	}, [messages, streaming]);
+
 	return (
 		<div ref={scrollRef} className="messages">
-			{items.map(({ msg: m, attached, attachedStreaming, consumed }) => {
-				const time = m.role === "user" ? formatTime(m.timestamp) : null;
-				const isSearchTarget =
-					searchQuery != null && searchActiveMessageId != null && m.id === searchActiveMessageId;
+			{rows.map((row) => {
+				if (row.kind === "turn") {
+					return (
+						<TurnDiffRow
+							key={row.key}
+							changes={row.changes}
+							startedAt={row.startedAt}
+							endedAt={row.endedAt}
+							live={row.live}
+							liveStart={turnStartTime ?? null}
+							onOpenDiff={onOpenDiff}
+							t={t}
+						/>
+					);
+				}
+				if (row.kind === "group") {
+					return (
+						<MetaGroup
+							key={row.key}
+							entries={row.entries}
+							live={shownWorking && row.key === lastGroupKey}
+							t={t}
+						/>
+					);
+				}
 				return (
-					<div
-						key={m.id}
-						ref={(el) => {
-							if (el) msgElsRef.current.set(m.id, el);
-							else msgElsRef.current.delete(m.id);
-						}}
-						className={`message ${m.role}${isSearchTarget ? " message-search-target" : ""}`}
-					>
-						{m.role === "assistant" && <AssistantFooter message={m} t={t} />}
-						{(m.role === "assistant" || (m.role === "user" && onFork && m.entryId)) && (
-							<div className="message-hover-actions">
-								{m.role === "user" && onFork && m.entryId && (
-									<button
-										className="fork-btn"
-										title={t.chat.branch}
-										onClick={() => onFork(m.entryId as string)}
-									>
-										<BranchIcon size={12} />
-									</button>
-								)}
-								<button
-									className="fork-btn"
-									title={t.chat.copy}
-									onClick={() => void copyMessage(m, "md")}
-								>
-									{copiedId === `${m.id}-md` ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
-								</button>
-								<button
-									className="fork-btn"
-									title={t.chat.copyPlainText}
-									onClick={() => void copyMessage(m, "text")}
-								>
-									{copiedId === `${m.id}-text` ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
-								</button>
-							</div>
-						)}
-						{m.blocks.map((b, i) => {
-							if (consumed.has(i)) return null;
-							if (b.kind === "text") {
-								if (m.role === "tool") {
-									// Tool result text streaming in. Nobody reads
-									// this mid-stream — the assistant's running
-									// tool card already shows the state. Keep the
-									// message empty (only the cursor) until the
-									// authoritative ToolOutput replaces it, so the
-									// DOM doesn't grow and reflow every frame.
-									// Exception: in-session search highlights the
-									// content the user is actively looking for.
-									if (isSearchTarget && searchQuery) {
-										return (
-											<div className="text-block highlighted-text" key={i}>
-												{splitOnQuery(b.text, searchQuery).map((p, j) =>
-													p.match ? (
-														<mark key={j} className="session-search-hit">
-															{p.text}
-														</mark>
-													) : (
-														<span key={j}>{p.text}</span>
-													),
-												)}
-											</div>
-										);
-									}
-									return null;
-								}
-								if (isSearchTarget && searchQuery) {
-									// Plain-text rendering with highlighted matches for
-									// the focused message (markdown stays on elsewhere).
-									return (
-										<div className="text-block highlighted-text" key={i}>
-											{splitOnQuery(b.text, searchQuery).map((p, j) =>
-												p.match ? (
-													<mark key={j} className="session-search-hit">
-														{p.text}
-													</mark>
-												) : (
-													<span key={j}>{p.text}</span>
-												),
-											)}
-										</div>
-									);
-								}
-								return (
-									<div className="text-block" key={i}>
-										<Markdown text={b.text} streaming={m.streaming} />
-									</div>
-								);
-							}
-							if (b.kind === "thinking") {
-								if (isSearchTarget && searchQuery) {
-									// Highlight matches inside thinking blocks too, so a
-									// hit there is visible (not just counted).
-									return (
-										<div className="text-block thinking highlighted-text" key={i}>
-											{splitOnQuery(b.text, searchQuery).map((p, j) =>
-												p.match ? (
-													<mark key={j} className="session-search-hit">
-														{p.text}
-													</mark>
-												) : (
-													<span key={j}>{p.text}</span>
-												),
-											)}
-										</div>
-									);
-								}
-								return <ThinkingBlock key={i} text={b.text} streaming={m.streaming} t={t} />;
-							}
-							return (
-								<ToolCard
-									key={i}
-									block={b}
-									result={b.result ? b : (attached.get(i) ?? null)}
-									running={
-										(m.streaming && i === m.blocks.length - 1) ||
-										(attachedStreaming.get(i) ?? false)
-									}
-									t={t}
-								/>
-							);
-						})}
-						{m.error && <div className="msg-error">error: {m.error}</div>}
-						{m.streaming && <span className="cursor" />}
-						{time && <div className="message-meta">{time}</div>}
-					</div>
+					<MessageRow
+						key={row.key}
+						item={row.item}
+						skip={row.skip}
+						textAllow={row.textAllow}
+						last={row.last}
+						t={t}
+						searchQuery={searchQuery}
+						searchActiveMessageId={searchActiveMessageId}
+						refCb={refCb}
+						onCopy={onCopyMessage}
+						onRecall={row.item.msg.role === "user" ? () => onRecallMessage?.(row.item.msg) : undefined}
+						canRecall={row.item.msg.id === lastUserMessageId}
+						canFork={
+							row.item.msg.role === "assistant" &&
+							row.item.msg.id === turnFinalAssistantId
+						}
+						onFork={
+							row.item.msg.role === "assistant"
+								? () => onForkMessage?.(row.item.msg)
+								: undefined
+						}
+						onRetry={row.item.msg.error && typeof row.item.msg.error !== "string" ? () => onRetryMessage?.(row.item.msg) : undefined}
+						onCompact={onCompact}
+						onOpenSettings={onOpenSettings}
+					/>
 				);
 			})}
 		</div>

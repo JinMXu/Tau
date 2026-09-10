@@ -30,3 +30,16 @@ scripts/pdbresolve/target
 
 # Reference project (ousia is only a design reference, not part of Tau)
 ousia/
+
+src-tauri/resources/pi-runtime/*
+!src-tauri/resources/pi-runtime/README.txt
+
+# Local debug artifacts (screenshots, DOM dumps, build cache)
+.crop-*
+.dom-*
+.dom.html
+.edge-log.txt
+.preview-shot*
+.scratch-*.txt
+.shot-*
+*.tsbuildinfo

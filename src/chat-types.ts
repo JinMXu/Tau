@@ -1,3 +1,5 @@
+import type { UiError } from "./errors";
+
 export type TextBlock = { kind: "text"; text: string };
 export type ThinkingBlock = { kind: "thinking"; text: string };
 export type ToolBlock = {
@@ -16,11 +18,13 @@ export interface ChatMessage {
 	role: "user" | "assistant" | "tool";
 	blocks: Block[];
 	streaming: boolean;
-	error?: string;
+	error?: UiError | string;
 	replay?: boolean;
 	timestamp?: string;
 	/** Pi session entry id — used for message-level forking. */
 	entryId?: string | null;
+	/** Attached images (user messages): base64 payload, no data-url prefix. */
+	images?: { mimeType: string; data: string }[];
 }
 
 export interface Attachment {

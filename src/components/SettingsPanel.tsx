@@ -15,6 +15,7 @@ import {
 	piPackages,
 	piProviders,
 	piRemoveCustomProvider,
+	sidecarPing,
 	type AuthProviderStatus,
 	type CustomProviderEntry,
 	type McpServerEntry,
@@ -1718,8 +1719,13 @@ export function SettingsPanel({
 						<h3>{t.settings.about}</h3>
 					<Row label={t.settings.piBinary}>
 						<span className="settings-value">
-							{binary ? `${binary.version} · ${binary.bin}` : t.settings.binError}
+							{binary
+								? `${binary.version}${binary.builtin ? ` · ${t.settings.piBuiltin}` : ""} · ${binary.bin}`
+								: t.settings.binError}
 						</span>
+					</Row>
+					<Row label={t.settings.sdkSidecar}>
+						<SidecarStatus t={t} />
 					</Row>
 					<Row label={t.settings.sessionDir}>
 						<button className="link-btn" onClick={onOpenSessionDir} title={sessionDir}>
@@ -1926,5 +1932,29 @@ export function SettingsPanel({
 				</div>
 			</div>
 		</div>
+	);
+}
+ 
+function SidecarStatus({ t }: { t: MessageCatalog }) {
+	const [status, setStatus] = useState<string | null>(null);
+
+	useEffect(() => {
+		let live = true;
+		sidecarPing()
+			.then((r) => {
+				if (live) setStatus(`pi ${r.pi} · node ${r.node}`);
+			})
+			.catch(() => {
+				if (live) setStatus(t.settings.sdkSidecarError);
+			});
+		return () => {
+			live = false;
+		};
+	}, [t]);
+
+	return (
+		<span className="settings-value" title={status ?? undefined}>
+			{status ?? t.settings.sdkSidecarChecking}
+		</span>
 	);
 }

@@ -14,9 +14,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
-/// One independent pi RPC process per window (multi-window support).
+/// One independent pi RPC process per session channel; channels are keyed
+/// by `"{window_label}\u{1}{chan}"` so a single window can keep several
+/// sessions running concurrently (switching away no longer kills the run).
 pub struct PiState {
 	inner: Arc<Mutex<HashMap<String, PiProcess>>>,
+}
+
+/// Map key for one session channel inside a window. `\u{1}` can never
+/// appear in a window label, so `{label}\u{1}…` prefixes can't collide with
+/// another window whose label merely starts with the same text.
+fn channel_key(label: &str, chan: &str) -> String {
+	format!("{label}\u{1}{chan}")
+}
+
+/// Prefix shared by every channel of one window.
+fn window_prefix(label: &str) -> String {
+	format!("{label}\u{1}")
 }
 
 /// Serializes the tests that mutate process-global env vars (PI_SESSION_DIR,
@@ -52,6 +66,9 @@ pub(crate) struct PiProcess {
 	/// replaced by a newer `pi_start`); the exit reader reports a crash only
 	/// when the flag is still false.
 	explicit_stop: Arc<AtomicBool>,
+	/// Frontend-facing channel id (without the window-label prefix). Tagged
+	/// onto every emitted event so the webview can route events per session.
+	chan_id: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -65,6 +82,10 @@ pub struct PiBinaryInfo {
 	/// our arguments (system prompts, session names, package sources).
 	#[serde(skip)]
 	pub(crate) direct: Option<(String, String)>,
+	/// True when pi comes from the runtime vendored into the installer
+	/// (`npm run vendor:pi`) — no system-wide pi install is required.
+	#[serde(default)]
+	pub(crate) builtin: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -84,12 +105,20 @@ pub struct PiSessionInfo {
 	size: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PiParsedImage {
+	mime_type: String,
+	data: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PiParsedBlock {
 	kind: String,
 	text: String,
 	name: Option<String>,
+	image: Option<PiParsedImage>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -398,6 +427,7 @@ fn probe_candidate(bin: &str) -> Option<PiBinaryInfo> {
 		bin: bin.to_string(),
 		version,
 		direct,
+		builtin: false,
 	})
 }
 
@@ -433,9 +463,90 @@ pub(crate) fn probe_pi() -> Option<PiBinaryInfo> {
 	info
 }
 
+/// Directories that may hold the vendored pi runtime (installed by
+/// `npm run vendor:pi` into `src-tauri/resources/pi-runtime` and mapped by
+/// tauri.conf.json into the bundle as `<resource_dir>/pi-runtime`). Most
+/// specific candidate first. `TAU_PI_RUNTIME` overrides everything, mirroring
+/// how `PI_BIN` overrides the PATH probe.
+pub(crate) fn vendored_runtime_dirs() -> Vec<PathBuf> {
+	let mut dirs: Vec<PathBuf> = Vec::new();
+	if let Some(env_dir) = std::env::var_os("TAU_PI_RUNTIME") {
+		dirs.push(PathBuf::from(env_dir));
+	}
+	if let Ok(exe) = std::env::current_exe() {
+		if let Some(parent) = exe.parent() {
+			// Windows/Linux installs place resources next to the executable;
+			// the second form covers builds that keep the `resources/` prefix.
+			dirs.push(parent.join("pi-runtime"));
+			dirs.push(parent.join("resources").join("pi-runtime"));
+		}
+	}
+	// Dev builds run from target/debug — fall back to the source tree layout.
+	dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join("pi-runtime"));
+	dirs
+}
+
+/// Vendored runtime layout inside `dir`: `node/node(.exe)` plus the
+/// npm-installed pi package entry. Returns (node, cli.js) when both exist.
+pub(crate) fn vendored_layout(dir: &Path) -> Option<(PathBuf, PathBuf)> {
+	let node_names: &[&str] = if cfg!(windows) {
+		&["node.exe", "node"]
+	} else {
+		&["node", "node.exe"]
+	};
+	let node = node_names
+		.iter()
+		.find_map(|n| {
+			let c = dir.join("node").join(n);
+			c.is_file().then_some(c)
+		})?;
+	let cli = dir
+		.join("node_modules")
+		.join("@earendil-works")
+		.join("pi-coding-agent")
+		.join("dist")
+		.join("bundle")
+		.join("cli.js");
+	cli.is_file().then_some((node, cli))
+}
+
+/// Probe the vendored runtime in `dir` by running `<node> <cli.js> --version`.
+/// The bundled node is always used — the whole point of the vendored layout is
+/// that the user may have neither pi nor node on PATH.
+fn probe_vendored_dir(dir: &Path) -> Option<PiBinaryInfo> {
+	let (node, cli) = vendored_layout(dir)?;
+	let mut cmd = Command::new(&node);
+	cmd.arg(&cli);
+	let out = probe_output(no_console_window(&mut cmd).arg("--version"))?;
+	if !out.status.success() {
+		return None;
+	}
+	let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+	if version.is_empty() {
+		return None;
+	}
+	let node_s = node.to_string_lossy().into_owned();
+	let cli_s = cli.to_string_lossy().into_owned();
+	Some(PiBinaryInfo {
+		bin: cli_s.clone(),
+		version,
+		direct: Some((node_s, cli_s)),
+		builtin: true,
+	})
+}
+
 fn probe_pi_uncached() -> Option<PiBinaryInfo> {
 	if let Ok(env_bin) = std::env::var("PI_BIN") {
 		if let Some(info) = probe_candidate(&env_bin) {
+			return Some(info);
+		}
+	}
+	// Vendored runtime bundled with the installer: preferred over PATH so the
+	// app works with no system-wide pi install at all. PI_BIN above stays an
+	// explicit developer override. Missing/incomplete vendored layouts simply
+	// fall through to the PATH candidates below.
+	for dir in vendored_runtime_dirs() {
+		if let Some(info) = probe_vendored_dir(&dir) {
 			return Some(info);
 		}
 	}
@@ -645,7 +756,10 @@ impl PiProcess {
 		excluded_tools: Option<&[String]>,
 		models: Option<&str>,
 		state: Arc<Mutex<HashMap<String, PiProcess>>>,
-		label: String,
+		// Full map key (`{window_label}\u{1}{chan}`).
+		key: String,
+		// Frontend-facing channel id used to tag emitted events.
+		chan_id: String,
 		window: &WebviewWindow,
 	) -> Result<(), String> {
 		self.kill();
@@ -655,6 +769,14 @@ impl PiProcess {
 			.arg("rpc")
 			.arg("--session-dir")
 			.arg(default_session_dir());
+		// Tau desktop tools: load the bundled extension (registered via the
+		// SDK's registerTool) into the RPC session when the vendored runtime
+		// is available. TAU_PI_PKG lets the extension resolve typebox from
+		// pi's own dependency tree.
+		if let Some((ext, pkg_index)) = crate::sidecar::tau_extension_paths() {
+			cmd.arg("--extension").arg(ext);
+			cmd.env("TAU_PI_PKG", pkg_index);
+		}
 		// Scoped model patterns for Ctrl+P cycling (/scoped-models equivalent).
 		if let Some(models) = models {
 			let models = models.trim();
@@ -732,7 +854,9 @@ impl PiProcess {
 		let win_stdout = window.clone();
 		let win_stderr = window.clone();
 		let state = state.clone();
-		let label_thread = label.clone();
+		let key_thread = key.clone();
+		let chan_thread = chan_id.clone();
+		let chan_stderr = chan_id.clone();
 		let stop_flag_thread = stop_flag.clone();
 		thread::spawn(move || {
 			let reader = BufReader::new(stdout);
@@ -767,7 +891,10 @@ impl PiProcess {
 				if line_len > 4 * 1024 * 1024 {
 					cap_strings(&mut payload, 1024 * 1024);
 				}
-				if win_stdout.emit("pi://event", &payload).is_err() {
+				// Envelope: tag every event with the session channel so a window
+				// running several sessions can route each event to its own UI.
+				let envelope = serde_json::json!({ "chan": chan_thread, "ev": payload });
+				if win_stdout.emit("pi://event", &envelope).is_err() {
 					emit_errors += 1;
 				}
 				streamed += 1;
@@ -775,18 +902,18 @@ impl PiProcess {
 					crate::runtime_log::log_info(
 						&app_stdout,
 						&format!(
-							"pi stream: {streamed} events, {emit_errors} emit errors window={label_thread}"
+							"pi stream: {streamed} events, {emit_errors} emit errors channel={key_thread}"
 						),
 					);
 				}
 			}
 			let mut guard = lock_state(&state);
 			let is_current = guard
-				.get(&label_thread)
+				.get(&key_thread)
 				.and_then(|p| p.child.as_ref())
 				.is_some_and(|c| c.id() == pid);
 			let child = if is_current {
-				if let Some(p) = guard.get_mut(&label_thread) {
+				if let Some(p) = guard.get_mut(&key_thread) {
 					p.stdin = None;
 					p.child.take()
 				} else {
@@ -808,7 +935,7 @@ impl PiProcess {
 			// think the connection dropped.
 			if is_current && !stop_flag_thread.load(Ordering::Relaxed) {
 				crate::runtime_log::log_error(&app_stdout, "pi process exited");
-				let _ = win_stdout.emit("pi://exit", ());
+				let _ = win_stdout.emit("pi://exit", serde_json::json!({ "chan": chan_thread }));
 			}
 		});
 
@@ -819,10 +946,10 @@ impl PiProcess {
 					Ok(line) => line,
 					Err(_) => break,
 				};
-				// Window-scoped emit: each window only sees its own pi's stderr
-				// (an app-level emit would leak every window's logs into every
-				// window's stderr panel).
-				let _ = win_stderr.emit("pi://stderr", line);
+				// Channel-scoped emit: each channel's stderr is tagged so the
+				// webview can attribute diagnostics to the right session.
+				let _ = win_stderr
+					.emit("pi://stderr", serde_json::json!({ "chan": chan_stderr, "line": line }));
 			}
 		});
 
@@ -831,6 +958,7 @@ impl PiProcess {
 		self.workspace = Some(PathBuf::from(workspace));
 		self.session_file = session_file.map(PathBuf::from);
 		self.explicit_stop = stop_flag;
+		self.chan_id = chan_id;
 		Ok(())
 	}
 
@@ -940,19 +1068,37 @@ pub(crate) fn is_running_session(state: &PiState, path: &Path) -> bool {
 	})
 }
 
-/// Kill the pi process belonging to a window label (called when a window is
-/// destroyed). Takes the cloned process-map handle so window-destroy handlers
-/// can outlive the borrowed `State`.
+/// Kill every pi process belonging to a window label (called when a window
+/// is destroyed). Takes the cloned process-map handle so window-destroy
+/// handlers can outlive the borrowed `State`.
 pub(crate) fn kill_window_process_inner(
 	inner: &Arc<Mutex<HashMap<String, PiProcess>>>,
 	label: &str,
 ) {
-	// Remove the entry under the lock (a destroyed window's process is gone
-	// for good — this also keeps the map from growing without bound) and kill
-	// outside it: kill() waits for the child to exit and must not block other
-	// windows' RPC commands.
-	let proc = inner.lock().ok().and_then(|mut map| map.remove(label));
-	if let Some(mut p) = proc {
+	// Remove the entries under the lock (a destroyed window's processes are
+	// gone for good — this also keeps the map from growing without bound) and
+	// kill outside it: kill() waits for the child to exit and must not block
+	// other windows' RPC commands.
+	let prefix = window_prefix(label);
+	let procs: Vec<PiProcess> = inner
+		.lock()
+		.ok()
+		.and_then(|mut map| {
+			let keys: Vec<String> = map
+				.keys()
+				.filter(|k| k.starts_with(&prefix))
+				.cloned()
+				.collect();
+			let removed: Vec<PiProcess> =
+				keys.iter().filter_map(|k| map.remove(k)).collect();
+			if removed.is_empty() {
+				None
+			} else {
+				Some(removed)
+			}
+		})
+		.unwrap_or_default();
+	for mut p in procs {
 		p.kill();
 	}
 }
@@ -1179,11 +1325,6 @@ struct SessionScan {
 	model: Option<String>,
 	created_at: Option<u64>,
 	message_count: u64,
-	/// Subagent sessions (pi's Agent tool spawns them) carry `parentSession`
-	/// in the header and fork the parent's early history, so they show up as
-	/// duplicate-titled entries in the session list. They are internal
-	/// artifacts, not user sessions — the list/search views skip them.
-	is_subagent: bool,
 }
 
 /// Scan a session JSONL for display metadata. `limit` caps lines scanned
@@ -1196,7 +1337,6 @@ fn scan_session(path: &Path, limit: usize) -> SessionScan {
 		model: None,
 		created_at: None,
 		message_count: 0,
-		is_subagent: false,
 	};
 	let file = match File::open(path) {
 		Ok(f) => f,
@@ -1227,10 +1367,6 @@ fn scan_session(path: &Path, limit: usize) -> SessionScan {
 					.get("timestamp")
 					.and_then(|x| x.as_str())
 					.and_then(parse_iso_ms);
-				scan.is_subagent = v
-					.get("parentSession")
-					.and_then(|x| x.as_str())
-					.is_some_and(|s| !s.is_empty());
 			}
 			"model_change" => {
 				let provider = v.get("provider").and_then(|x| x.as_str());
@@ -1344,17 +1480,25 @@ fn par_map<T: Send>(items: Vec<PathBuf>, f: impl Fn(&Path) -> T + Sync) -> Vec<T
 	})
 }
 
+/// 子代理会话存放在嵌套目录（<项目目录>/<会话uuid>/<agent-id>/…）；
+/// 分支会话（pi 的 fork 与 Tau 的 pi_fork_session）与用户会话同层，
+/// header 也带 parentSession——判据是相对目录深度而非 header。
+fn is_nested_session(sessions_root: &Path, path: &Path) -> bool {
+	path
+		.strip_prefix(sessions_root)
+		.map(|r| r.components().count() > 2)
+		.unwrap_or(false)
+}
+
 fn collect_sessions(dir: &Path, out: &mut Vec<PiSessionInfo>) {
 	let mut files = Vec::new();
 	session_files(dir, &mut files, 0);
+	// 列表只收与用户会话同层的文件；嵌套的子代理产物跳过。
+	// （归档/清理等全量遍历场景直接用 session_files。）
+	files.retain(|p| !is_nested_session(dir, p));
 	let infos = par_map(files, |path| {
 		let meta = std::fs::metadata(path).ok();
 		let scan = scan_session(path, 400);
-		// Subagent sessions are internal artifacts of a parent session's Agent
-		// tool runs — don't list them as user sessions.
-		if scan.is_subagent {
-			return None;
-		}
 		Some(PiSessionInfo {
 			path: path.to_string_lossy().into_owned(),
 			name: file_stem(path),
@@ -1391,7 +1535,8 @@ fn parse_message_blocks(message: &serde_json::Value) -> Vec<PiParsedBlock> {
 							kind: "text".into(),
 							text: text.to_string(),
 							name: None,
-						});
+						image: None,
+					});
 					}
 				}
 				"thinking" => {
@@ -1400,7 +1545,8 @@ fn parse_message_blocks(message: &serde_json::Value) -> Vec<PiParsedBlock> {
 							kind: "thinking".into(),
 							text: text.to_string(),
 							name: None,
-						});
+						image: None,
+					});
 					}
 				}
 				"toolCall" | "tool_call" | "toolUse" => {
@@ -1424,9 +1570,29 @@ fn parse_message_blocks(message: &serde_json::Value) -> Vec<PiParsedBlock> {
 						kind: "tool".into(),
 						text: args,
 						name: Some(name),
+					image: None,
 					});
 				}
-				_ => {}
+				"image" => {
+				let mime = item
+					.get("mime_type")
+					.or_else(|| item.get("mimeType"))
+					.and_then(|x| x.as_str())
+					.unwrap_or("image/png")
+					.to_string();
+				if let Some(data) = item.get("data").and_then(|x| x.as_str()) {
+					blocks.push(PiParsedBlock {
+						kind: "image".into(),
+						text: String::new(),
+						name: None,
+						image: Some(PiParsedImage {
+							mime_type: mime,
+							data: data.to_string(),
+						}),
+					});
+				}
+			}
+			_ => {}
 			}
 		}
 	}
@@ -1499,6 +1665,7 @@ fn read_session_messages(path: &Path) -> Vec<PiParsedMessage> {
 							text
 						},
 						name: Some(name.to_string()),
+					image: None,
 					}],
 				});
 			}
@@ -1517,7 +1684,7 @@ async fn pi_binary(app: AppHandle) -> Result<PiBinaryInfo, String> {
 	// run it on the blocking pool instead.
 	let result = run_blocking(|| {
 		probe_pi().ok_or_else(|| {
-			"pi binary not found. Install pi via npm (https://github.com/earendil-works/pi) or set PI_BIN to the pi executable or its cli.js entrypoint.".into()
+			"pi binary not found. The bundled runtime is missing — run `npm run vendor:pi` and rebuild, or install pi via npm (https://github.com/earendil-works/pi) or set PI_BIN to the pi executable or its cli.js entrypoint.".into()
 		})
 	})
 	.await;
@@ -1543,6 +1710,7 @@ async fn pi_start(
 	models: Option<String>,
 	excluded_tools: Option<Vec<String>>,
 	append_system_prompt: Option<String>,
+	chan: Option<String>,
 ) -> Result<(), String> {
 	// Probe + spawn (and killing any replaced process) can block for seconds
 	// on a cold first launch (antivirus scanning node.exe, slow PATH
@@ -1563,12 +1731,19 @@ async fn pi_start(
 			models,
 			excluded_tools,
 			append_system_prompt,
+			chan.as_deref().unwrap_or("main"),
 		)
 	})
 	.await
 }
 
 /// Sync body of `pi_start`, executed on the blocking thread pool.
+///
+/// Spawns the session on its own channel. Other channels of the same window
+/// keep running — that's what makes concurrent sessions possible: switching
+/// to another session in the UI starts a new channel instead of killing the
+/// previous process. The same session file still can't be attached twice
+/// (concurrent appends would corrupt the JSONL).
 #[allow(clippy::too_many_arguments)]
 fn pi_start_inner(
 	window: &WebviewWindow,
@@ -1582,19 +1757,21 @@ fn pi_start_inner(
 	models: Option<String>,
 	excluded_tools: Option<Vec<String>>,
 	append_system_prompt: Option<String>,
+	chan: &str,
 ) -> Result<(), String> {
 	let info = probe_pi().ok_or("pi binary not found")?;
 	let label = window.label().to_string();
-	// Conflict check + detach the window's previous process (if any) while
+	let key = channel_key(&label, chan);
+	// Conflict check + detach this channel's previous process (if any) while
 	// holding the lock — but only the detach; the actual kill happens after
 	// the lock is released (kill() waits for the child to exit, which would
 	// otherwise block every other window's RPC commands).
 	let old: Option<PiProcess> = {
 		let mut map = lock_state(inner);
-		// One pi process per session file: reject a second window opening the
-		// same JSONL (concurrent appends would corrupt it). Compare canonicalized
-		// paths so alternate spellings (symlinks, `..`, Windows `\\?\` prefixes)
-		// can't bypass the guard.
+		// One pi process per session file: reject a second channel (in any
+		// window) opening the same JSONL (concurrent appends would corrupt
+		// it). Compare canonicalized paths so alternate spellings (symlinks,
+		// `..`, Windows `\\?\` prefixes) can't bypass the guard.
 		if let Some(sf) = session_file.as_deref() {
 			let full = canonical_or(Path::new(sf));
 			if map.values().any(|p| {
@@ -1605,17 +1782,19 @@ fn pi_start_inner(
 				return Err("session is already open in another window".into());
 			}
 		}
-		// Detach this window's previous process and reserve the session slot in
-		// the SAME critical section as the check above. Without the reservation a
-		// second window could pass the check after we release the lock but before
-		// spawn() registers the child below, and both would append to the file.
-		let old = map.remove(&label);
+		// Detach only THIS channel's previous process and reserve the session
+		// slot in the SAME critical section as the check above. Other channels
+		// of this window are left untouched so their runs continue in the
+		// background. Without the reservation a second channel could pass the
+		// check after we release the lock but before spawn() registers the
+		// child below, and both would append to the file.
+		let old = map.remove(&key);
 		if let Some(sf) = session_file.as_deref() {
 			let placeholder = PiProcess {
 				session_file: Some(canonical_or(Path::new(sf))),
 				..Default::default()
 			};
-			map.insert(label.clone(), placeholder);
+			map.insert(key.clone(), placeholder);
 		}
 		old
 	};
@@ -1625,7 +1804,7 @@ fn pi_start_inner(
 	crate::runtime_log::log_info(
 		window.app_handle(),
 		&format!(
-			"pi_start window={label} workspace={workspace} session={} fork={} tools={}",
+			"pi_start window={label} channel={chan} workspace={workspace} session={} fork={} tools={}",
 			session_file.as_deref().unwrap_or("<new>"),
 			fork_of.as_deref().unwrap_or(""),
 			tools
@@ -1635,8 +1814,8 @@ fn pi_start_inner(
 		),
 	);
 	let mut map = lock_state(inner);
-	let entry = map.entry(label.clone()).or_default();
-	entry.spawn(
+	let entry = map.entry(key.clone()).or_default();
+	let spawned = entry.spawn(
 		&info,
 		workspace,
 		session_file.as_deref(),
@@ -1648,19 +1827,48 @@ fn pi_start_inner(
 		excluded_tools.as_deref(),
 		models.as_deref(),
 		inner.clone(),
-		label,
+		key,
+		chan.to_string(),
 		window,
-	)
+	);
+	if spawned.is_err() {
+		// Drop the placeholder/leftover entry so a failed spawn can't shadow
+		// later conflict checks (its session_file would look "already open").
+		// The previous process of this channel was already killed above, so
+		// the entry can't hold a live child here.
+		if let Some(p) = map.get(&channel_key(&label, chan)) {
+			if p.child.is_none() {
+				map.remove(&channel_key(&label, chan));
+			}
+		}
+	}
+	spawned
 }
 
 #[tauri::command]
-fn pi_stop(window: WebviewWindow, state: State<'_, PiState>) -> Result<(), String> {
+fn pi_stop(window: WebviewWindow, state: State<'_, PiState>, chan: Option<String>) -> Result<(), String> {
 	let label = window.label().to_string();
 	// Remove the process under the lock, then kill it after the lock is
 	// released: kill() waits for the child to exit, and doing that while
 	// holding the map lock would stall every other window's RPC commands.
-	let proc = lock_state(&state.inner).remove(&label);
-	if let Some(mut p) = proc {
+	// With a channel: stop just that session. Without: every channel of the
+	// window (window-close semantics).
+	let procs: Vec<PiProcess> = {
+		let mut map = lock_state(&state.inner);
+		match chan.as_deref() {
+			Some(c) => map.remove(&channel_key(&label, c)).into_iter().collect(),
+			None => {
+				let prefix = window_prefix(&label);
+				let keys: Vec<String> = map
+					.keys()
+					.filter(|k| k.starts_with(&prefix))
+					.cloned()
+					.collect();
+				keys.iter().filter_map(|k| map.remove(k)).collect()
+			}
+		}
+	};
+	for mut p in procs {
 		p.kill();
 	}
 	Ok(())
@@ -1705,18 +1913,42 @@ const ALLOWED_RPC_TYPES: &[&str] = &[
 ];
 
 #[tauri::command]
-fn pi_send(window: WebviewWindow, state: State<'_, PiState>, command: Value) -> Result<(), String> {
+fn pi_send(
+	window: WebviewWindow,
+	state: State<'_, PiState>,
+	command: Value,
+	chan: Option<String>,
+) -> Result<(), String> {
 	let kind = command.get("type").and_then(|x| x.as_str()).unwrap_or("");
 	if !ALLOWED_RPC_TYPES.contains(&kind) {
 		return Err(format!("unknown pi command type: {kind}"));
 	}
 	let label = window.label().to_string();
+	// Resolve the target channel's key. Explicit channel when given (the
+	// normal path); otherwise fall back to the window's single live channel
+	// so older callers keep working.
+	let key = match chan.as_deref() {
+		Some(c) => channel_key(&label, c),
+		None => {
+			let map = lock_state(&state.inner);
+			let prefix = window_prefix(&label);
+			let live: Vec<String> = map
+				.iter()
+				.filter(|(k, p)| k.starts_with(&prefix) && p.child.is_some())
+				.map(|(k, _)| k.clone())
+				.collect();
+			if live.len() != 1 {
+				return Err("pi is not running".into());
+			}
+			live.into_iter().next().unwrap()
+		}
+	};
 	// Take the stdin handle out of the map so the write doesn't hold the global
 	// process-map lock: a blocked write (pi busy, pipe buffer full) would
 	// otherwise stall every other window's RPC commands.
 	let mut stdin = {
 		let mut map = lock_state(&state.inner);
-		let p = map.get_mut(&label).ok_or("pi is not running")?;
+		let p = map.get_mut(&key).ok_or("pi is not running")?;
 		p.stdin.take().ok_or("pi is not running")?
 	};
 	let mut line = serde_json::to_string(&command).map_err(|e| e.to_string())?;
@@ -1750,7 +1982,7 @@ fn pi_send(window: WebviewWindow, state: State<'_, PiState>, command: Value) -> 
 	// Restore the handle (best-effort): only if the process wasn't replaced in
 	// the meantime (a replaced process already has its own stdin set).
 	let mut map = lock_state(&state.inner);
-	if let Some(p) = map.get_mut(&label) {
+	if let Some(p) = map.get_mut(&key) {
 		if p.stdin.is_none() {
 			p.stdin = Some(stdin);
 		}
@@ -1759,12 +1991,43 @@ fn pi_send(window: WebviewWindow, state: State<'_, PiState>, command: Value) -> 
 }
 
 #[tauri::command]
-fn pi_status(window: WebviewWindow, state: State<'_, PiState>) -> Result<PiStatus, String> {
+fn pi_status(window: WebviewWindow, state: State<'_, PiState>, chan: Option<String>) -> Result<PiStatus, String> {
 	let label = window.label().to_string();
 	let map = lock_state(&state.inner);
 	// A window that never started pi (fresh multi-window) reports idle
 	// instead of an error so the frontend startup probe stays clean.
-	let Some(p) = map.get(&label) else {
+	let lookup = |key: &str| map.get(key);
+	if let Some(c) = chan.as_deref() {
+		// Per-channel status.
+		let Some(p) = lookup(&channel_key(&label, c)) else {
+			return Ok(PiStatus {
+				running: false,
+				workspace: None,
+				session_file: None,
+			});
+		};
+		return Ok(PiStatus {
+			running: p.child.is_some(),
+			workspace: p
+				.workspace
+				.as_ref()
+				.map(|p| p.to_string_lossy().into_owned()),
+			session_file: p
+				.session_file
+				.as_ref()
+				.map(|p| p.to_string_lossy().into_owned()),
+		});
+	}
+	// Aggregate for the window: running when any channel's process is alive;
+	// workspace/session from a live channel (startup restore only cares that
+	// SOMETHING is running after a webview reload).
+	let prefix = window_prefix(&label);
+	let any = map
+		.iter()
+		.filter(|(k, p)| k.starts_with(&prefix) && p.child.is_some())
+		.map(|(_, p)| p)
+		.next();
+	let Some(p) = any else {
 		return Ok(PiStatus {
 			running: false,
 			workspace: None,
@@ -1772,7 +2035,7 @@ fn pi_status(window: WebviewWindow, state: State<'_, PiState>) -> Result<PiStatu
 		});
 	};
 	Ok(PiStatus {
-		running: p.child.is_some(),
+		running: true,
 		workspace: p
 			.workspace
 			.as_ref()
@@ -1813,6 +2076,213 @@ async fn pi_list_sessions() -> Result<Vec<PiSessionInfo>, String> {
 async fn pi_read_session(path: String) -> Result<Vec<PiParsedMessage>, String> {
 	let p = require_session_path(Path::new(&path))?;
 	run_blocking(move || Ok(read_session_messages(&p))).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PiForkResult {
+	session_file: String,
+}
+
+/// 32-hex uuid-v4-style id（无需 uuid 依赖：时间 + 地址熵拼接，仅用于唯一性）
+fn random_session_id() -> String {
+	use std::time::{SystemTime, UNIX_EPOCH};
+	let nanos = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.map(|d| d.as_nanos())
+		.unwrap_or(0);
+	let addr = &nanos as *const u128 as usize;
+	let mut acc = (nanos as u64) ^ ((addr as u64) << 17) ^ 0x9E37_79B9_7F4A_7C15;
+	let mut next = || {
+		acc ^= acc << 13;
+		acc ^= acc >> 7;
+		acc ^= acc << 17;
+		acc
+	};
+	let mut bytes = [0u8; 16];
+	for i in 0..4 {
+		let v = next().to_le_bytes();
+		bytes[i * 4..i * 4 + 4].copy_from_slice(&v[..4]);
+	}
+	bytes[6] = (bytes[6] & 0x0f) | 0x40; // v4
+	bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC4122
+	let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+	format!(
+		"{}-{}-{}-{}-{}",
+		&hex[0..8],
+		&hex[8..12],
+		&hex[12..16],
+		&hex[16..20],
+		&hex[20..32]
+	)
+}
+
+/// UTC ISO-8601（无 chrono：civil-from-days）
+fn iso_utc_now() -> String {
+	let secs = std::time::SystemTime::now()
+		.duration_since(std::time::UNIX_EPOCH)
+		.map(|d| d.as_secs())
+		.unwrap_or(0);
+	let days = (secs / 86_400) as i64;
+	let rem = secs % 86_400;
+	let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+	// Howard Hinnant 的 civil_from_days
+	let z = days + 719_468;
+	let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+	let doe = z - era * 146_097;
+	let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+	let y = yoe + era * 400;
+	let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	let mp = (5 * doy + 2) / 153;
+	let d = doy - (153 * mp + 2) / 5 + 1;
+	let month = if mp < 10 { mp + 3 } else { mp - 9 };
+	let year = if month <= 2 { y + 1 } else { y };
+	format!(
+		"{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}.000Z"
+	)
+}
+
+/// 分叉会话到指定条目（含该条目）：复刻 pi SessionManager.createBranchedSession
+/// 的落盘格式。pi 的 fork RPC 固定 position:"before"（只接受 user 条目），无法
+/// 用于 assistant 消息的分叉，所以在宿主侧落盘后由前端 switch_session 切换。
+/// entry_id 为空时取文件末尾条目（当前分支 leaf，即刚结束的 assistant 消息）。
+/// 去掉 Windows verbatim 前缀（`std::fs::canonicalize` 的产物 `\\?\C:\...`）。
+/// 返回给前端的路径必须与目录遍历得到的普通形式一致：sameSessionPath 只归一
+/// 大小写与斜杠，带前缀的路径会让 re-attach/占用判定失配（点击会话无反应）。
+fn clean_session_path(p: PathBuf) -> PathBuf {
+	let s = p.to_string_lossy().to_string();
+	if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+		return PathBuf::from(format!(r"\\{rest}"));
+	}
+	if let Some(rest) = s.strip_prefix(r"\\?\") {
+		return PathBuf::from(rest);
+	}
+	p
+}
+
+fn fork_session_at(src: &Path, entry_id: Option<&str>) -> Result<PiForkResult, String> {
+	use std::collections::HashMap;
+	let file = File::open(src).map_err(|e| format!("failed to open session: {e}"))?;
+	let reader = BufReader::new(file);
+	let mut header: Option<serde_json::Value> = None;
+	let mut entries: Vec<serde_json::Value> = Vec::new();
+	for line in LimitedLines::new(reader, MAX_JSONL_LINE).flatten() {
+		if line.trim().is_empty() {
+			continue;
+		}
+		let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+			continue;
+		};
+		if v.get("type").and_then(|x| x.as_str()) == Some("session") {
+			header = Some(v);
+		} else {
+			entries.push(v);
+		}
+	}
+	let header = header.ok_or("session file has no header entry")?;
+	let cwd = header
+		.get("cwd")
+		.and_then(|x| x.as_str())
+		.unwrap_or("")
+		.to_string();
+	// 输出路径与 parentSession 用去掉 verbatim 前缀的普通形式
+	let cleaned = clean_session_path(src.to_path_buf());
+	let src = cleaned.as_path();
+
+	// 未指定条目 → 取文件末尾条目（pi 线性追加，最后一行即当前分支叶）
+	let target_id: String = match entry_id {
+		Some(id) => id.to_string(),
+		None => entries
+			.last()
+			.and_then(|e| e.get("id").and_then(|x| x.as_str()))
+			.ok_or("session has no entries")?
+			.to_string(),
+	};
+
+	let by_id: HashMap<&str, &serde_json::Value> = entries
+		.iter()
+		.filter_map(|e| e.get("id").and_then(|x| x.as_str()).map(|s| (s, e)))
+		.collect();
+	if by_id.get(target_id.as_str()).is_none() {
+		return Err(format!("entry {target_id} not found in session"));
+	}
+	// 沿 parentId 走到根（leaf→root），再反转为 root→leaf
+	let mut chain: Vec<&serde_json::Value> = Vec::new();
+	let mut cur: Option<&str> = Some(target_id.as_str());
+	let mut guard = 0usize;
+	while let Some(id) = cur {
+		let e = by_id
+			.get(id)
+			.ok_or_else(|| format!("broken parent chain at {id}"))?;
+		chain.push(e);
+		cur = e.get("parentId").and_then(|x| x.as_str());
+		guard += 1;
+		if guard > entries.len() + 1 {
+			return Err("parent chain loop detected".into());
+		}
+	}
+	chain.reverse();
+	// 去掉 label 条目并重接 parentId（pi 同款处理，避免孤儿子树）
+	let mut out_entries: Vec<serde_json::Value> = Vec::with_capacity(chain.len());
+	let mut prev_id: Option<String> = None;
+	for e in chain {
+		if e.get("type").and_then(|x| x.as_str()) == Some("label") {
+			continue;
+		}
+		let mut copy = e.clone();
+		if let Some(obj) = copy.as_object_mut() {
+			obj.insert(
+				"parentId".into(),
+				match &prev_id {
+					Some(p) => serde_json::Value::String(p.clone()),
+					None => serde_json::Value::Null,
+				},
+			);
+		}
+		prev_id = copy.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
+		out_entries.push(copy);
+	}
+
+	// 新文件：pi 命名约定 {fileTimestamp}_{sessionId}.jsonl（同一会话目录）
+	let new_id = random_session_id();
+	let now_iso = iso_utc_now();
+	let file_stamp = now_iso.replace(':', "-").replace('.', "-");
+	let dir = src
+		.parent()
+		.map(|p| p.to_path_buf())
+		.ok_or("session file has no parent dir")?;
+	let new_file = dir.join(format!("{file_stamp}_{new_id}.jsonl"));
+
+	let mut new_header = serde_json::Map::new();
+	new_header.insert("type".into(), "session".into());
+	new_header.insert("version".into(), serde_json::Value::from(3));
+	new_header.insert("id".into(), serde_json::Value::from(new_id.clone()));
+	new_header.insert("timestamp".into(), serde_json::Value::from(now_iso.clone()));
+	if !cwd.is_empty() {
+		new_header.insert("cwd".into(), serde_json::Value::from(cwd));
+	}
+	new_header.insert(
+		"parentSession".into(),
+		serde_json::Value::from(src.to_string_lossy().to_string()),
+	);
+
+	let mut body = String::new();
+	body.push_str(&serde_json::to_string(&serde_json::Value::Object(new_header)).map_err(|e| e.to_string())?);
+	body.push('\n');
+	for e in &out_entries {
+		body.push_str(&serde_json::to_string(e).map_err(|e| e.to_string())?);
+		body.push('\n');
+	}
+	std::fs::write(&new_file, body).map_err(|e| format!("failed to write branched session: {e}"))?;
+	Ok(PiForkResult {
+		session_file: new_file.to_string_lossy().to_string(),
+	})
+}
+
+#[tauri::command]
+async fn pi_fork_session(path: String, entry_id: Option<String>) -> Result<PiForkResult, String> {
+	let src = require_session_path(Path::new(&path))?;
+	run_blocking(move || fork_session_at(&src, entry_id.as_deref())).await
 }
 
 #[tauri::command]
@@ -3589,9 +4059,12 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			pi_llama_unload,
 			pi_usage_stats,
 			pi_compact_session_images,
+			crate::sidecar::sidecar_ping,
+			crate::sidecar::sidecar_session_info,
 			pi_list_sessions,
 			pi_open_workspace,
 			pi_read_session,
+			pi_fork_session,
 			pi_search_sessions,
 			pi_archive_session,
 			pi_delete_session,
@@ -3640,6 +4113,42 @@ mod tests {
 			writeln!(file, "{line}").unwrap();
 		}
 		path
+	}
+
+	#[test]
+	fn forks_session_at_leaf() {
+		let path = write_temp_session(
+			"tau-fork-at",
+			&[
+				r#"{"type":"session","version":3,"id":"sess-1","timestamp":"2026-01-01T00:00:00.000Z","cwd":"D:/x"}"#,
+				r#"{"type":"model_change","id":"e1","parentId":null,"timestamp":"2026-01-01T00:00:01Z","provider":"p","modelId":"m"}"#,
+				r#"{"type":"message","id":"e2","parentId":"e1","timestamp":"2026-01-01T00:00:02Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#,
+				r#"{"type":"message","id":"e3","parentId":"e2","timestamp":"2026-01-01T00:00:03Z","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}"#,
+			],
+		);
+		let res = fork_session_at(&path, None).expect("fork should succeed");
+		let content = std::fs::read_to_string(&res.session_file).unwrap();
+		let lines: Vec<serde_json::Value> = content
+			.lines()
+			.map(|l| serde_json::from_str(l).unwrap())
+			.collect();
+		// header + 3 entries (model_change, user, assistant)
+		assert_eq!(lines.len(), 4);
+		let header = &lines[0];
+		assert_eq!(header["type"], "session");
+		assert_eq!(header["version"], 3);
+		assert_eq!(header["cwd"], "D:/x");
+		assert_eq!(header["parentSession"], path.to_string_lossy().to_string());
+		// 链式重接：根 parentId=null，其余串联到叶
+		assert_eq!(lines[1]["id"], "e1");
+		assert!(lines[1]["parentId"].is_null());
+		assert_eq!(lines[2]["parentId"], "e1");
+		assert_eq!(lines[3]["parentId"], "e2");
+		assert_eq!(lines[3]["id"], "e3");
+		// 非法条目报错
+		assert!(fork_session_at(&path, Some("nope")).is_err());
+		let _ = std::fs::remove_file(&res.session_file);
+		let _ = std::fs::remove_file(&path);
 	}
 
 	#[test]
@@ -3836,25 +4345,41 @@ mod tests {
 	}
 
 	#[test]
-	fn detects_subagent_session_header() {
-		let path = write_temp_session(
-			"scan-subagent",
-			&[
-				r#"{"type":"session","version":3,"id":"abc","timestamp":"2026-08-10T06:31:02.384Z","cwd":"D:\\projects\\demo","parentSession":"C:\\Users\\x\\.pi\\agent\\sessions\\parent.jsonl"}"#,
-				r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-10T06:31:10.660Z","message":{"role":"user","content":[{"type":"text","text":"sub task"}]}}"#,
-			],
-		);
-		let scan = scan_session(&path, 400);
-		assert!(scan.is_subagent);
-		assert_eq!(scan.project.as_deref(), Some("D:\\projects\\demo"));
+	fn collects_branched_but_not_nested_subagent_sessions() {
+		let root = std::env::temp_dir().join(format!("tau-collect-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&root);
+		let project = root.join("--proj--");
+		std::fs::create_dir_all(&project).unwrap();
+		// 分支会话：与用户会话同层（depth 1），header 带 parentSession —— 必须列出
+		let branched = project.join("2026-01-01T00-00-00-000Z_branched.jsonl");
+		std::fs::write(
+			&branched,
+			r#"{"type":"session","version":3,"id":"b1","timestamp":"2026-08-10T06:31:02.384Z","cwd":"D:/demo","parentSession":"C:/p.jsonl"}"#,
+		)
+		.unwrap();
+		// 子代理会话：嵌套目录（<会话uuid>/<agent-id>/…，depth >= 2）—— 必须跳过
+		let nested_dir = project.join("2026-01-01T00-00-00-000Z_parent").join("11859066");
+		std::fs::create_dir_all(&nested_dir).unwrap();
+		let nested = nested_dir.join("2026-01-01T00-05-00-000Z_sub.jsonl");
+		std::fs::write(
+			&nested,
+			r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-08-10T06:31:02.384Z","cwd":"D:/demo","parentSession":"C:/p.jsonl"}"#,
+		)
+		.unwrap();
 
-		let path = write_temp_session(
-			"scan-not-subagent",
-			&[
-				r#"{"type":"session","version":3,"id":"abc","timestamp":"2026-08-10T06:31:02.384Z","cwd":"D:\\projects\\demo"}"#,
-			],
-		);
-		assert!(!scan_session(&path, 400).is_subagent);
+		let mut out = Vec::new();
+		collect_sessions(&root, &mut out);
+		assert_eq!(out.len(), 1, "only the same-layer branched session lists");
+		assert_eq!(out[0].path, branched.to_string_lossy().to_string());
+
+		// 全量遍历（归档/清理用）仍收集两个文件；嵌套判定交给 is_nested_session
+		let mut files = Vec::new();
+		session_files(&root, &mut files, 0);
+		assert!(files.iter().any(|p| *p == nested));
+		assert!(files.iter().any(|p| *p == branched));
+		assert!(is_nested_session(&root, &nested));
+		assert!(!is_nested_session(&root, &branched));
+		let _ = std::fs::remove_dir_all(&root);
 	}
 
 	#[test]
@@ -4303,5 +4828,40 @@ mod e2e_tests {
 		let _ = child.kill();
 		let _ = child.wait();
 		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn vendored_layout_detects_node_and_cli() {
+		let dir = std::env::temp_dir().join(format!("tau-vendored-{}", std::process::id()));
+		let _ = std::fs::remove_dir_all(&dir);
+		let node_dir = dir.join("node");
+		std::fs::create_dir_all(&node_dir).unwrap();
+		let cli_dir = dir
+			.join("node_modules")
+			.join("@earendil-works")
+			.join("pi-coding-agent")
+			.join("dist")
+			.join("bundle");
+		std::fs::create_dir_all(&cli_dir).unwrap();
+		// Incomplete layout: no node, no cli.js yet.
+		assert!(vendored_layout(&dir).is_none());
+		let node_path = node_dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+		std::fs::File::create(&node_path).unwrap();
+		assert!(vendored_layout(&dir).is_none(), "cli.js still missing");
+		let cli = cli_dir.join("cli.js");
+		std::fs::File::create(&cli).unwrap();
+		let (node, cli_found) = vendored_layout(&dir).expect("complete layout");
+		assert_eq!(node, node_path);
+		assert_eq!(cli_found, cli);
+		let _ = std::fs::remove_dir_all(&dir);
+	}
+
+	#[test]
+	fn vendored_dirs_include_cargo_manifest_layout() {
+		// Dev builds must be able to find src-tauri/resources/pi-runtime even
+		// though the executable lives in target/debug.
+		let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+		assert!(vendored_runtime_dirs()
+			.contains(&manifest_dir.join("resources").join("pi-runtime")));
 	}
 }

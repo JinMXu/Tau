@@ -161,6 +161,16 @@ export function CheckIcon(props: IconProps) {
 	);
 }
 
+/** 左旋箭头，语义为“撤回上一条用户消息” */
+export function UndoIcon(props: IconProps) {
+	return (
+		<svg {...base(props)}>
+			<path d="M9 14L4 9l5-5" />
+			<path d="M4 9h11a5 5 0 0 1 5 5v0a5 5 0 0 1-5 5h-4" />
+		</svg>
+	);
+}
+
 export function TrashIcon(props: IconProps) {
 	return (
 		<svg {...base(props)}>
@@ -188,6 +198,16 @@ export function RestoreIcon(props: IconProps) {
 		<svg {...base(props)}>
 			<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
 			<path d="M3 3v5h5" />
+		</svg>
+	);
+}
+
+/** 齿轮：设置 */
+export function GearIcon(props: IconProps) {
+	return (
+		<svg {...base(props)}>
+			<circle cx="12" cy="12" r="3" />
+			<path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.04 1.56V21a2 2 0 0 1-4 0v-.09A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1.04H3a2 2 0 0 1 0-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1.04-1.56V3a2 2 0 0 1 4 0v.09A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.16.42.5.74.92.92.42.18.92.27 1.55.27H21a2 2 0 0 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1.04Z" />
 		</svg>
 	);
 }

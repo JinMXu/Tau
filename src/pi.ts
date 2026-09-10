@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 export interface PiBinaryInfo {
 	bin: string;
 	version: string;
+	/** True when pi comes from the runtime vendored into the installer. */
+	builtin?: boolean;
 }
 
 export interface PiSessionInfo {
@@ -20,9 +22,11 @@ export interface PiSessionInfo {
 }
 
 export interface PiParsedBlock {
-	kind: "text" | "thinking" | "tool";
+	kind: "text" | "thinking" | "tool" | "image";
 	text: string;
 	name?: string | null;
+	/** Present when kind === "image" (session file image content). */
+	image?: { mimeType: string; data: string } | null;
 }
 
 export interface PiParsedMessage {
@@ -137,9 +141,19 @@ export interface PiEvent {
 	[field: string]: unknown;
 }
 
-export function send(command: Record<string, unknown>, id?: string): Promise<unknown> {
+/**
+ * Send an RPC command to the session channel identified by `chan`.
+ * Each concurrent session runs on its own channel; omitting `chan` targets
+ * the window's only live channel (compat fallback).
+ */
+export function send(
+	command: Record<string, unknown>,
+	id?: string,
+	chan?: string | null,
+): Promise<unknown> {
 	return invoke("pi_send", {
 		command: { ...command, id },
+		chan: chan ?? null,
 	});
 }
 
@@ -168,10 +182,24 @@ export function fetchSubagentRuns(session: string): Promise<SubagentRun[]> {
 	return invoke("pi_subagent_runs", { session });
 }
 
+/** SDK sidecar ping: vendored node + pi SDK versions + agent dir. */
+export async function sidecarPing(): Promise<{
+	pi: string;
+	node: string;
+	agentDir: string;
+}> {
+	return invoke("sidecar_ping");
+}
+
 export async function binaryInfo(): Promise<PiBinaryInfo> {
 	return invoke("pi_binary");
 }
 
+/**
+ * Start (or replace) the pi process for one session channel. Multiple
+ * channels per window can run concurrently; `chan` identifies the session
+ * slot (an arbitrary frontend-generated id).
+ */
 export async function start(
 	workspace: string,
 	sessionFile?: string | null,
@@ -188,6 +216,7 @@ export async function start(
 		/** Model patterns for Ctrl+P cycling (--models flag, scoped models). */
 		models?: string | null;
 	},
+	chan?: string,
 ): Promise<void> {
 	await invoke("pi_start", {
 		workspace,
@@ -199,6 +228,7 @@ export async function start(
 		excludedTools: opts?.excludedTools ?? null,
 		appendSystemPrompt: opts?.appendSystemPrompt ?? null,
 		models: opts?.models ?? null,
+		chan: chan ?? null,
 	});
 }
 
@@ -229,16 +259,21 @@ export async function exportDiagnostics(): Promise<{
 	return invoke("export_diagnostics");
 }
 
-export async function stop(): Promise<void> {
-	await invoke("pi_stop");
+/** Stop one session channel; omit `chan` to stop every channel of the window. */
+export async function stop(chan?: string | null): Promise<void> {
+	await invoke("pi_stop", { chan: chan ?? null });
 }
 
 export async function newWindow(): Promise<void> {
 	await invoke("pi_new_window");
 }
 
-export async function status(): Promise<PiStatus> {
-	return invoke("pi_status");
+/**
+ * Live status. With `chan`: that channel's status. Without: whether any
+ * channel of the window is running (aggregate, used by the startup probe).
+ */
+export async function status(chan?: string | null): Promise<PiStatus> {
+	return invoke("pi_status", { chan: chan ?? null });
 }
 
 export async function listSessions(): Promise<PiSessionInfo[]> {
@@ -248,11 +283,16 @@ export async function listSessions(): Promise<PiSessionInfo[]> {
 export async function readSession(path: string): Promise<PiParsedMessage[]> {
 	return invoke("pi_read_session", { path });
 }
+/** 分叉会话到指定条目（含该条目）；entryId 省略时取当前分支末尾（最后一条 assistant）。 */
+export async function forkSessionAt(
+	path: string,
+	entryId?: string | null,
+): Promise<{ sessionFile: string }> {
+	return invoke("pi_fork_session", { path, entryId: entryId ?? null });
+}
 
-export async function searchSessions(
-	query: string,
-	limit?: number,
-): Promise<PiSearchHit[]> {
+
+export async function searchSessions(query: string, limit?: number): Promise<PiSearchHit[]> {
 	return invoke("pi_search_sessions", { query, limit });
 }
 
@@ -338,9 +378,7 @@ export interface McpServerEntry {
 	transport: "stdio" | "http" | "socket";
 }
 
-export async function piMcpServers(
-	project: string | null,
-): Promise<McpServerEntry[]> {
+export async function piMcpServers(project: string | null): Promise<McpServerEntry[]> {
 	return invoke("pi_mcp_servers", { project });
 }
 
@@ -381,17 +419,11 @@ export async function gitBranchState(project: string): Promise<GitBranchState> {
 	return invoke("git_branch_state", { project });
 }
 
-export async function gitCheckoutBranch(
-	project: string,
-	branch: string,
-): Promise<GitBranchState> {
+export async function gitCheckoutBranch(project: string, branch: string): Promise<GitBranchState> {
 	return invoke("git_checkout_branch", { project, branch });
 }
 
-export async function gitCreateBranch(
-	project: string,
-	branch: string,
-): Promise<GitBranchState> {
+export async function gitCreateBranch(project: string, branch: string): Promise<GitBranchState> {
 	return invoke("git_create_branch", { project, branch });
 }
 
@@ -407,16 +439,11 @@ export async function piPackageRemove(source: string): Promise<void> {
 	return invoke("pi_package_remove", { source });
 }
 
-export async function piInstalledSkills(
-	packages: PiPackageEntry[],
-): Promise<PiSkillEntry[]> {
+export async function piInstalledSkills(packages: PiPackageEntry[]): Promise<PiSkillEntry[]> {
 	return invoke("pi_installed_skills", { packages });
 }
 
-export async function piMoveSession(
-	path: string,
-	newProject: string,
-): Promise<void> {
+export async function piMoveSession(path: string, newProject: string): Promise<void> {
 	return invoke("pi_move_session", { path, newProject });
 }
 
@@ -461,10 +488,7 @@ export async function trustGet(project: string): Promise<boolean | null> {
 }
 
 /** Save/clear a project trust decision (null clears). */
-export async function trustSet(
-	project: string,
-	decision: boolean | null,
-): Promise<void> {
+export async function trustSet(project: string, decision: boolean | null): Promise<void> {
 	return invoke("pi_trust_set", { project, decision });
 }
 
@@ -478,25 +502,14 @@ export async function trustDefaultSet(value: string): Promise<void> {
 }
 
 /** Loaded model ids from the llama.cpp router (GET /v1/models). */
-export async function llamaModels(
-	url: string,
-	apiKey: string,
-): Promise<string[]> {
+export async function llamaModels(url: string, apiKey: string): Promise<string[]> {
 	return invoke("pi_llama_models", { url, apiKey });
 }
 
-export async function llamaLoad(
-	url: string,
-	apiKey: string,
-	name: string,
-): Promise<void> {
+export async function llamaLoad(url: string, apiKey: string, name: string): Promise<void> {
 	return invoke("pi_llama_load", { url, apiKey, name });
 }
 
-export async function llamaUnload(
-	url: string,
-	apiKey: string,
-	name: string,
-): Promise<void> {
+export async function llamaUnload(url: string, apiKey: string, name: string): Promise<void> {
 	return invoke("pi_llama_unload", { url, apiKey, name });
 }
