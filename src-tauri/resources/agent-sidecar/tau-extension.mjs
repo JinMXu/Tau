@@ -1,13 +1,7 @@
-// Tau desktop-tool extension — loaded by the pi RPC process via
-// `--extension <path>` (wired in src-tauri/src/pi.rs). Registers tools that
-// give the agent access to desktop-host capabilities a terminal CLI cannot
-// offer. Runs in-process with pi; desktop actions are executed directly.
-//
-// typebox is resolved through the pi package's own dependency tree via
-// createRequire (it lives nested under pi-coding-agent/node_modules).
-import { existsSync } from "node:fs";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const require = createRequire(process.env.TAU_PI_PKG);
 const { Type } = require("typebox");
@@ -16,25 +10,40 @@ const OPEN_PARAMS = Type.Object({
 	path: Type.String({ description: "Absolute path of the file or folder to open" }),
 });
 
+/// Open `target` in a desktop editor and return a human-readable outcome.
+/// VS Code when installed (resolved to its real exe — `code` is a .cmd shim
+/// that either flashes a console or needs windowsHide, which would hide the
+/// window), otherwise Notepad, otherwise Explorer's default handler. Editor
+/// spawns deliberately do NOT pass windowsHide: it makes Windows GUI apps
+/// start with a hidden window (STARTF_USESHOWWINDOW/SW_HIDE) — the process
+/// runs but nothing appears, which is worse than failing.
 function openInEditor(target) {
 	if (!existsSync(target)) {
 		return `not found: ${target}`;
 	}
-	let child;
 	if (process.platform === "win32") {
-		// VS Code when available, Notepad as the guaranteed fallback.
-		child = spawn("cmd", ["/c", "where", "code"], { stdio: "ignore", windowsHide: true });
-		child.on("exit", (code) => {
-			if (code === 0) {
-				spawn("cmd", ["/c", "code", target], { stdio: "ignore", windowsHide: true, detached: true });
-			} else {
-				spawn("notepad.exe", [target], { stdio: "ignore", windowsHide: true, detached: true });
+		try {
+			const where = spawnSync("cmd", ["/c", "where", "code"], {
+				encoding: "utf8",
+				windowsHide: true,
+			});
+			if (where.status === 0) {
+				const shim = (where.stdout ?? "").split(/\r?\n/).find((l) => l.trim());
+				if (shim) {
+					const codeExe = join(dirname(dirname(shim.trim())), "Code.exe");
+					if (existsSync(codeExe)) {
+						spawn(codeExe, [target], { stdio: "ignore", detached: true }).unref();
+						return `opening ${target} in VS Code`;
+					}
+				}
 			}
-		});
-	} else {
-		child = spawn("code", [target], { stdio: "ignore", detached: true });
+		} catch {
+			// fall through to Notepad
+		}
+		spawn("notepad.exe", [target], { stdio: "ignore", detached: true }).unref();
+		return `opening ${target} in Notepad`;
 	}
-	child.unref?.();
+	spawn("code", [target], { stdio: "ignore", detached: true }).unref();
 	return `opening ${target} in editor`;
 }
 
