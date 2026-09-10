@@ -678,36 +678,12 @@ export const MessageList = memo(function MessageList({
 			}),
 		[items, working, streaming, messages, searchQuery, changes],
 	);
-	// The last group is the "live" one while the agent works with no text
-	// streaming yet (text closes the group — see chat-rows.ts).
-	// The group the agent is currently working in: scan backwards for the
-	// nearest group row, stopping at a message whose TEXT is streaming right
-	// now (percho streaming.text) — while the final answer is flowing the
-	// group folds; the moment the text ends (text_end, agent still active)
-	// the group lights back up while it thinks about the next step.
-	const lastGroupKey = useMemo(() => {
-		// Only the CURRENT turn's group may light up live. Scan starts after
-		// the last user message: between submit and the new turn's first
-		// assistant block there is a gap (agent_start before message_start)
-		// where the previous turn's group would otherwise be mistaken for
-		// the live one and light up inside the old output.
-		let start = rows.length - 1;
-		for (let i = rows.length - 1; i >= 0; i--) {
-			const row = rows[i];
-			if (row.kind === "msg" && row.item.msg.role === "user") {
-				start = i;
-				break;
-			}
-		}
-		for (let i = rows.length - 1; i >= start; i--) {
-			const row = rows[i];
-			if (row.kind === "group") return row.key;
-			if (row.kind === "msg") {
-				if (textStreaming && row.item.msg.role === "assistant") break;
-			}
-		}
-		return null;
-	}, [rows, textStreaming]);
+	// Live groups self-identify: chat-rows marks an entry `running` only when
+	// it is the last block of a message that is streaming right now, so the
+	// MetaGroup holding that entry (and only that one) lights up while the
+	// agent works. No position-based scan — a position scan lit up the
+	// previous turn's group in the gap between submit and message_start,
+	// and could flash a thinking fold at the top of the transcript.
 
 	// The most recent user message id — the only one that can be recalled
 	// (percho: recallMessage applies to the trailing user turn; older ones
@@ -758,7 +734,7 @@ export const MessageList = memo(function MessageList({
 						<MetaGroup
 							key={row.key}
 							entries={row.entries}
-							live={shownWorking && row.key === lastGroupKey}
+							live={shownWorking && row.entries.some((e) => e.running)}
 							t={t}
 						/>
 					);
