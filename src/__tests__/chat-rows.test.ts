@@ -217,7 +217,7 @@ describe("buildChatRows", () => {
 		expect(rows[1].kind).toBe("msg");
 	});
 
-	it("emits a turn row before the next user message only for turns with changes", () => {
+	it("emits a forced turn footer before the next user message for every completed turn", () => {
 		const t0 = "2026-01-01T00:00:00Z";
 		const t1 = "2026-01-01T00:01:00Z";
 		const messages = [
@@ -257,6 +257,28 @@ describe("buildChatRows", () => {
 		expect(finalTurn.live).toBe(false);
 		expect(finalTurn.startedAt).not.toBeNull();
 		expect(finalTurn.endedAt).not.toBeNull();
+	});
+
+	it("emits a footer for a completed pure-chat turn (no file changes)", () => {
+		const t0 = "2026-01-01T00:00:00Z";
+		const t1 = "2026-01-01T00:00:42Z";
+		const messages = [
+			msg("user", [{ kind: "text", text: "介绍下自己" }], { timestamp: t0 }),
+			msg("assistant", [{ kind: "text", text: "你好！我是…" }], { timestamp: t1 }),
+			msg("user", [{ kind: "text", text: "继续" }], { timestamp: t0 }),
+			msg("assistant", [{ kind: "text", text: "好的" }], { timestamp: t1 }),
+		];
+		const rows = buildChatRows(attachToolResults(messages), {
+			working: false,
+			streaming: false,
+		});
+		const turnRows = rows.filter((r) => r.kind === "turn");
+		// Both turns are pure chat — both still get a footer (duration).
+		expect(turnRows).toHaveLength(2);
+		if (turnRows[0].kind !== "turn") return;
+		expect(turnRows[0].changes).toBeNull();
+		expect(turnRows[0].startedAt).not.toBeNull();
+		expect(turnRows[0].endedAt).not.toBeNull();
 	});
 
 	it("marks the last group live only while working without streaming text", () => {

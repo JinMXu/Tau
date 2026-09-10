@@ -463,7 +463,11 @@ export function buildChatRows(
 		if (msg.role === "user") {
 			flushGroup();
 			// Completed turn's footer row sits right before the next user row.
-			if (turnCount > 0) pushTurnRow(turnCount - 1, false);
+			// Forced: every turn shows its wall-clock duration, even pure-chat
+			// turns with no file changes (the final turn already did this via
+			// force — now the rule is uniform, and any turnIndex/changes
+			// mismatch can no longer swallow a footer).
+			if (turnCount > 0) pushTurnRow(turnCount - 1, false, true);
 			turnCount++;
 			rows.push({ kind: "msg", key: `m${msg.id}`, item, skip: new Set(), last: true });
 			continue;
