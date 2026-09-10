@@ -14,27 +14,12 @@ export default defineConfig(async () => ({
 	// 1. prevent Vite from obscuring rust errors
 	clearScreen: false,
 	build: {
-		rollupOptions: {
-			output: {
-				// Split the (large) markstream/shiki/monaco tree out of the main bundle:
-				// better caching and no >500kB single-chunk warnings.
-				manualChunks(id) {
-					if (!id.includes("node_modules")) return undefined;
-					if (
-						id.includes("markstream") ||
-						id.includes("stream-markdown") ||
-						id.includes("stream-monaco") ||
-						id.includes("mermaid") ||
-						id.includes("katex") ||
-						id.includes("shiki") ||
-						id.includes("d3-")
-					) {
-						return "markdown";
-					}
-					return "vendor";
-				},
-			},
-		},
+		// No manualChunks: a react/non-react chunk split produces circular
+		// chunk initialization (vendor's React namespace is still undefined
+		// when the markdown chunk evaluates `createContext`), which white-
+		// screens only production builds — dev serves unbundled ESM and
+		// never sees it. A desktop app loads from local disk, so one larger
+		// bundle costs nothing meaningful.
 	},
 	// 2. tauri expects a fixed port, fail if that port is not available
 	server: {
