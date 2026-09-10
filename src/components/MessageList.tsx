@@ -686,7 +686,20 @@ export const MessageList = memo(function MessageList({
 	// group folds; the moment the text ends (text_end, agent still active)
 	// the group lights back up while it thinks about the next step.
 	const lastGroupKey = useMemo(() => {
+		// Only the CURRENT turn's group may light up live. Scan starts after
+		// the last user message: between submit and the new turn's first
+		// assistant block there is a gap (agent_start before message_start)
+		// where the previous turn's group would otherwise be mistaken for
+		// the live one and light up inside the old output.
+		let start = rows.length - 1;
 		for (let i = rows.length - 1; i >= 0; i--) {
+			const row = rows[i];
+			if (row.kind === "msg" && row.item.msg.role === "user") {
+				start = i;
+				break;
+			}
+		}
+		for (let i = rows.length - 1; i >= start; i--) {
 			const row = rows[i];
 			if (row.kind === "group") return row.key;
 			if (row.kind === "msg") {
