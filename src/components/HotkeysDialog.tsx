@@ -1,6 +1,6 @@
 import type { MessageCatalog } from "../i18n";
-import { XIcon } from "../icons";
 import { MOD_KEY, MOD_KEY_SEP } from "../platform";
+import { Modal } from "./Modal";
 
 interface HotkeyRow {
 	keys: string[];
@@ -70,32 +70,30 @@ export function HotkeysDialog({
 	];
 
 	return (
-		<div className="overlay-backdrop">
-			<div className="extension-dialog hotkeys-dialog">
-				<div className="tree-dialog-header">
-					<h3>{t.hotkeys.title}</h3>
-					<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={onClose}>
-						<XIcon size={15} />
-					</button>
-				</div>
-				<div className="hotkeys-body">
-					{groups.map((g) => (
-						<div className="hotkeys-group" key={g.title}>
-							<div className="hotkeys-group-title">{g.title}</div>
-							{g.rows.map((row) => (
-								<div className="hotkeys-row" key={row.label}>
-									<span className="hotkeys-label">{row.label}</span>
-									<span className="hotkeys-keys">
-										{row.keys.map((k) => (
-											<kbd key={k}>{k}</kbd>
-										))}
-									</span>
-								</div>
-							))}
-						</div>
-					))}
-				</div>
+		<Modal
+			open
+			onClose={onClose}
+			title={t.hotkeys.title}
+			closeLabel={t.app.close}
+			className="hotkeys-dialog"
+		>
+			<div className="hotkeys-body">
+				{groups.map((g) => (
+					<div className="hotkeys-group" key={g.title}>
+						<div className="hotkeys-group-title">{g.title}</div>
+						{g.rows.map((row) => (
+							<div className="hotkeys-row" key={row.label}>
+								<span className="hotkeys-label">{row.label}</span>
+								<span className="hotkeys-keys">
+									{row.keys.map((k) => (
+										<kbd key={k}>{k}</kbd>
+									))}
+								</span>
+							</div>
+						))}
+					</div>
+				))}
 			</div>
-		</div>
+		</Modal>
 	);
 }

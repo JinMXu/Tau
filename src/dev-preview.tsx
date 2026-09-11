@@ -156,8 +156,14 @@ const messages: ChatMessage[] = [
 	m("user", [{ kind: "text", text: "看看这两张截图，然后继续把渲染和任务清单也做了。" }], {
 		timestamp: new Date(Date.now() - 90 * 1000).toISOString(),
 		images: [
-			{ mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeklEQVR4nO3PUQkAIBTAwJfSQKYzliH8OITBAtxm7fN1wwUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWPHYB0rMBhyUu39kAAAAASUVORK5CYII=" },
-			{ mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeklEQVR4nO3PUQkAIBTAwBfbJGYyliH8OITBAtxmn/V1wwUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWPHYBmNlhtM/v+fQAAAAASUVORK5CYII=" },
+			{
+				mimeType: "image/png",
+				data: "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeklEQVR4nO3PUQkAIBTAwJfSQKYzliH8OITBAtxm7fN1wwUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWPHYB0rMBhyUu39kAAAAASUVORK5CYII=",
+			},
+			{
+				mimeType: "image/png",
+				data: "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeklEQVR4nO3PUQkAIBTAwBfbJGYyliH8OITBAtxmn/V1wwUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWPHYBmNlhtM/v+fQAAAAASUVORK5CYII=",
+			},
 		],
 	}),
 	m(
@@ -179,7 +185,10 @@ const messages: ChatMessage[] = [
 			{
 				kind: "tool",
 				name: "bash",
-				args: JSON.stringify({ command: "npx vitest run src/__tests__/chat-rows.test.ts src/__tests__/activity-ticker.test.ts src/__tests__/preview-ticker.test.tsx" }),
+				args: JSON.stringify({
+					command:
+						"npx vitest run src/__tests__/chat-rows.test.ts src/__tests__/activity-ticker.test.ts src/__tests__/preview-ticker.test.tsx",
+				}),
 			},
 		],
 		{ streaming: true, timestamp: new Date(Date.now() - 60 * 1000).toISOString() },

@@ -94,7 +94,10 @@ async function scriptedTurn(withTools: boolean) {
 			await sleep(60);
 			ev({
 				type: "message_update",
-				assistantMessageEvent: { type: "toolcall_end", toolCall: { name: "read", arguments: { path: p } } },
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					toolCall: { name: "read", arguments: { path: p } },
+				},
 			});
 		}
 		ev({
@@ -131,7 +134,10 @@ async function scriptedTurn(withTools: boolean) {
 			await sleep(50);
 			ev({
 				type: "message_update",
-				assistantMessageEvent: { type: "toolcall_end", toolCall: { name: "bash", arguments: { command: c } } },
+				assistantMessageEvent: {
+					type: "toolcall_end",
+					toolCall: { name: "bash", arguments: { command: c } },
+				},
 			});
 		}
 		ev({ type: "message_update", assistantMessageEvent: { type: "text_start" } });
@@ -162,7 +168,12 @@ async function scriptedTurn(withTools: boolean) {
 			await sleep(30);
 			ev({
 				type: "message_end",
-				message: { role: "toolResult", toolName: "bash", isError: false, content: [{ type: "text", text: c }] },
+				message: {
+					role: "toolResult",
+					toolName: "bash",
+					isError: false,
+					content: [{ type: "text", text: c }],
+				},
 			});
 			await sleep(30);
 		}
@@ -180,7 +191,10 @@ async function scriptedTurn(withTools: boolean) {
 		}
 		ev({ type: "message_update", assistantMessageEvent: { type: "text_end", content: ANSWER } });
 		await sleep(60);
-		ev({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: ANSWER }] } });
+		ev({
+			type: "message_end",
+			message: { role: "assistant", content: [{ type: "text", text: ANSWER }] },
+		});
 		await sleep(80);
 	}
 

@@ -13,12 +13,8 @@ import type { ChatMessage } from "../../chat-types";
 
 describe("toolSummary", () => {
 	it("returns the first present summary key", () => {
-		expect(
-			toolSummary(JSON.stringify({ path: "src/a.ts", command: "ls" })),
-		).toBe("src/a.ts");
-		expect(toolSummary(JSON.stringify({ command: "git status" }))).toBe(
-			"git status",
-		);
+		expect(toolSummary(JSON.stringify({ path: "src/a.ts", command: "ls" }))).toBe("src/a.ts");
+		expect(toolSummary(JSON.stringify({ command: "git status" }))).toBe("git status");
 		expect(toolSummary(JSON.stringify({ pattern: "TODO" }))).toBe("TODO");
 	});
 
@@ -84,9 +80,7 @@ describe("diffBlocksFromArgs", () => {
 		);
 		expect(blocks).toHaveLength(1);
 
-		const write = diffBlocksFromArgs(
-			JSON.stringify({ path: "a.ts", content: "line1\nline2" }),
-		);
+		const write = diffBlocksFromArgs(JSON.stringify({ path: "a.ts", content: "line1\nline2" }));
 		expect(write![0].lines.map((l) => l.text)).toEqual(["line1", "line2"]);
 	});
 
@@ -151,7 +145,7 @@ describe("chatMessageToMarkdown", () => {
 		blocks: [
 			{ kind: "thinking", text: "internal note" },
 			{ kind: "text", text: "Done." },
-			{ kind: "tool", name: "bash", args: "{\"command\":\"ls\"}" },
+			{ kind: "tool", name: "bash", args: '{"command":"ls"}' },
 		],
 		streaming: false,
 	};

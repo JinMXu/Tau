@@ -261,10 +261,19 @@ pub async fn sidecar_ping() -> Result<Value, String> {
 /// Structured parse of a session JSONL via the SDK's own
 /// `parseSessionEntries` — the canonical interpretation of the file format,
 /// replacing hand-rolled parsing where it matters.
+///
+/// The path is containment-checked exactly like the other session readers
+/// (`pi_read_session`, `pi_read_tree`, …): the sidecar parses whatever it is
+/// handed, so without this the command was a generic "read any file this
+/// process can open" primitive.
 #[tauri::command]
 pub async fn sidecar_session_info(path: String) -> Result<Value, String> {
 	tauri::async_runtime::spawn_blocking(move || {
-		call("session.parse", serde_json::json!({ "path": path }))
+		let full = crate::pi::require_session_path(std::path::Path::new(&path))?;
+		call(
+			"session.parse",
+			serde_json::json!({ "path": full.to_string_lossy() }),
+		)
 	})
 	.await
 	.map_err(|e| e.to_string())?

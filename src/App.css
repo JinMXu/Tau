@@ -23,11 +23,11 @@
 	/* surface tokens — light */
 	--app-bg: #f6f4f1;
 	--app-fg: #23211e;
-	--app-muted: #8b847b;
+	--app-muted: #756f67;
 	--app-border: rgba(35, 33, 30, 0.09);
 	--sidebar-bg: #efece7;
 	--sidebar-fg: #26241f;
-	--sidebar-muted: #948d84;
+	--sidebar-muted: #6f6a63;
 	--sidebar-border: rgba(35, 33, 30, 0.08);
 	--sidebar-hover: rgba(35, 33, 30, 0.05);
 	--sidebar-active: #fffdfb;
@@ -46,7 +46,7 @@
 	--code-bg: #f1efea;
 	--tool-bg: #f4f1ec;
 	--tool-border: rgba(35, 33, 30, 0.09);
-	--ok: #34a853;
+	--ok: #2a8642;
 	--err: #c0392b;
 	--err-bg: #fbeae7;
 	--warn: #a1712d;
@@ -61,7 +61,7 @@
 	/* --- semantic tokens (redesign) --- */
 	--text-1: var(--app-fg);
 	--text-2: #6f6a5f;
-	--text-3: #9a9488;
+	--text-3: #7b766d;
 	--surface-0: var(--panel-bg);
 	--surface-1: var(--card-bg);
 	--surface-2: var(--menu-bg);
@@ -71,7 +71,7 @@
 	--status-run: #c08a2d;
 	--status-warn: var(--warn);
 	--status-err: var(--err);
-	--link: #3b7fd4;
+	--link: #3777c7;
 
 	/* type scale */
 	--fs-xs: 11px;
@@ -111,8 +111,8 @@
 	--dsh-bg-layer: #f9fafb;
 	--dsh-fg-primary: #0f1115; /* bluish-1000 */
 	--dsh-fg-secondary: #61666b; /* bluish-700 */
-	--dsh-fg-tertiary: #81858c; /* bluish-600 */
-	--dsh-fg-caption: #adb2b8; /* bluish-400 */
+	--dsh-fg-tertiary: #73767d; /* bluish-600 */
+	--dsh-fg-caption: #727579; /* bluish-400 */
 	--dsh-brand: #4176e6; /* deepseek-500 */
 	--dsh-brand-hover: #679efe;
 	--dsh-code-block: #f9fafb; /* bluish-50 */
@@ -165,7 +165,7 @@ html[data-theme="dark"] {
 	--app-border: rgba(255, 255, 255, 0.09);
 	--sidebar-bg: #1c1c1c;
 	--sidebar-fg: #e8e6e2;
-	--sidebar-muted: #83807a;
+	--sidebar-muted: #86837c;
 	--sidebar-border: rgba(255, 255, 255, 0.07);
 	--sidebar-hover: rgba(255, 255, 255, 0.05);
 	--sidebar-active: #262626;
@@ -198,7 +198,7 @@ html[data-theme="dark"] {
 
 	/* semantic token overrides — dark */
 	--text-2: #a8a49c;
-	--text-3: #7d7972;
+	--text-3: #86817a;
 	--status-ok: #7ba86b;
 	--status-run: #d3a45c;
 	--shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
@@ -3954,8 +3954,12 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 	font-size: var(--fs-sm);
 	color: var(--text-2);
 	text-align: left;
+	cursor: pointer;
 }
 
+/* Keyboard highlight (aria-activedescendant target). Mirrors :hover so
+   arrow-key navigation is visible, not just announced. */
+.mcp-scope-item.focused,
 .mcp-scope-item:hover,
 .mcp-scope-item.active {
 	background: var(--hover);

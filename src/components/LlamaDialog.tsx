@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import type { MessageCatalog } from "../i18n";
 import { llamaLoad, llamaModels, llamaUnload } from "../pi";
-import {
-	LoaderIcon,
-	RefreshIcon,
-	TerminalIcon,
-	TrashIcon,
-	XIcon,
-} from "../icons";
+import { LoaderIcon, RefreshIcon, TerminalIcon, TrashIcon } from "../icons";
+import { Modal } from "./Modal";
 
 /** `/llama` equivalent: manage models on a llama.cpp router server. */
 export function LlamaDialog({
@@ -86,85 +81,83 @@ export function LlamaDialog({
 	};
 
 	return (
-		<div className="overlay-backdrop">
-			<div className="extension-dialog llama-dialog">
-				<div className="tree-dialog-header">
-					<h3>{t.llama.title}</h3>
-					<div className="tree-dialog-header-actions">
-						<span className={`llama-status ${connected ? "on" : ""}`}>
-							<span className="dot-status" />
-							{connected ? t.llama.connected : t.llama.disconnected}
-						</span>
-						<button
-							className="icon-btn"
-							title={t.llama.refresh}
-							onClick={() => void refresh()}
-						>
-							<RefreshIcon size={14} />
-						</button>
-						<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={onClose}>
-							<XIcon size={15} />
-						</button>
-					</div>
-				</div>
-				<p className="extension-message mono">{url}</p>
-				{error && <div className="error-banner">{error}</div>}
-				<div className="llama-models">
-					<div className="llama-models-label">{t.llama.loaded}</div>
-					{loading ? (
-						<div className="llama-empty">
-							<LoaderIcon size={14} className="spin" />
-							<span>{t.settings.loading}</span>
-						</div>
-					) : models.length === 0 ? (
-						<div className="llama-empty">{t.llama.noModels}</div>
-					) : (
-						models.map((m) => (
-							<div className="llama-model-row" key={m}>
-								<TerminalIcon size={13} />
-								<span className="mono llama-model-name" title={m}>
-									{m}
-								</span>
-								<button
-									className="icon-btn"
-									title={t.llama.unload}
-									disabled={busyName !== null}
-									onClick={() => void unload(m)}
-								>
-									{busyName === m ? (
-										<LoaderIcon size={12} className="spin" />
-									) : (
-										<TrashIcon size={12} />
-									)}
-								</button>
-							</div>
-						))
-					)}
-				</div>
-				<div className="llama-load-row">
-					<input
-						value={loadName}
-						placeholder={t.llama.loadPlaceholder}
-						disabled={busyName !== null}
-						onChange={(e) => setLoadName(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === "Enter") void load();
-							if (e.key === "Escape") onClose();
-						}}
-					/>
+		<Modal
+			open
+			onClose={onClose}
+			title={t.llama.title}
+			closeLabel={t.app.close}
+			className="llama-dialog"
+			headerActions={
+				<div className="tree-dialog-header-actions">
+					<span className={`llama-status ${connected ? "on" : ""}`}>
+						<span className="dot-status" />
+						{connected ? t.llama.connected : t.llama.disconnected}
+					</span>
 					<button
-						className="btn primary"
-						disabled={!loadName.trim() || busyName !== null}
-						onClick={() => void load()}
+						className="icon-btn"
+						title={t.llama.refresh}
+						aria-label={t.llama.refresh}
+						onClick={() => void refresh()}
 					>
-						{busyName ? (
-							<LoaderIcon size={13} className="spin" />
-						) : null}
-						<span>{t.llama.load}</span>
+						<RefreshIcon size={14} />
 					</button>
 				</div>
-				<p className="settings-hint">{t.llama.hint}</p>
+			}
+		>
+			<p className="extension-message mono">{url}</p>
+			{error && <div className="error-banner">{error}</div>}
+			<div className="llama-models">
+				<div className="llama-models-label">{t.llama.loaded}</div>
+				{loading ? (
+					<div className="llama-empty">
+						<LoaderIcon size={14} className="spin" />
+						<span>{t.settings.loading}</span>
+					</div>
+				) : models.length === 0 ? (
+					<div className="llama-empty">{t.llama.noModels}</div>
+				) : (
+					models.map((m) => (
+						<div className="llama-model-row" key={m}>
+							<TerminalIcon size={13} />
+							<span className="mono llama-model-name" title={m}>
+								{m}
+							</span>
+							<button
+								className="icon-btn"
+								title={t.llama.unload}
+								disabled={busyName !== null}
+								onClick={() => void unload(m)}
+							>
+								{busyName === m ? (
+									<LoaderIcon size={12} className="spin" />
+								) : (
+									<TrashIcon size={12} />
+								)}
+							</button>
+						</div>
+					))
+				)}
 			</div>
-		</div>
+			<div className="llama-load-row">
+				<input
+					value={loadName}
+					placeholder={t.llama.loadPlaceholder}
+					disabled={busyName !== null}
+					onChange={(e) => setLoadName(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") void load();
+					}}
+				/>
+				<button
+					className="btn primary"
+					disabled={!loadName.trim() || busyName !== null}
+					onClick={() => void load()}
+				>
+					{busyName ? <LoaderIcon size={13} className="spin" /> : null}
+					<span>{t.llama.load}</span>
+				</button>
+			</div>
+			<p className="settings-hint">{t.llama.hint}</p>
+		</Modal>
 	);
 }

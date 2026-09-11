@@ -16,6 +16,7 @@ import {
 	TrashIcon,
 } from "../icons";
 import { MOD_KEY, MOD_KEY_SEP, isMac, sameSessionPath } from "../platform";
+import { projectNameFromPath } from "../format";
 
 function timeAgo(ms: number, lang: "zh" | "en"): string {
 	const diff = Date.now() - ms;
@@ -230,12 +231,7 @@ export const Sidebar = memo(function Sidebar({
 					const key = project === defaultKey ? "__default__" : project;
 					const expanded = expandedProjects.has(key);
 					const label =
-						project === defaultKey
-							? t.sidebar.defaultProject
-							: project
-									.replace(/[\\/]+$/, "")
-									.split(/[\\/]/)
-									.pop() || project;
+						project === defaultKey ? t.sidebar.defaultProject : projectNameFromPath(project);
 					return (
 						<div className="project-group" key={key}>
 							<div className="project-header-row">
@@ -294,6 +290,21 @@ export const Sidebar = memo(function Sidebar({
 													if (dragPath) handleDrop(dragPath, s.path);
 												}}
 												onClick={() => onSelectSession(s)}
+												// The row is the primary "open this session"
+												// target; give it button semantics and make it
+												// reachable/operable from the keyboard (the
+												// hover actions are focusable but they only
+												// pin/archive — they never opened a session).
+												role="button"
+												tabIndex={s.pending ? -1 : 0}
+												aria-current={s.path === selectedPath ? "true" : undefined}
+												onKeyDown={(e) => {
+													if (s.pending) return;
+													if (e.key === "Enter" || e.key === " ") {
+														e.preventDefault();
+														onSelectSession(s);
+													}
+												}}
 												title={s.pending ? s.title : `${s.title}\n${s.path}`}
 											>
 												<div className="session-main">
@@ -322,6 +333,8 @@ export const Sidebar = memo(function Sidebar({
 														<button
 															className="icon-btn"
 															title={t.sidebar.moveToProject}
+															aria-label={t.sidebar.moreActions}
+															aria-expanded={menuPath === s.path}
 															onMouseDown={(e) => e.stopPropagation()}
 															onClick={() => setMenuPath(menuPath === s.path ? null : s.path)}
 														>

@@ -112,7 +112,12 @@ describe("MessageList message actions", () => {
 		const el = document.createElement("div");
 		document.body.appendChild(el);
 		const root = createRoot(el);
-		const mid: ChatMessage = { id: 2, role: "assistant", blocks: [{ kind: "text", text: "中间叙述" }], streaming: false };
+		const mid: ChatMessage = {
+			id: 2,
+			role: "assistant",
+			blocks: [{ kind: "text", text: "中间叙述" }],
+			streaming: false,
+		};
 		const fin: ChatMessage = {
 			id: 3,
 			role: "assistant",

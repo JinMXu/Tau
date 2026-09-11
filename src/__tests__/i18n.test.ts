@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getMessages, messages, projectNameFromPath } from "../i18n";
+import { getMessages, messages } from "../i18n";
 
 describe("i18n catalog", () => {
 	it("zh and en expose the same key shape", () => {
@@ -20,19 +20,5 @@ describe("i18n catalog", () => {
 	it("translations differ between languages", () => {
 		expect(messages.zh.app.search).not.toBe(messages.en.app.search);
 		expect(messages.zh.chat.send).not.toBe(messages.en.chat.send);
-	});
-});
-
-describe("projectNameFromPath", () => {
-	it("extracts the last path segment", () => {
-		expect(projectNameFromPath("D:\\projects\\demo")).toBe("demo");
-		expect(projectNameFromPath("/home/u/work")).toBe("work");
-		expect(projectNameFromPath("C:\\")).toBe("C:");
-	});
-
-	it("handles empty values", () => {
-		expect(projectNameFromPath(null)).toBe("");
-		expect(projectNameFromPath(undefined)).toBe("");
-		expect(projectNameFromPath("")).toBe("");
 	});
 });

@@ -99,10 +99,7 @@ export const ToolCard = memo(function ToolCard({
 					{displayName(block.name)}
 				</span>
 				{summary && (
-					<span
-						ref={textRef}
-						className={overflowing ? "tool-summary of" : "tool-summary"}
-					>
+					<span ref={textRef} className={overflowing ? "tool-summary of" : "tool-summary"}>
 						{summary}
 						{overflowing && <span className="tool-summary-fade" />}
 					</span>

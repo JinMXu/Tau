@@ -65,116 +65,112 @@ const ANSWER = [
 ].join("\n");
 
 describe("markstream fade memory", () => {
-	it(
-		"never re-fades a node that already faded in",
-		async () => {
-			const container = document.createElement("div");
-			document.body.appendChild(container);
-			const root = createRoot(container);
-			const Host = ({
-				messages,
-				stream,
-				streaming,
-			}: {
-				messages: ChatMessage[];
-				stream: ChatMessage | null;
-				streaming: boolean;
-			}) => (
-				<div className="chat-scroll">
-					<MessageList
-						messages={messages}
-						stream={stream}
-						streaming={streaming}
-						working={streaming}
-						textStreaming={streaming}
-						t={t}
-					/>
-				</div>
-			);
-			const render = async (
-				messages: ChatMessage[],
-				stream: ChatMessage | null,
-				streaming = stream !== null,
-			) => {
+	it("never re-fades a node that already faded in", async () => {
+		const container = document.createElement("div");
+		document.body.appendChild(container);
+		const root = createRoot(container);
+		const Host = ({
+			messages,
+			stream,
+			streaming,
+		}: {
+			messages: ChatMessage[];
+			stream: ChatMessage | null;
+			streaming: boolean;
+		}) => (
+			<div className="chat-scroll">
+				<MessageList
+					messages={messages}
+					stream={stream}
+					streaming={streaming}
+					working={streaming}
+					textStreaming={streaming}
+					t={t}
+				/>
+			</div>
+		);
+		const render = async (
+			messages: ChatMessage[],
+			stream: ChatMessage | null,
+			streaming = stream !== null,
+		) => {
+			await act(async () => {
+				root.render(<Host messages={messages} stream={stream} streaming={streaming} />);
+			});
+		};
+		const settle = async (n = 8) => {
+			for (let i = 0; i < n; i++) {
 				await act(async () => {
-					root.render(<Host messages={messages} stream={stream} streaming={streaming} />);
-				});
-			};
-			const settle = async (n = 8) => {
-				for (let i = 0; i < n; i++) {
-					await act(async () => {
-						await new Promise((r) => setTimeout(r, 20));
-					});
-				}
-			};
-
-			// ---- trace every `.fade-node` written into the DOM ----------------
-			const firstFades = new WeakSet<Element>();
-			const seenNodes = new WeakSet<Element>();
-			let applications = 0;
-			let refades = 0;
-			const note = (el: Element, value: string) => {
-				if (!value.includes("fade-node")) return;
-				applications++;
-				if (seenNodes.has(el)) refades++;
-				else firstFades.add(el);
-			};
-			const origSetAttribute = Element.prototype.setAttribute;
-			const origDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, "className");
-			Element.prototype.setAttribute = function (name: string, value: string) {
-				if (name === "class") note(this, String(value));
-				return origSetAttribute.call(this, name, value);
-			};
-			if (origDescriptor?.set) {
-				const origSetter = origDescriptor.set;
-				Object.defineProperty(Element.prototype, "className", {
-					...origDescriptor,
-					set(value: string) {
-						note(this, String(value));
-						origSetter.call(this, value);
-					},
+					await new Promise((r) => setTimeout(r, 20));
 				});
 			}
-			const restore = () => {
-				Element.prototype.setAttribute = origSetAttribute;
-				if (origDescriptor) Object.defineProperty(Element.prototype, "className", origDescriptor);
+		};
+
+		// ---- trace every `.fade-node` written into the DOM ----------------
+		const firstFades = new WeakSet<Element>();
+		const seenNodes = new WeakSet<Element>();
+		let applications = 0;
+		let refades = 0;
+		const note = (el: Element, value: string) => {
+			if (!value.includes("fade-node")) return;
+			applications++;
+			if (seenNodes.has(el)) refades++;
+			else firstFades.add(el);
+		};
+		const origSetAttribute = Element.prototype.setAttribute;
+		const origDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, "className");
+		Element.prototype.setAttribute = function (name: string, value: string) {
+			if (name === "class") note(this, String(value));
+			return origSetAttribute.call(this, name, value);
+		};
+		if (origDescriptor?.set) {
+			const origSetter = origDescriptor.set;
+			Object.defineProperty(Element.prototype, "className", {
+				...origDescriptor,
+				set(value: string) {
+					note(this, String(value));
+					origSetter.call(this, value);
+				},
+			});
+		}
+		const restore = () => {
+			Element.prototype.setAttribute = origSetAttribute;
+			if (origDescriptor) Object.defineProperty(Element.prototype, "className", origDescriptor);
+		};
+
+		try {
+			await render([user], null, false);
+			const streamMsg: ChatMessage = {
+				id: 2,
+				role: "assistant",
+				blocks: [{ kind: "text", text: "" }],
+				streaming: true,
 			};
-
-			try {
-				await render([user], null, false);
-				const streamMsg: ChatMessage = {
-					id: 2,
-					role: "assistant",
-					blocks: [{ kind: "text", text: "" }],
-					streaming: true,
-				};
-				for (let cut = 5; cut <= ANSWER.length; cut += 5) {
-					await render([user], {
-						...streamMsg,
-						blocks: [{ kind: "text", text: ANSWER.slice(0, cut) }],
-					});
-					// let the smooth controller catch up so the parse tree really
-					// holds every node of the prefix before the next delta lands
-					await settle();
-					for (const el of container.querySelectorAll(".node-content")) seenNodes.add(el);
-				}
-				// message_end: the committed message keeps the same content
-				await render(
-					[user, { ...streamMsg, blocks: [{ kind: "text", text: ANSWER }], streaming: false }],
-					null,
-					false,
-				);
-				await settle(6);
-			} finally {
-				restore();
+			for (let cut = 5; cut <= ANSWER.length; cut += 5) {
+				await render([user], {
+					...streamMsg,
+					blocks: [{ kind: "text", text: ANSWER.slice(0, cut) }],
+				});
+				// let the smooth controller catch up so the parse tree really
+				// holds every node of the prefix before the next delta lands
+				await settle();
+				for (const el of container.querySelectorAll(".node-content")) seenNodes.add(el);
 			}
+			// message_end: the committed message keeps the same content
+			await render(
+				[user, { ...streamMsg, blocks: [{ kind: "text", text: ANSWER }], streaming: false }],
+				null,
+				false,
+			);
+			await settle(6);
+		} finally {
+			restore();
+		}
 
-			// the mechanism is alive in this environment …
-			expect(applications).toBeGreaterThan(0);
-			expect(firstFades).toBeTruthy();
-			// … and no node is ever faded a second time
-			expect(refades).toBe(0);
-		},
-		60000,
-	);
+		// the mechanism is alive in this environment …
+		expect(applications).toBeGreaterThan(0);
+		expect(firstFades).toBeTruthy();
+		// … and no node is ever faded a second time
+		expect(refades).toBe(0);
+	}, 60000);
 });

@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
 	Attachment,
 	ChatMessage,
@@ -283,6 +283,7 @@ export const ChatArea = memo(function ChatArea({
 	openSettings: () => void;
 }) {
 	const [menuOpen, setMenuOpen] = useState(false);
+	const menuId = useId();
 	const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
 	const menuRef = useRef<HTMLDivElement>(null);
 	// In-session search (Ctrl+F): hits over all message blocks, one active.
@@ -292,8 +293,14 @@ export const ChatArea = memo(function ChatArea({
 	const searchInputRef = useRef<HTMLInputElement>(null);
 	// Committed transcript + the in-flight message: every derivation below (and
 	// the rows downstream) has to see the same sequence the user is looking at.
-	const liveMessages = useMemo(() => (stream ? [...messages, stream] : messages), [messages, stream]);
-	const hits = useMemo(() => searchMessages(liveMessages, searchQuery), [liveMessages, searchQuery]);
+	const liveMessages = useMemo(
+		() => (stream ? [...messages, stream] : messages),
+		[messages, stream],
+	);
+	const hits = useMemo(
+		() => searchMessages(liveMessages, searchQuery),
+		[liveMessages, searchQuery],
+	);
 	const activeMessageId = useMemo(() => {
 		if (!searchOpen || hits.length === 0) return null;
 		const hit = hits[Math.min(activeHit, hits.length - 1)];
@@ -442,7 +449,11 @@ export const ChatArea = memo(function ChatArea({
 						/>
 					</div>
 				)}
-				{error && <div className="error-banner">{error}</div>}
+				{error && (
+					<div className="error-banner" role="alert">
+						{error}
+					</div>
+				)}
 				{extensionStatus.length > 0 && (
 					<div className="chat-header-status empty">
 						{extensionStatus.map((s, i) => (
@@ -499,11 +510,19 @@ export const ChatArea = memo(function ChatArea({
 					<span className={`dot ${connected ? "on" : ""}`} />
 					{connected && <span className="conn-label">{t.app.connected}</span>}
 					<div className="header-menu" ref={menuRef}>
-						<button className="icon-btn" disabled={!session} onClick={() => setMenuOpen((v) => !v)}>
+						<button
+							className="icon-btn"
+							disabled={!session}
+							aria-label={t.chat.moreActions}
+							title={t.chat.moreActions}
+							aria-expanded={menuOpen}
+							aria-controls={menuOpen ? menuId : undefined}
+							onClick={() => setMenuOpen((v) => !v)}
+						>
 							<MoreIcon size={17} />
 						</button>
 						{menuOpen && (
-							<div className="header-menu-pop">
+							<div className="header-menu-pop" id={menuId}>
 								<button
 									disabled={!connected || streaming}
 									onClick={() => {
@@ -643,7 +662,11 @@ export const ChatArea = memo(function ChatArea({
 				</div>
 			</header>
 
-			{error && <div className="error-banner">{error}</div>}
+			{error && (
+					<div className="error-banner" role="alert">
+						{error}
+					</div>
+				)}
 
 			{searchOpen && (
 				<div className="session-search-bar">

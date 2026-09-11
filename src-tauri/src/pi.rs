@@ -14,6 +14,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
+// The session-JSONL format layer lives in `pi_session`; re-exported here so the
+// rest of the crate keeps referring to `pi::…` as before.
+pub(crate) use crate::pi_session::MAX_JSONL_LINE;
+use crate::pi_session::{
+	extract_block_text, read_session_messages, scan_session, session_values, usage_from_file,
+	LimitedLines, PiParsedMessage, PiUsageEntry,
+};
+
 /// One independent pi RPC process per session channel; channels are keyed
 /// by `"{window_label}\u{1}{chan}"` so a single window can keep several
 /// sessions running concurrently (switching away no longer kills the run).
@@ -103,31 +111,6 @@ pub struct PiSessionInfo {
 	message_count: u64,
 	mtime_ms: u64,
 	size: u64,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct PiParsedImage {
-	mime_type: String,
-	data: String,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct PiParsedBlock {
-	kind: String,
-	text: String,
-	name: Option<String>,
-	image: Option<PiParsedImage>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PiParsedMessage {
-	role: String,
-	timestamp: Option<String>,
-	entry_id: Option<String>,
-	blocks: Vec<PiParsedBlock>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1165,250 +1148,19 @@ pub(crate) fn pi_new_window<R: tauri::Runtime>(app: AppHandle<R>) -> Result<(), 
 	let _ = win.show();
 	crate::window_state::restore(&win);
 	crate::window_state::attach(&win);
-	// Kill the window's pi process when its window closes (the app itself
-	// may stay alive with other windows open).
+	// Kill the window's pi processes when its window closes (the app itself
+	// may stay alive with other windows open). This must go through
+	// kill_window_process_inner: the process map is keyed by
+	// `channel_key(label, chan)` = `"{label}\u{1}{chan}"`, so looking up the
+	// bare label never matched and every sub-window leaked its pi child.
 	let inner = app.state::<PiState>().handle();
 	let label_clone = label.clone();
 	win.on_window_event(move |event| {
 		if let tauri::WindowEvent::Destroyed = event {
-			if let Ok(mut map) = inner.lock() {
-				if let Some(p) = map.get_mut(&label_clone) {
-					p.kill();
-				}
-			}
+			kill_window_process_inner(&inner, &label_clone);
 		}
 	});
 	Ok(())
-}
-
-fn is_leap_year(y: i64) -> bool {
-	(y % 4 == 0 && y % 100 != 0) || y % 400 == 0
-}
-
-fn parse_iso_ms(s: &str) -> Option<u64> {
-	// Accept "2026-08-10T06:31:02.384Z" style timestamps.
-	let s = s.trim();
-	let s = s.strip_suffix('Z').unwrap_or(s);
-	let (date, time) = s.split_once('T')?;
-	let mut dp = date.split('-');
-	let y: i64 = dp.next()?.parse().ok()?;
-	// Reject pre-epoch years: a negative `secs` below would wrap through
-	// `as u64` into a garbage huge epoch value.
-	if y < 1970 {
-		return None;
-	}
-	let mo: i64 = dp.next()?.parse().ok()?;
-	let d: i64 = dp.next()?.parse().ok()?;
-	if !(1..=12).contains(&mo) {
-		return None;
-	}
-	// Real per-month day counts (leap-aware) so "Feb 30" style dates fail.
-	let leap = is_leap_year(y);
-	let days_in_month = [
-		31,
-		if leap { 29 } else { 28 },
-		31,
-		30,
-		31,
-		30,
-		31,
-		31,
-		30,
-		31,
-		30,
-		31,
-	];
-	if !(1..=days_in_month[(mo - 1) as usize]).contains(&d) {
-		return None;
-	}
-	let mut tp = time.split(':');
-	let h: i64 = tp.next()?.parse().ok()?;
-	let mi: i64 = tp.next()?.parse().ok()?;
-	let sec: i64 = tp.next()?.split('.').next()?.parse().ok()?;
-	if !(0..=23).contains(&h) || !(0..=59).contains(&mi) || !(0..=60).contains(&sec) {
-		return None;
-	}
-	// Days since the (proleptic Gregorian) year 0; the leap-day offset for
-	// dates after February is folded into the day-of-year value below.
-	let mut day_of_year =
-		[0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334][(mo - 1) as usize] + (d - 1);
-	if leap && mo > 2 {
-		day_of_year += 1;
-	}
-	// Days since the (proleptic Gregorian) year 0. The day count uses
-	// `y - 1`: `y*365 + y/4 - y/100 + y/400` also counts year y's own leap
-	// day, i.e. it resolves to Jan 1 of year y+1 — every parsed timestamp
-	// would come out ~365 days too large. The leap-day offset for dates
-	// after February in year y is folded into day_of_year above.
-	let y0 = y - 1;
-	let days = y0 * 365 + y0 / 4 - y0 / 100 + y0 / 400 + day_of_year;
-	let secs = days * 86400 + h * 3600 + mi * 60 + sec;
-	// Sub-second precision is irrelevant here; epoch in ms.
-	Some((secs as u64).saturating_mul(1000))
-}
-
-/// Maximum size of a single JSONL line we are willing to hold in memory.
-/// Lines larger than this (typically huge base64 image messages) are skipped;
-/// without this a single pathological line could balloon memory use while
-/// listing/searching sessions.
-pub(crate) const MAX_JSONL_LINE: usize = 16 * 1024 * 1024;
-
-/// Like `BufRead::lines`, but skips lines larger than `max` bytes so a
-/// pathological session file can't allocate unbounded memory.
-struct LimitedLines<R> {
-	reader: R,
-	max: usize,
-	buf: Vec<u8>,
-}
-
-impl<R> LimitedLines<R> {
-	fn new(reader: R, max: usize) -> Self {
-		Self {
-			reader,
-			max,
-			buf: Vec::with_capacity(8 * 1024),
-		}
-	}
-}
-
-impl<R: BufRead> Iterator for LimitedLines<R> {
-	type Item = std::io::Result<String>;
-
-	fn next(&mut self) -> Option<Self::Item> {
-		loop {
-			self.buf.clear();
-			let mut limited = (&mut self.reader).take((self.max + 1) as u64);
-			match limited.read_until(b'\n', &mut self.buf) {
-				Ok(0) => return None,
-				Ok(n) if n > self.max => {
-					// Discard the remainder of the oversized line so the next
-					// iteration stays aligned on a line boundary.
-					loop {
-						self.buf.clear();
-						let mut sink = (&mut self.reader).take(64 * 1024);
-						match sink.read_until(b'\n', &mut self.buf) {
-							Ok(0) => break,
-							Ok(_) if self.buf.last() == Some(&b'\n') => break,
-							Ok(_) => {}
-							Err(_) => break,
-						}
-					}
-				}
-				Ok(_) => {
-					if self.buf.last() == Some(&b'\n') {
-						self.buf.pop();
-					}
-					if self.buf.last() == Some(&b'\r') {
-						self.buf.pop();
-					}
-					return Some(Ok(String::from_utf8_lossy(&self.buf).into_owned()));
-				}
-				Err(e) => return Some(Err(e)),
-			}
-		}
-	}
-}
-
-fn extract_block_text(content: Option<&serde_json::Value>) -> Option<String> {
-	let arr = content?.as_array()?;
-	let mut out = String::new();
-	for item in arr {
-		let kind = item.get("type").and_then(|x| x.as_str()).unwrap_or("");
-		if kind == "text" {
-			if let Some(s) = item.get("text").and_then(|x| x.as_str()) {
-				out.push_str(s);
-			}
-		}
-	}
-	let out = out.trim().to_string();
-	if out.is_empty() {
-		None
-	} else {
-		Some(out)
-	}
-}
-
-fn make_title(text: &str) -> String {
-	let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-	let mut chars = one_line.chars();
-	let mut out: String = chars.by_ref().take(60).collect();
-	if chars.next().is_some() {
-		out.push('…');
-	}
-	out
-}
-
-struct SessionScan {
-	project: Option<String>,
-	title: String,
-	model: Option<String>,
-	created_at: Option<u64>,
-	message_count: u64,
-}
-
-/// Scan a session JSONL for display metadata. `limit` caps lines scanned
-/// (list/search need only the head; message_count stays approximate for
-/// very large files, which is acceptable for a sidebar list).
-fn scan_session(path: &Path, limit: usize) -> SessionScan {
-	let mut scan = SessionScan {
-		project: None,
-		title: String::new(),
-		model: None,
-		created_at: None,
-		message_count: 0,
-	};
-	let file = match File::open(path) {
-		Ok(f) => f,
-		Err(_) => return scan,
-	};
-	let reader = BufReader::new(file);
-	for line in LimitedLines::new(reader, MAX_JSONL_LINE)
-		.take(limit)
-		.flatten()
-	{
-		if line.trim().is_empty() {
-			continue;
-		}
-		let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-			continue;
-		};
-		let Some(kind) = v.get("type").and_then(|x| x.as_str()) else {
-			continue;
-		};
-		match kind {
-			"session" => {
-				scan.project = v
-					.get("cwd")
-					.and_then(|x| x.as_str())
-					.filter(|s| !s.is_empty())
-					.map(|s| s.to_string());
-				scan.created_at = v
-					.get("timestamp")
-					.and_then(|x| x.as_str())
-					.and_then(parse_iso_ms);
-			}
-			"model_change" => {
-				let provider = v.get("provider").and_then(|x| x.as_str());
-				let model_id = v.get("modelId").and_then(|x| x.as_str());
-				if let (Some(p), Some(m)) = (provider, model_id) {
-					scan.model = Some(format!("{p}/{m}"));
-				}
-			}
-			"message" => {
-				scan.message_count += 1;
-				if scan.title.is_empty() {
-					let role = v.pointer("/message/role").and_then(|x| x.as_str());
-					if role == Some("user") {
-						if let Some(text) = extract_block_text(v.pointer("/message/content")) {
-							scan.title = make_title(&text);
-						}
-					}
-				}
-			}
-			_ => {}
-		}
-	}
-	scan
 }
 
 fn is_aux_dir(name: &str) -> bool {
@@ -1539,159 +1291,6 @@ fn collect_sessions(dir: &Path, out: &mut Vec<PiSessionInfo>) {
 		})
 	});
 	out.extend(infos.into_iter().flatten());
-}
-
-fn parse_message_blocks(message: &serde_json::Value) -> Vec<PiParsedBlock> {
-	let content = message.get("content").and_then(|x| x.as_array());
-	let mut blocks = Vec::new();
-	if let Some(items) = content {
-		for item in items {
-			let kind = item.get("type").and_then(|x| x.as_str()).unwrap_or("");
-			match kind {
-				"text" => {
-					if let Some(text) = item.get("text").and_then(|x| x.as_str()) {
-						blocks.push(PiParsedBlock {
-							kind: "text".into(),
-							text: text.to_string(),
-							name: None,
-						image: None,
-					});
-					}
-				}
-				"thinking" => {
-					if let Some(text) = item.get("thinking").and_then(|x| x.as_str()) {
-						blocks.push(PiParsedBlock {
-							kind: "thinking".into(),
-							text: text.to_string(),
-							name: None,
-						image: None,
-					});
-					}
-				}
-				"toolCall" | "tool_call" | "toolUse" => {
-					let name = item
-						.get("name")
-						.and_then(|x| x.as_str())
-						.unwrap_or("tool")
-						.to_string();
-					let args = item
-						.get("arguments")
-						.or_else(|| item.get("input"))
-						.map(|a| {
-							if a.is_string() {
-								a.as_str().unwrap_or_default().to_string()
-							} else {
-								serde_json::to_string_pretty(a).unwrap_or_default()
-							}
-						})
-						.unwrap_or_default();
-					blocks.push(PiParsedBlock {
-						kind: "tool".into(),
-						text: args,
-						name: Some(name),
-					image: None,
-					});
-				}
-				"image" => {
-				let mime = item
-					.get("mime_type")
-					.or_else(|| item.get("mimeType"))
-					.and_then(|x| x.as_str())
-					.unwrap_or("image/png")
-					.to_string();
-				if let Some(data) = item.get("data").and_then(|x| x.as_str()) {
-					blocks.push(PiParsedBlock {
-						kind: "image".into(),
-						text: String::new(),
-						name: None,
-						image: Some(PiParsedImage {
-							mime_type: mime,
-							data: data.to_string(),
-						}),
-					});
-				}
-			}
-			_ => {}
-			}
-		}
-	}
-	blocks
-}
-
-fn read_session_messages(path: &Path) -> Vec<PiParsedMessage> {
-	let mut out = Vec::new();
-	let file = match File::open(path) {
-		Ok(f) => f,
-		Err(_) => return out,
-	};
-	let reader = BufReader::new(file);
-	for line in LimitedLines::new(reader, MAX_JSONL_LINE).flatten() {
-		if line.trim().is_empty() {
-			continue;
-		}
-		let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-			continue;
-		};
-		let Some(kind) = v.get("type").and_then(|x| x.as_str()) else {
-			continue;
-		};
-		match kind {
-			"message" => {
-				let Some(msg) = v.get("message") else {
-					continue;
-				};
-				let role = msg
-					.get("role")
-					.and_then(|x| x.as_str())
-					.unwrap_or("assistant")
-					.to_string();
-				let timestamp = v
-					.get("timestamp")
-					.and_then(|x| x.as_str())
-					.map(|s| s.to_string());
-				let entry_id = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
-				let blocks = parse_message_blocks(msg);
-				out.push(PiParsedMessage {
-					role,
-					timestamp,
-					entry_id,
-					blocks,
-				});
-			}
-			"tool_result" => {
-				let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("tool");
-				let text = v
-					.get("content")
-					.and_then(|x| x.as_str())
-					.unwrap_or("")
-					.to_string();
-				out.push(PiParsedMessage {
-					role: "tool".into(),
-					timestamp: None,
-					entry_id: None,
-					blocks: vec![PiParsedBlock {
-						kind: "tool".into(),
-						text: if text.len() > 8000 {
-							format!(
-								"{}…",
-								&text[..text
-									.char_indices()
-									.nth(8000)
-									.map(|(i, _)| i)
-									.unwrap_or(text.len())]
-							)
-						} else {
-							text
-						},
-						name: Some(name.to_string()),
-					image: None,
-					}],
-				});
-			}
-			_ => {}
-		}
-	}
-	out
 }
 
 #[tauri::command]
@@ -1832,9 +1431,14 @@ fn pi_start_inner(
 				.unwrap_or_else(|| "default".into()),
 		),
 	);
-	let mut map = lock_state(inner);
-	let entry = map.entry(key.clone()).or_default();
-	let spawned = entry.spawn(
+	// Spawn OUTSIDE the process-map lock. `cmd.spawn()` can block for a second
+	// or more on a cold start (Windows Defender scanning the vendored
+	// node.exe), and holding the global map lock across it would stall every
+	// other window's pi_send / pi_status / pi_stop for the same duration. The
+	// session-file reservation taken in the critical section above — not this
+	// lock — is what keeps two channels off the same JSONL.
+	let mut fresh = PiProcess::default();
+	let spawned = fresh.spawn(
 		&info,
 		workspace,
 		session_file.as_deref(),
@@ -1846,22 +1450,39 @@ fn pi_start_inner(
 		excluded_tools.as_deref(),
 		models.as_deref(),
 		inner.clone(),
-		key,
+		key.clone(),
 		chan.to_string(),
 		window,
 	);
-	if spawned.is_err() {
-		// Drop the placeholder/leftover entry so a failed spawn can't shadow
-		// later conflict checks (its session_file would look "already open").
-		// The previous process of this channel was already killed above, so
-		// the entry can't hold a live child here.
-		if let Some(p) = map.get(&channel_key(&label, chan)) {
-			if p.child.is_none() {
-				map.remove(&channel_key(&label, chan));
+	if let Err(e) = spawned {
+		// Drop the placeholder so a failed spawn can't shadow later conflict
+		// checks (its session_file would look "already open"). The previous
+		// process of this channel was already killed above, so the entry
+		// cannot hold a live child here.
+		let mut map = lock_state(inner);
+		if map.get(&key).is_some_and(|p| p.child.is_none()) {
+			map.remove(&key);
+		}
+		return Err(e);
+	}
+	let mut to_install = Some(fresh);
+	{
+		let mut map = lock_state(inner);
+		// A concurrent pi_start on this same channel may have installed a live
+		// process while we were spawning. Never clobber it: the newer process
+		// wins and ours is stopped below instead of being leaked. (The
+		// frontend hands out a fresh channel id per start, so this is
+		// belt-and-braces rather than a path the UI can reach today.)
+		if !map.get(&key).is_some_and(|p| p.child.is_some()) {
+			if let Some(p) = to_install.take() {
+				map.insert(key.clone(), p);
 			}
 		}
 	}
-	spawned
+	if let Some(mut p) = to_install {
+		p.kill();
+	}
+	Ok(())
 }
 
 #[tauri::command]
@@ -2181,17 +1802,10 @@ fn clean_session_path(p: PathBuf) -> PathBuf {
 
 fn fork_session_at(src: &Path, entry_id: Option<&str>) -> Result<PiForkResult, String> {
 	use std::collections::HashMap;
-	let file = File::open(src).map_err(|e| format!("failed to open session: {e}"))?;
-	let reader = BufReader::new(file);
+	let values = session_values(src, None).map_err(|e| format!("failed to open session: {e}"))?;
 	let mut header: Option<serde_json::Value> = None;
 	let mut entries: Vec<serde_json::Value> = Vec::new();
-	for line in LimitedLines::new(reader, MAX_JSONL_LINE).flatten() {
-		if line.trim().is_empty() {
-			continue;
-		}
-		let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-			continue;
-		};
+	for v in values {
 		if v.get("type").and_then(|x| x.as_str()) == Some("session") {
 			header = Some(v);
 		} else {
@@ -3025,26 +2639,19 @@ async fn pi_import_session(app: AppHandle) -> Result<Option<String>, String> {
 	let mut session_id: Option<String> = None;
 	let mut timestamp: Option<String> = None;
 	{
-		let Ok(file) = File::open(&src) else {
-			return Err(format!("cannot read file: {}", src.display()));
-		};
-		let reader = BufReader::new(file);
-		for line in LimitedLines::new(reader, MAX_JSONL_LINE).flatten() {
-			if line.trim().is_empty() {
-				continue;
+		let values = session_values(&src, None)
+			.map_err(|_| format!("cannot read file: {}", src.display()))?;
+		for v in values {
+			if v.get("type").and_then(|x| x.as_str()) == Some("session") {
+				cwd = v.get("cwd").and_then(|x| x.as_str()).map(|s| s.to_string());
+				session_id = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
+				timestamp = v
+					.get("timestamp")
+					.and_then(|x| x.as_str())
+					.map(|s| s.to_string());
 			}
-			if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-				if v.get("type").and_then(|x| x.as_str()) == Some("session") {
-					cwd = v.get("cwd").and_then(|x| x.as_str()).map(|s| s.to_string());
-					session_id = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
-					timestamp = v
-						.get("timestamp")
-						.and_then(|x| x.as_str())
-						.map(|s| s.to_string());
-				}
-				if cwd.is_some() {
-					break;
-				}
+			if cwd.is_some() {
+				break;
 			}
 		}
 	}
@@ -3260,20 +2867,13 @@ fn build_tree_node_iter(
 }
 
 fn read_tree_from_file(p: &Path) -> Result<serde_json::Value, String> {
-	let file = File::open(p).map_err(|e| format!("cannot read session: {e}"))?;
-	let reader = BufReader::new(file);
+	let values = session_values(p, None).map_err(|e| format!("cannot read session: {e}"))?;
 	let mut by_id: HashMap<String, Value> = HashMap::new();
 	let mut children: HashMap<String, Vec<String>> = HashMap::new();
 	let mut labels: HashMap<String, String> = HashMap::new();
 	let mut roots: Vec<String> = Vec::new();
 	let mut last_id: Option<String> = None;
-	for line in LimitedLines::new(reader, MAX_JSONL_LINE).flatten() {
-		if line.trim().is_empty() {
-			continue;
-		}
-		let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-			continue;
-		};
+	for v in values {
 		let Some(kind) = v.get("type").and_then(|x| x.as_str()) else {
 			continue;
 		};
@@ -3916,106 +3516,6 @@ fn slim_get_tree_payload(payload: &Value) -> Value {
 	Value::Object(out)
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PiUsageEntry {
-	date: String,
-	provider: String,
-	model: String,
-	project: Option<String>,
-	session_path: String,
-	input: u64,
-	output: u64,
-	cache_read: u64,
-	reasoning: u64,
-	total: u64,
-	cost: f64,
-	/// Message timestamp (epoch ms) — the stats page derives per-session chat
-	/// durations from these.
-	ts: u64,
-}
-
-/// Scan every session JSONL for LLM `usage` records (one per assistant
-/// message). The frontend aggregates by day/model/project for the usage
-/// dashboard.
-/// Scan one session file for LLM `usage` records (one per assistant message).
-fn usage_from_file(path: &Path) -> Vec<PiUsageEntry> {
-	let mut out = Vec::new();
-	let Ok(file) = File::open(path) else {
-		return out;
-	};
-	let reader = BufReader::new(file);
-	let mut project: Option<String> = None;
-	for line in LimitedLines::new(reader, MAX_JSONL_LINE).flatten() {
-		if line.trim().is_empty() {
-			continue;
-		}
-		let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-			continue;
-		};
-		let Some(kind) = v.get("type").and_then(|x| x.as_str()) else {
-			continue;
-		};
-		match kind {
-			"session" => {
-				project = v
-					.get("cwd")
-					.and_then(|x| x.as_str())
-					.filter(|s| !s.is_empty())
-					.map(|s| s.to_string());
-			}
-			"message" => {
-				let Some(usage) = v.pointer("/message/usage") else {
-					continue;
-				};
-				let date = v
-					.get("timestamp")
-					.and_then(|x| x.as_str())
-					.map(|s| s.chars().take(10).collect::<String>())
-					.unwrap_or_default();
-				let provider = v
-					.pointer("/message/provider")
-					.and_then(|x| x.as_str())
-					.unwrap_or("")
-					.to_string();
-				let model = v
-					.pointer("/message/model")
-					.and_then(|x| x.as_str())
-					.unwrap_or("")
-					.to_string();
-				let num = |key: &str| usage.get(key).and_then(|x| x.as_u64()).unwrap_or(0);
-				let cost = usage
-					.pointer("/cost/total")
-					.and_then(|x| x.as_f64())
-					.unwrap_or(0.0);
-				out.push(PiUsageEntry {
-					date,
-					provider,
-					model,
-					project: project.clone(),
-					session_path: path.to_string_lossy().into_owned(),
-					input: num("input"),
-					output: num("output"),
-					cache_read: num("cacheRead"),
-					reasoning: num("reasoning"),
-					total: usage
-						.get("totalTokens")
-						.and_then(|x| x.as_u64())
-						.unwrap_or(0),
-					cost,
-					ts: v
-						.get("timestamp")
-						.and_then(|x| x.as_str())
-						.and_then(parse_iso_ms)
-						.unwrap_or(0),
-				});
-			}
-			_ => {}
-		}
-	}
-	out
-}
-
 /// Scan every session JSONL for LLM `usage` records (one per assistant
 /// message). The frontend aggregates by day/model/project for the usage
 /// dashboard. Files are scanned on worker threads so a large session set
@@ -4121,6 +3621,7 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::pi_session::parse_iso_ms;
 	use std::io::Write;
 
 	fn write_temp_session(name: &str, lines: &[&str]) -> PathBuf {

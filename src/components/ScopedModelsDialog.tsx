@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { MessageCatalog } from "../i18n";
-import { PlusIcon, TrashIcon, XIcon } from "../icons";
+import { PlusIcon, TrashIcon } from "../icons";
+import { Modal } from "./Modal";
 
 /**
  * `/scoped-models` equivalent: model patterns used for Ctrl+P cycling
@@ -27,7 +28,6 @@ export function ScopedModelsDialog({
 		if (open) {
 			setPatterns(models);
 			setDraft("");
-			setTimeout(() => inputRef.current?.focus(), 30);
 		}
 	}, [open, models]);
 
@@ -44,66 +44,58 @@ export function ScopedModelsDialog({
 	const remove = (p: string) => setPatterns((prev) => prev.filter((x) => x !== p));
 
 	return (
-		<div className="overlay-backdrop">
-			<div className="extension-dialog scoped-models-dialog">
-				<div className="tree-dialog-header">
-					<h3>{t.scopedModels.title}</h3>
-					<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={onClose}>
-						<XIcon size={15} />
-					</button>
-				</div>
-				<p className="extension-message">{t.scopedModels.hint}</p>
-				<div className="scoped-models-input">
-					<input
-						ref={inputRef}
-						value={draft}
-						placeholder={t.scopedModels.placeholder}
-						onChange={(e) => setDraft(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === "Enter") {
-								e.preventDefault();
-								add();
-							}
-							if (e.key === "Escape") onClose();
-						}}
-					/>
-					<button className="btn secondary" onClick={add} disabled={!draft.trim()}>
-						<PlusIcon size={13} />
-						<span>{t.scopedModels.add}</span>
-					</button>
-				</div>
-				<div className="scoped-models-list">
-					{patterns.length === 0 && (
-						<div className="menu-empty">{t.scopedModels.empty}</div>
-					)}
-					{patterns.map((p) => (
-						<div className="scoped-models-item" key={p}>
-							<span className="mono">{p}</span>
-							<button
-								className="icon-btn"
-								title={t.scopedModels.remove}
-								onClick={() => remove(p)}
-							>
-								<TrashIcon size={12} />
-							</button>
-						</div>
-					))}
-				</div>
-				<div className="extension-dialog-actions">
-					<button className="btn secondary" onClick={onClose}>
-						{t.app.cancel}
-					</button>
-					<button
-						className="btn primary"
-						onClick={() => {
-							onSave(patterns);
-							onClose();
-						}}
-					>
-						{t.app.confirm}
-					</button>
-				</div>
+		<Modal
+			open
+			onClose={onClose}
+			title={t.scopedModels.title}
+			closeLabel={t.app.close}
+			className="scoped-models-dialog"
+			initialFocusRef={inputRef}
+		>
+			<p className="extension-message">{t.scopedModels.hint}</p>
+			<div className="scoped-models-input">
+				<input
+					ref={inputRef}
+					value={draft}
+					placeholder={t.scopedModels.placeholder}
+					onChange={(e) => setDraft(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") {
+							e.preventDefault();
+							add();
+						}
+					}}
+				/>
+				<button className="btn secondary" onClick={add} disabled={!draft.trim()}>
+					<PlusIcon size={13} />
+					<span>{t.scopedModels.add}</span>
+				</button>
 			</div>
-		</div>
+			<div className="scoped-models-list">
+				{patterns.length === 0 && <div className="menu-empty">{t.scopedModels.empty}</div>}
+				{patterns.map((p) => (
+					<div className="scoped-models-item" key={p}>
+						<span className="mono">{p}</span>
+						<button className="icon-btn" title={t.scopedModels.remove} onClick={() => remove(p)}>
+							<TrashIcon size={12} />
+						</button>
+					</div>
+				))}
+			</div>
+			<div className="extension-dialog-actions">
+				<button className="btn secondary" onClick={onClose}>
+					{t.app.cancel}
+				</button>
+				<button
+					className="btn primary"
+					onClick={() => {
+						onSave(patterns);
+						onClose();
+					}}
+				>
+					{t.app.confirm}
+				</button>
+			</div>
+		</Modal>
 	);
 }

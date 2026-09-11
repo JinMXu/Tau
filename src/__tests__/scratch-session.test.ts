@@ -42,7 +42,9 @@ function parse(path: string): ChatMessage[] {
 			});
 		}
 		if (role === "assistant") {
-			pendingToolNames = blocks.filter((b) => b.kind === "tool").map((b) => String(b.name ?? "tool"));
+			pendingToolNames = blocks
+				.filter((b) => b.kind === "tool")
+				.map((b) => String(b.name ?? "tool"));
 		}
 		out.push({
 			id: id++,

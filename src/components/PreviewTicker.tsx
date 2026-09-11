@@ -69,12 +69,9 @@ export function PreviewTicker({
 	/** 当前切换动画的结束时刻（此前不得发起下一次切换） */
 	const animUntilRef = useRef(0);
 
-	const slots = useMemo(
-		() => items.map((item) => ({ id: item.id, kind: item.kind })),
-		[items],
-	);
+	const slots = useMemo(() => items.map((item) => ({ id: item.id, kind: item.kind })), [items]);
 
-		useEffect(() => {
+	useEffect(() => {
 		const next = ticker.ingest(slots, Date.now());
 		setSnap((current) =>
 			current.currentId === next.currentId && current.switchAt === next.switchAt ? current : next,
@@ -133,9 +130,7 @@ export function PreviewTicker({
 	}, [previous]);
 
 	if (!shown && !previous)
-		return reserveSpace ? (
-			<div className="preview-ticker preview-ticker-empty" />
-		) : null;
+		return reserveSpace ? <div className="preview-ticker preview-ticker-empty" /> : null;
 
 	return (
 		<div className="preview-ticker">

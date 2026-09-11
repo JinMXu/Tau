@@ -43,7 +43,11 @@ const invoked: { cmd: string; args: unknown }[] = [];
 			case "pi_list_archived_sessions":
 				return Promise.resolve([]);
 			case "pi_status":
-				return Promise.resolve({ running: false, workspace: "D:/agents/pi-gui", sessionFile: null });
+				return Promise.resolve({
+					running: false,
+					workspace: "D:/agents/pi-gui",
+					sessionFile: null,
+				});
 			case "pi_subagent_runs":
 				return Promise.resolve([]);
 			case "pi_start":
@@ -80,5 +84,3 @@ function emit(event: string, payload: unknown) {
 
 (window as unknown as { __emit: typeof emit }).__emit = emit;
 (window as unknown as { __invoked: typeof invoked }).__invoked = invoked;
-
-

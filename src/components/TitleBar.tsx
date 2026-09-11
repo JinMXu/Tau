@@ -139,7 +139,12 @@ export function TitleBar({
 					action: () => editCmd("redo"),
 				},
 				{ kind: "sep" },
-				{ kind: "item", label: t.menu.cut, shortcut: `${MOD_KEY}${MOD_KEY_SEP}X`, action: () => editCmd("cut") },
+				{
+					kind: "item",
+					label: t.menu.cut,
+					shortcut: `${MOD_KEY}${MOD_KEY_SEP}X`,
+					action: () => editCmd("cut"),
+				},
 				{
 					kind: "item",
 					label: t.menu.copy,

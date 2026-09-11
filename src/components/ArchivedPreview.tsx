@@ -3,13 +3,7 @@ import type { PiParsedMessage } from "../pi";
 import type { MessageCatalog } from "../i18n";
 import { Markdown } from "./Markdown";
 import { splitOnQuery } from "./message-utils";
-import {
-	ChevronDownIcon,
-	ChevronUpIcon,
-	DownloadIcon,
-	SearchIcon,
-	XIcon,
-} from "../icons";
+import { ChevronDownIcon, ChevronUpIcon, DownloadIcon, SearchIcon, XIcon } from "../icons";
 
 export function parsedMessagesToMarkdown(messages: PiParsedMessage[]): string {
 	const parts = messages
@@ -166,7 +160,12 @@ export function ArchivedPreview({
 								>
 									<ChevronDownIcon size={14} />
 								</button>
-								<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={closeSearch}>
+								<button
+									className="icon-btn"
+									title={t.app.close}
+									aria-label={t.app.close}
+									onClick={closeSearch}
+								>
 									<XIcon size={14} />
 								</button>
 								<span className="menu-sep" />
@@ -179,30 +178,22 @@ export function ArchivedPreview({
 						>
 							<SearchIcon size={14} />
 						</button>
-						<button
-							className="btn secondary"
-							onClick={() => onExport("markdown")}
-						>
+						<button className="btn secondary" onClick={() => onExport("markdown")}>
 							<DownloadIcon size={14} />
 							{t.chat.exportMarkdown}
 						</button>
-						<button
-							className="btn secondary"
-							onClick={() => onExport("jsonl")}
-						>
+						<button className="btn secondary" onClick={() => onExport("jsonl")}>
 							<DownloadIcon size={14} />
 							{t.chat.exportJsonl}
 						</button>
-						<button
-							className="btn secondary"
-							onClick={() => onExport("html")}
-						>
+						<button className="btn secondary" onClick={() => onExport("html")}>
 							<DownloadIcon size={14} />
 							{t.chat.exportHtml}
 						</button>
 						<button
 							className="icon-btn"
-							title={t.app.close} aria-label={t.app.close}
+							title={t.app.close}
+							aria-label={t.app.close}
 							onClick={onClose}
 						>
 							<XIcon size={16} />
@@ -228,9 +219,7 @@ export function ArchivedPreview({
 										{m.blocks.map((b, j) => (
 											<div key={j} className="text-block highlighted-text">
 												{splitOnQuery(
-													b.kind === "tool"
-														? `${b.name ?? "tool"}: ${b.text}`
-														: b.text,
+													b.kind === "tool" ? `${b.name ?? "tool"}: ${b.text}` : b.text,
 													query,
 												).map((p, k) =>
 													p.match ? (

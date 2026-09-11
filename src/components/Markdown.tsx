@@ -101,7 +101,13 @@ function onMarkdownClick(event: MouseEvent<HTMLDivElement>) {
 	}
 }
 
-export const Markdown = memo(function Markdown({ text, streaming }: { text: string; streaming?: boolean }) {
+export const Markdown = memo(function Markdown({
+	text,
+	streaming,
+}: {
+	text: string;
+	streaming?: boolean;
+}) {
 	const isDark = useSyncExternalStore(subscribeTheme, getThemeSnapshot) === "dark";
 	// Mount-time lock (percho): enable smoothing only for messages that were
 	// already streaming when mounted — history messages render instantly and

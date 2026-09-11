@@ -34,7 +34,12 @@ const FAKE: PiUsageEntry[] = [
 	entry({ ts: NOW, total: 3000 }),
 	// yesterday + day before: builds a 3-day streak
 	entry({ date: "2026-08-18", ts: NOW - DAY, total: 8000, sessionPath: "D:\\sessions\\b.jsonl" }),
-	entry({ date: "2026-08-17", ts: NOW - 2 * DAY, total: 2000, sessionPath: "D:\\sessions\\c.jsonl" }),
+	entry({
+		date: "2026-08-17",
+		ts: NOW - 2 * DAY,
+		total: 2000,
+		sessionPath: "D:\\sessions\\c.jsonl",
+	}),
 ];
 
 vi.mock("../pi", () => ({
@@ -112,9 +117,7 @@ describe("UsageStats page", () => {
 		expect(tooltip!.textContent).toContain("deepseek-v4-pro");
 		expect(tooltip!.textContent).toContain("72%");
 		await act(async () => {
-			circle!.dispatchEvent(
-				new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }),
-			);
+			circle!.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: null }));
 		});
 		expect(container.querySelector(".usage-donut-tooltip")).toBeNull();
 	});

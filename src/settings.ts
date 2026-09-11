@@ -3,14 +3,7 @@ export type ColorScale = "mist" | "paper" | "sand" | "gray" | "forest" | "ocean"
 export type Density = "compact" | "comfortable" | "relaxed";
 
 /** Pi built-in agent tool names (matches pi's `--tools` allowlist). */
-export type AgentToolName =
-	| "read"
-	| "write"
-	| "edit"
-	| "bash"
-	| "grep"
-	| "find"
-	| "ls";
+export type AgentToolName = "read" | "write" | "edit" | "bash" | "grep" | "find" | "ls";
 
 export const ALL_AGENT_TOOLS: AgentToolName[] = [
 	"read",
@@ -106,23 +99,19 @@ export function loadSettings(): AppSettings {
 		const parsed = JSON.parse(raw) as Partial<AppSettings>;
 		const customTools = Array.isArray(parsed.customTools)
 			? parsed.customTools.filter(
-					(t): t is AgentToolName =>
-						typeof t === "string" && ALL_TOOL_SET.has(t),
+					(t): t is AgentToolName => typeof t === "string" && ALL_TOOL_SET.has(t),
 				)
 			: DEFAULT_SETTINGS.customTools;
 		const chatFontFamily =
-			parsed.chatFontFamily === "lxgwWenkai" ||
-			parsed.chatFontFamily === "zhuqueFangsong"
+			parsed.chatFontFamily === "lxgwWenkai" || parsed.chatFontFamily === "zhuqueFangsong"
 				? parsed.chatFontFamily
 				: DEFAULT_SETTINGS.chatFontFamily;
 		const chatContentWidth =
-			parsed.chatContentWidth === "wide" ||
-			parsed.chatContentWidth === "extraWide"
+			parsed.chatContentWidth === "wide" || parsed.chatContentWidth === "extraWide"
 				? parsed.chatContentWidth
 				: DEFAULT_SETTINGS.chatContentWidth;
 		const chatLineSpacing =
-			parsed.chatLineSpacing === "compact" ||
-			parsed.chatLineSpacing === "relaxed"
+			parsed.chatLineSpacing === "compact" || parsed.chatLineSpacing === "relaxed"
 				? parsed.chatLineSpacing
 				: DEFAULT_SETTINGS.chatLineSpacing;
 		return {
@@ -135,8 +124,7 @@ export function loadSettings(): AppSettings {
 			customTools,
 			excludedTools: Array.isArray(parsed.excludedTools)
 				? parsed.excludedTools.filter(
-						(t): t is AgentToolName =>
-							typeof t === "string" && ALL_TOOL_SET.has(t),
+						(t): t is AgentToolName => typeof t === "string" && ALL_TOOL_SET.has(t),
 					)
 				: DEFAULT_SETTINGS.excludedTools,
 			appendSystemPrompt:
@@ -148,9 +136,7 @@ export function loadSettings(): AppSettings {
 					? parsed.llamaServerUrl
 					: DEFAULT_SETTINGS.llamaServerUrl,
 			llamaApiKey:
-				typeof parsed.llamaApiKey === "string"
-					? parsed.llamaApiKey
-					: DEFAULT_SETTINGS.llamaApiKey,
+				typeof parsed.llamaApiKey === "string" ? parsed.llamaApiKey : DEFAULT_SETTINGS.llamaApiKey,
 			continueQueuedAfterInterrupt:
 				typeof parsed.continueQueuedAfterInterrupt === "boolean"
 					? parsed.continueQueuedAfterInterrupt
@@ -159,9 +145,7 @@ export function loadSettings(): AppSettings {
 			chatContentWidth,
 			chatLineSpacing,
 			sendDuringRunMode:
-				parsed.sendDuringRunMode === "queue"
-					? "queue"
-					: DEFAULT_SETTINGS.sendDuringRunMode,
+				parsed.sendDuringRunMode === "queue" ? "queue" : DEFAULT_SETTINGS.sendDuringRunMode,
 			steeringMode:
 				parsed.steeringMode === "all" || parsed.steeringMode === "one-at-a-time"
 					? parsed.steeringMode
@@ -201,10 +185,7 @@ export function saveSettings(settings: AppSettings) {
 	}
 }
 
-export function resolveTheme(
-	theme: Theme,
-	prefersDark: boolean,
-): "light" | "dark" {
+export function resolveTheme(theme: Theme, prefersDark: boolean): "light" | "dark" {
 	if (theme === "system") return prefersDark ? "dark" : "light";
 	return theme;
 }

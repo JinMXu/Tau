@@ -1,5 +1,6 @@
 mod extras;
 mod pi;
+mod pi_session;
 mod runtime_log;
 mod sidecar;
 mod window_state;

@@ -47,7 +47,7 @@ import {
 	type PiSessionInfo,
 	type SubagentRun,
 } from "./pi";
-import { getMessages, projectNameFromPath } from "./i18n";
+import { getMessages } from "./i18n";
 import { stripAnsi } from "./lib/ansi";
 import { loadSettings, resolveTheme, saveSettings, type AppSettings } from "./settings";
 import type {
@@ -61,6 +61,9 @@ import type {
 import { buildLlmUiError, isUserAbortError } from "./errors";
 import { Sidebar } from "./components/Sidebar";
 import { ChatArea } from "./components/ChatArea";
+import { ApiKeyDialog } from "./components/ApiKeyDialog";
+import { ConfirmDialog, type ConfirmState } from "./components/ConfirmDialog";
+import { RenameDialog, type RenameState } from "./components/RenameDialog";
 import { TitleBar } from "./components/TitleBar";
 import { SearchOverlay } from "./components/SearchOverlay";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -76,8 +79,14 @@ import { ShareDialog } from "./components/ShareDialog";
 import { LlamaDialog } from "./components/LlamaDialog";
 import type { ModelEntry } from "./components/Composer";
 import "./App.css";
-import { formatBytes } from "./format";
+import { formatBytes, projectNameFromPath } from "./format";
 import { isMac, isWin, sameSessionPath } from "./platform";
+import { RESPONSE_TIMEOUTS, STORAGE_KEYS } from "./app-constants";
+import { keepStreamedText } from "./session-merge";
+import { flagCodec, stringSetCodec, usePersistedState } from "./hooks/use-persisted-state";
+import { useToasts } from "./hooks/use-toasts";
+import { useStderrBuffer } from "./hooks/use-stderr-buffer";
+import { useSessionNav } from "./hooks/use-session-nav";
 
 let nextId = 1;
 
@@ -88,100 +97,10 @@ type ConnectOpts = {
 	workspace?: string | null;
 };
 
-const STORAGE_KEYS = {
-	expanded: "pi-gui.sidebar.expanded.v1",
-	width: "pi-gui.sidebar.width.v1",
-	collapsed: "pi-gui.sidebar.collapsed.v1",
-	model: "pi-gui.model.v1",
-	thinking: "pi-gui.thinking.v1",
-	sendMode: "pi-gui.sendMode.v1",
-	workspace: "pi-gui.workspace.v1",
-	recentWorkspaces: "pi-gui.recentWorkspaces.v1",
-	sessionOrder: "pi-gui.sessionOrder.v1",
-	lastSession: "pi-gui.lastSession.v1",
-	pinned: "pi-gui.pinnedSessions.v1",
-};
-
-/**
- * Per-command RPC response timeouts (ms). Provider/model/command discovery
- * can take tens of seconds, compaction can take minutes, while lightweight
- * state reads should fail fast instead of wedging the UI on a stuck pipe.
- */
-const RESPONSE_TIMEOUTS: Record<string, number> = {
-	get_available_models: 90000,
-	get_available_thinking_levels: 90000,
-	get_commands: 90000,
-	compact: 300000,
-	bash: 600000,
-	get_messages: 30000,
-	switch_session: 30000,
-	fork: 30000,
-	clone: 30000,
-	new_session: 30000,
-	get_tree: 90000,
-	get_state: 15000,
-	get_session_stats: 15000,
-	set_model: 15000,
-	set_thinking_level: 15000,
-	set_session_name: 15000,
-	set_auto_retry: 15000,
-};
-
 /**
  * Session-path comparison moved to platform.ts (shared with the Sidebar).
  */
 
-function loadExpanded(): Set<string> {
-	try {
-		const raw = localStorage.getItem(STORAGE_KEYS.expanded);
-		if (!raw) return new Set(["__default__"]);
-		return new Set(JSON.parse(raw) as string[]);
-	} catch {
-		return new Set(["__default__"]);
-	}
-}
-
-interface ConfirmState {
-	title: string;
-	body: string;
-	confirmLabel?: string;
-	onConfirm: () => void;
-}
-
-interface RenameState {
-	title: string;
-	initial: string;
-}
-
-/**
- * Reconcile pi's authoritative block list with what the stream already
- * rendered. markstream (and its smooth-streaming controller) treats a content
- * change that is not a prefix-extension of what it has as a hard reset: the
- * whole message re-parses and re-renders in a single frame. pi's snapshot can
- * lag the streamed text by a few characters, so a text block whose streamed
- * version is a prefix-extension of the authoritative one keeps the streamed
- * text — the tail is real content that pi is about to confirm anyway, and
- * dropping it would produce exactly the end-of-output repaint this app is
- * trying to avoid.
- */
-function keepStreamedText(streamed: Block[], authoritative: Block[]): Block[] {
-	if (streamed.length !== authoritative.length) return authoritative;
-	let kept = false;
-	const merged = authoritative.map((block, index) => {
-		const previous = streamed[index];
-		if (
-			block.kind === "text" &&
-			previous?.kind === "text" &&
-			previous.text.length > block.text.length &&
-			previous.text.startsWith(block.text)
-		) {
-			kept = true;
-			return previous;
-		}
-		return block;
-	});
-	return kept ? merged : authoritative;
-}
 export default function App() {
 	const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
 	const t = useMemo(() => getMessages(settings.language), [settings.language]);
@@ -231,43 +150,34 @@ export default function App() {
 	const [subagentRuns, setSubagentRuns] = useState<SubagentRun[]>([]);
 	const [models, setModels] = useState<ModelEntry[]>([]);
 	const [commands, setCommands] = useState<PiCommand[]>([]);
-	const [model, setModel] = useState<string>(() => localStorage.getItem(STORAGE_KEYS.model) ?? "");
+	const [model, setModel] = usePersistedState<string>(STORAGE_KEYS.model, "");
 	const [thinkingLevels, setThinkingLevels] = useState<string[]>([]);
-	const [thinkingLevel, setThinkingLevel] = useState<string>(
-		() => localStorage.getItem(STORAGE_KEYS.thinking) ?? settings.thinkingLevel,
+	const [thinkingLevel, setThinkingLevel] = usePersistedState<string>(
+		STORAGE_KEYS.thinking,
+		() => settings.thinkingLevel,
 	);
-	const [sendDuringRun, setSendDuringRun] = useState<"steer" | "followUp">(
-		() =>
-			(localStorage.getItem(STORAGE_KEYS.sendMode) as "steer" | "followUp") ??
-			(settings.sendDuringRunMode === "queue" ? "followUp" : "steer"),
+	const [sendDuringRun, setSendDuringRun] = usePersistedState<"steer" | "followUp">(
+		STORAGE_KEYS.sendMode,
+		() => (settings.sendDuringRunMode === "queue" ? "followUp" : "steer"),
 	);
-	const [stderr, setStderr] = useState<string[]>([]);
-	// Buffer stderr lines and flush once per animation frame: pi tools that
-	// print progress/spinners can emit dozens of lines per second, and each
-	// `setStderr` re-renders the whole App (stderr lives in the root state).
-	const pendingStderrRef = useRef<string[]>([]);
-	const stderrFlushRef = useRef<number | null>(null);
-	const pushStderr = useCallback((line: string) => {
-		pendingStderrRef.current.push(line);
-		if (stderrFlushRef.current !== null) return;
-		stderrFlushRef.current = requestAnimationFrame(() => {
-			stderrFlushRef.current = null;
-			const lines = pendingStderrRef.current;
-			pendingStderrRef.current = [];
-			if (lines.length === 0) return;
-			setStderr((prev) => [...prev, ...lines].slice(-200));
-		});
-	}, []);
+	const { stderr, pushStderr } = useStderrBuffer();
 	const [error, setError] = useState<string | null>(null);
 	const [aborting, setAborting] = useState(false);
 	const [searchOpen, setSearchOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
-	const [sidebarCollapsed, setSidebarCollapsed] = useState(
-		() => localStorage.getItem(STORAGE_KEYS.collapsed) === "1",
+	const [sidebarCollapsed, setSidebarCollapsed] = usePersistedState<boolean>(
+		STORAGE_KEYS.collapsed,
+		false,
+		flagCodec,
 	);
-	const [sidebarWidth, setSidebarWidth] = useState(() => {
-		const w = Number(localStorage.getItem(STORAGE_KEYS.width));
-		return w >= 200 && w <= 340 ? w : 280;
+	const [sidebarWidth, setSidebarWidth] = usePersistedState<number>(STORAGE_KEYS.width, 280, {
+		serialize: String,
+		// A corrupt or out-of-range width falls back to the default rather
+		// than collapsing the sidebar to something unusable.
+		deserialize: (raw) => {
+			const w = Number(raw);
+			return w >= 200 && w <= 340 ? w : 280;
+		},
 	});
 	// Fullscreen: macOS hides the traffic lights natively, so the header
 	// buttons move into their spot (CSS via the `.app.fullscreen` class). The
@@ -309,44 +219,23 @@ export default function App() {
 		};
 	}, []);
 	// ---- session navigation history (back / forward) ----
-	// Mirrored in refs so pushNav/navGo never read stale closures.
-	const [navHistory, setNavHistory] = useState<string[]>([]);
-	const [navIndex, setNavIndex] = useState(-1);
-	const navHistoryRef = useRef<string[]>([]);
-	const navIndexRef = useRef(-1);
-	const pushNav = useCallback((path: string) => {
-		// Clicking the session already on screen doesn't add a duplicate.
-		if (navHistoryRef.current[navIndexRef.current] === path) return;
-		navIndexRef.current += 1;
-		navHistoryRef.current = [...navHistoryRef.current.slice(0, navIndexRef.current), path];
-		setNavHistory(navHistoryRef.current);
-		setNavIndex(navIndexRef.current);
-	}, []);
-	const canGoBack = navIndex > 0;
-	const canGoForward = navIndex >= 0 && navIndex < navHistory.length - 1;
-	const [expandedProjects, setExpandedProjects] = useState<Set<string>>(loadExpanded);
-	const [sessionOrder, setSessionOrder] = useState<string[]>(() => {
-		try {
-			const raw = localStorage.getItem(STORAGE_KEYS.sessionOrder);
-			return raw ? (JSON.parse(raw) as string[]) : [];
-		} catch {
-			return [];
-		}
-	});
+	const { canGoBack, canGoForward, pushNav, stepNav } = useSessionNav();
+	const [expandedProjects, setExpandedProjects] = usePersistedState<Set<string>>(
+		STORAGE_KEYS.expanded,
+		() => new Set(["__default__"]),
+		stringSetCodec,
+	);
+	const [sessionOrder, setSessionOrder] = usePersistedState<string[]>(
+		STORAGE_KEYS.sessionOrder,
+		[],
+	);
 	// Read-only preview of an archived session (messages + export).
 	const [archivedPreview, setArchivedPreview] = useState<{
 		path: string;
 		title: string;
 		messages: PiParsedMessage[];
 	} | null>(null);
-	const [pinnedSessions, setPinnedSessions] = useState<string[]>(() => {
-		try {
-			const raw = localStorage.getItem(STORAGE_KEYS.pinned);
-			return raw ? (JSON.parse(raw) as string[]) : [];
-		} catch {
-			return [];
-		}
-	});
+	const [pinnedSessions, setPinnedSessions] = usePersistedState<string[]>(STORAGE_KEYS.pinned, []);
 	const [composerFocusRequest, setComposerFocusRequest] = useState(0);
 	const [gitState, setGitState] = useState<GitBranchState | null>(null);
 	const [stats, setStats] = useState<SessionStats | null>(null);
@@ -357,7 +246,7 @@ export default function App() {
 	const extensionRequestRef = useRef<ExtensionRequest | null>(null);
 	const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 	const [renameState, setRenameState] = useState<RenameState | null>(null);
-	const [toasts, setToasts] = useState<{ id: number; text: string }[]>([]);
+	const { toasts, toast } = useToasts();
 
 	// ---- extension UI: widgets / status / window title / editor prefill ----
 	const [extensionWidgets, setExtensionWidgets] = useState<
@@ -710,12 +599,9 @@ export default function App() {
 
 	// Settings-page changes to the default send mode also update the live
 	// toggle (runtime composer switches only touch the state, not settings).
+	// The write back to localStorage is handled by usePersistedState.
 	useEffect(() => {
 		setSendDuringRun(settings.sendDuringRunMode === "queue" ? "followUp" : "steer");
-		localStorage.setItem(
-			STORAGE_KEYS.sendMode,
-			settings.sendDuringRunMode === "queue" ? "followUp" : "steer",
-		);
 	}, [settings.sendDuringRunMode]);
 
 	// Rebuild the native menu when the interface language changes.
@@ -726,28 +612,9 @@ export default function App() {
 	}, [settings.language]);
 
 	// ---- persistence of misc UI state ----
-	useEffect(() => {
-		localStorage.setItem(STORAGE_KEYS.expanded, JSON.stringify([...expandedProjects]));
-	}, [expandedProjects]);
-	useEffect(() => {
-		localStorage.setItem(STORAGE_KEYS.sessionOrder, JSON.stringify(sessionOrder));
-	}, [sessionOrder]);
-	useEffect(() => {
-		localStorage.setItem(STORAGE_KEYS.pinned, JSON.stringify(pinnedSessions));
-	}, [pinnedSessions]);
-	useEffect(() => {
-		localStorage.setItem(STORAGE_KEYS.width, String(sidebarWidth));
-		localStorage.setItem(STORAGE_KEYS.collapsed, sidebarCollapsed ? "1" : "0");
-	}, [sidebarWidth, sidebarCollapsed]);
-	useEffect(() => {
-		localStorage.setItem(STORAGE_KEYS.model, model);
-	}, [model]);
-	useEffect(() => {
-		localStorage.setItem(STORAGE_KEYS.thinking, thinkingLevel);
-	}, [thinkingLevel]);
-	useEffect(() => {
-		localStorage.setItem(STORAGE_KEYS.sendMode, sendDuringRun);
-	}, [sendDuringRun]);
+	// The fields above persist themselves through usePersistedState; only
+	// `workspace` still needs an effect, because writing it also maintains the
+	// recent-workspaces list.
 	useEffect(() => {
 		if (!workspace) return;
 		localStorage.setItem(STORAGE_KEYS.workspace, workspace);
@@ -757,12 +624,6 @@ export default function App() {
 			return next;
 		});
 	}, [workspace]);
-
-	const toast = useCallback((text: string) => {
-		const id = nextId++;
-		setToasts((prev) => [...prev, { id, text }]);
-		setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== id)), 2600);
-	}, []);
 
 	const refreshSessions = useCallback(async (): Promise<PiSessionInfo[]> => {
 		let list: PiSessionInfo[] = [];
@@ -1531,8 +1392,7 @@ export default function App() {
 								// whole message in one frame, so when our streamed text
 								// is a prefix-extension of it, keep what we rendered.
 								const keepStreamed =
-									last.text.length > ame.content.length &&
-									last.text.startsWith(ame.content);
+									last.text.length > ame.content.length && last.text.startsWith(ame.content);
 								blocks[blocks.length - 1] = {
 									kind: "text",
 									text: keepStreamed ? last.text : ame.content,
@@ -1844,7 +1704,7 @@ export default function App() {
 	 * signature for streamed messages that never carried one.
 	 */
 	const reuseRenderedMessages = useCallback((loaded: ChatMessage[]): ChatMessage[] => {
-		let prev = messagesRef.current;
+		const prev = messagesRef.current;
 		if (prev.length === 0) return loaded;
 		const byEntry = new Map<string, ChatMessage>();
 		const bySig = new Map<string, ChatMessage>();
@@ -1870,69 +1730,72 @@ export default function App() {
 		});
 	}, []);
 
-	const loadHistory = useCallback(async (path: string) => {
-		try {
-			const parsed = await readSession(path);
-			const items: ChatMessage[] = [];
-			// Tool results in the session file don't carry the tool name, so
-			// match them to the tool calls of the preceding assistant message,
-			// in order.
-			let pendingToolNames: string[] = [];
-			for (const p of parsed) {
-				const role: ChatMessage["role"] =
-					p.role === "user"
-						? "user"
-						: p.role === "tool" || p.role === "toolResult"
-							? "tool"
-							: "assistant";
-				const blocks: Block[] = [];
-				const images: { mimeType: string; data: string }[] = [];
-				let resultText = "";
-				for (const b of p.blocks) {
-					if (b.kind === "image") {
-						if (b.image) images.push(b.image);
-					} else if (b.kind === "tool") {
-						blocks.push({ kind: "tool", name: b.name ?? "tool", args: b.text });
-					} else if (b.kind === "thinking") {
-						blocks.push({ kind: "thinking", text: b.text });
-					} else if (role === "tool") {
-						// Result content arrives as plain text blocks; collect it
-						// into a single result card below.
-						resultText += b.text;
-					} else {
-						blocks.push({ kind: "text", text: b.text });
+	const loadHistory = useCallback(
+		async (path: string) => {
+			try {
+				const parsed = await readSession(path);
+				const items: ChatMessage[] = [];
+				// Tool results in the session file don't carry the tool name, so
+				// match them to the tool calls of the preceding assistant message,
+				// in order.
+				let pendingToolNames: string[] = [];
+				for (const p of parsed) {
+					const role: ChatMessage["role"] =
+						p.role === "user"
+							? "user"
+							: p.role === "tool" || p.role === "toolResult"
+								? "tool"
+								: "assistant";
+					const blocks: Block[] = [];
+					const images: { mimeType: string; data: string }[] = [];
+					let resultText = "";
+					for (const b of p.blocks) {
+						if (b.kind === "image") {
+							if (b.image) images.push(b.image);
+						} else if (b.kind === "tool") {
+							blocks.push({ kind: "tool", name: b.name ?? "tool", args: b.text });
+						} else if (b.kind === "thinking") {
+							blocks.push({ kind: "thinking", text: b.text });
+						} else if (role === "tool") {
+							// Result content arrives as plain text blocks; collect it
+							// into a single result card below.
+							resultText += b.text;
+						} else {
+							blocks.push({ kind: "text", text: b.text });
+						}
 					}
-				}
-				if (role === "tool" && resultText) {
-					blocks.push({
-						kind: "tool",
-						name: pendingToolNames.shift() ?? "tool_result",
-						args: resultText,
-						result: true,
+					if (role === "tool" && resultText) {
+						blocks.push({
+							kind: "tool",
+							name: pendingToolNames.shift() ?? "tool_result",
+							args: resultText,
+							result: true,
+						});
+					}
+					if (role === "assistant") {
+						pendingToolNames = blocks
+							.filter((x): x is Extract<Block, { kind: "tool" }> => x.kind === "tool")
+							.map((x) => x.name);
+					}
+					items.push({
+						id: nextId++,
+						role,
+						blocks,
+						streaming: false,
+						replay: true,
+						timestamp: p.timestamp ?? undefined,
+						entryId: p.entryId ?? null,
+						...(images.length > 0 ? { images } : {}),
 					});
 				}
-				if (role === "assistant") {
-					pendingToolNames = blocks
-						.filter((x): x is Extract<Block, { kind: "tool" }> => x.kind === "tool")
-						.map((x) => x.name);
-				}
-				items.push({
-					id: nextId++,
-					role,
-					blocks,
-					streaming: false,
-					replay: true,
-					timestamp: p.timestamp ?? undefined,
-					entryId: p.entryId ?? null,
-					...(images.length > 0 ? { images } : {}),
-				});
+				clearStream();
+				setMessages(reuseRenderedMessages(items));
+			} catch {
+				clearTranscript();
 			}
-			clearStream();
-			setMessages(reuseRenderedMessages(items));
-		} catch {
-			clearTranscript();
-		}
-	}, [reuseRenderedMessages, clearStream, clearTranscript]);
+		},
+		[reuseRenderedMessages, clearStream, clearTranscript],
+	);
 
 	// Attach the UI to an already-running background channel: rebuild the
 	// transcript from the session file (streamed events were not applied
@@ -2212,14 +2075,11 @@ export default function App() {
 	// directly so the move itself is never recorded as a new entry).
 	const navGo = useCallback(
 		async (dir: -1 | 1) => {
-			const idx = navIndexRef.current + dir;
-			const target = navHistoryRef.current[idx];
-			if (idx < 0 || idx >= navHistoryRef.current.length || !target) return;
-			navIndexRef.current = idx;
-			setNavIndex(idx);
+			const target = stepNav(dir);
+			if (!target) return;
 			await connect({ sessionFile: target });
 		},
-		[connect],
+		[connect, stepNav],
 	);
 
 	const disconnect = useCallback(async () => {
@@ -2728,7 +2588,9 @@ export default function App() {
 				if (chanRef.current !== c) return;
 				setMessages((prev) =>
 					prev.map((m) =>
-						(m.id === messageId ? { ...m, streaming: false, error: buildLlmUiError(String(e), Date.now()) } : m),
+						m.id === messageId
+							? { ...m, streaming: false, error: buildLlmUiError(String(e), Date.now()) }
+							: m,
 					),
 				);
 				setError(String(e));
@@ -3101,7 +2963,7 @@ export default function App() {
 						}
 						await archiveSessionCmd(path);
 						if (wasCurrent) {
-						clearTranscript();
+							clearTranscript();
 						}
 						await refreshSessions();
 						if (wasCurrent && workspace) void connect({ sessionFile: null });
@@ -3246,7 +3108,7 @@ export default function App() {
 						}
 					}
 					if (includesCurrent) {
-					clearTranscript();
+						clearTranscript();
 					}
 					await refreshSessions();
 					if (workspace) void connect({ sessionFile: null });
@@ -4085,34 +3947,7 @@ export default function App() {
 			<ExtensionDialog request={extensionRequest} onRespond={handleExtensionRespond} t={t} />
 
 			{confirmState && (
-				<div className="overlay-backdrop">
-					<div
-						className="extension-dialog confirm-dialog"
-						role="dialog"
-						aria-modal="true"
-						onKeyDown={(e) => {
-							if (e.key === "Escape") setConfirmState(null);
-						}}
-					>
-						<h3>{confirmState.title}</h3>
-						<p className="extension-message">{confirmState.body}</p>
-						<div className="extension-dialog-actions">
-							<button className="btn secondary" autoFocus onClick={() => setConfirmState(null)}>
-								{t.app.cancel}
-							</button>
-							<button
-								className="btn danger"
-								onClick={() => {
-									const fn = confirmState.onConfirm;
-									setConfirmState(null);
-									void fn();
-								}}
-							>
-								{confirmState.confirmLabel ?? t.app.confirm}
-							</button>
-						</div>
-					</div>
-				</div>
+				<ConfirmDialog state={confirmState} t={t} onClose={() => setConfirmState(null)} />
 			)}
 
 			{renameState && (
@@ -4194,7 +4029,9 @@ export default function App() {
 				onClose={() => setLlamaOpen(false)}
 			/>
 
-			<div className="toasts">
+			{/* aria-live so a toast is announced rather than only shown: these
+			    carry the app's failure and limit messages. */}
+			<div className="toasts" role="status" aria-live="polite">
 				{toasts.map((x) => (
 					<div key={x.id} className="toast">
 						{x.text}
@@ -4204,116 +4041,10 @@ export default function App() {
 
 			{stderr.length > 0 && (
 				<details className="stderr">
-					<summary>pi stderr ({stderr.length} lines)</summary>
+					<summary>{t.app.piStderr.replace("{n}", String(stderr.length))}</summary>
 					<pre>{stderr.slice(-30).join("\n")}</pre>
 				</details>
 			)}
-		</div>
-	);
-}
-
-function ApiKeyDialog({
-	provider,
-	t,
-	onSave,
-	onCancel,
-}: {
-	provider: string;
-	t: ReturnType<typeof getMessages>;
-	onSave: (provider: string, key: string) => Promise<void>;
-	onCancel: () => void;
-}) {
-	const [key, setKey] = useState("");
-	const [error, setError] = useState<string | null>(null);
-	const [busy, setBusy] = useState(false);
-	const inputRef = useRef<HTMLInputElement>(null);
-	const save = async () => {
-		if (!key.trim() || busy) return;
-		setBusy(true);
-		setError(null);
-		try {
-			await onSave(provider, key.trim());
-		} catch (e) {
-			setError(String(e));
-			setBusy(false);
-		}
-	};
-	return (
-		<div className="overlay-backdrop">
-			<div className="extension-dialog" role="dialog" aria-modal="true">
-				<h3>{t.keyDialog.title}</h3>
-				<p className="extension-message">{t.keyDialog.body.replace("{provider}", provider)}</p>
-				<input
-					ref={inputRef}
-					type="password"
-					autoFocus
-					value={key}
-					placeholder={t.keyDialog.placeholder}
-					onChange={(e) => setKey(e.target.value)}
-					onKeyDown={(e) => {
-						if (e.key === "Enter") void save();
-						if (e.key === "Escape") onCancel();
-					}}
-				/>
-				{error && <p className="extension-error">{error}</p>}
-				<div className="extension-dialog-actions">
-					<button className="btn secondary" onClick={onCancel}>
-						{t.keyDialog.cancelSend}
-					</button>
-					<button
-						className="btn primary"
-						disabled={!key.trim() || busy}
-						onClick={() => void save()}
-					>
-						{t.keyDialog.save}
-					</button>
-				</div>
-			</div>
-		</div>
-	);
-}
-
-function RenameDialog({
-	state,
-	t,
-	onClose,
-	onConfirm,
-}: {
-	state: { title: string; initial: string };
-	t: ReturnType<typeof getMessages>;
-	onClose: () => void;
-	onConfirm: (name: string) => void;
-}) {
-	const [value, setValue] = useState(state.initial);
-	const inputRef = useRef<HTMLInputElement>(null);
-	return (
-		<div className="overlay-backdrop">
-			<div className="extension-dialog" role="dialog" aria-modal="true">
-				<h3>{state.title}</h3>
-				<input
-					ref={inputRef}
-					autoFocus
-					onFocus={(e) => e.currentTarget.select()}
-					value={value}
-					onChange={(e) => setValue(e.target.value)}
-					onKeyDown={(e) => {
-						if (e.key === "Enter" && value.trim()) onConfirm(value.trim());
-						if (e.key === "Escape") onClose();
-					}}
-				/>
-				<div className="extension-dialog-actions">
-					<button className="btn secondary" onClick={onClose}>
-						{t.app.cancel}
-					</button>
-					<button
-						className="btn primary"
-						disabled={!value.trim()}
-						onClick={() => onConfirm(value.trim())}
-					>
-						{t.app.confirm}
-					</button>
-				</div>
-			</div>
 		</div>
 	);
 }

@@ -166,6 +166,15 @@ pub fn restore<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 	}
 }
 
+/// Lock the saved-geometry mutex, recovering from a poisoned lock instead of
+/// panicking. Window events run on the main thread, so a single panic while
+/// the lock is held would turn every later move/resize/close into a panic of
+/// its own (`.unwrap()` on the poisoned lock) and take the whole app down.
+/// `pi.rs::lock_state` already guards its process map the same way.
+fn lock_state(state: &Mutex<WindowState>) -> std::sync::MutexGuard<'_, WindowState> {
+	state.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Persist window geometry (debounced) while the window is being resized/moved.
 pub fn attach<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 	let path = state_path(window.app_handle(), window.label());
@@ -188,7 +197,7 @@ pub fn attach<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 				if minimized {
 					return;
 				}
-				let mut s = state.lock().unwrap();
+				let mut s = lock_state(&state);
 				s.width = size.width as f64;
 				s.height = size.height as f64;
 			}
@@ -207,7 +216,7 @@ pub fn attach<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 				} else {
 					clamp_to_work_area(&win, pos.x, pos.y)
 				};
-				let mut s = state.lock().unwrap();
+				let mut s = lock_state(&state);
 				match clamped {
 					Some((nx, ny)) => {
 						s.x = nx;
@@ -229,7 +238,7 @@ pub fn attach<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 				}
 			}
 			WindowEvent::CloseRequested { .. } => {
-				let mut s = state.lock().unwrap();
+				let mut s = lock_state(&state);
 				s.maximized = win.is_maximized().unwrap_or(false);
 				let _ = fs::write(&path, serde_json::to_string(&*s).unwrap_or_default());
 				return;
@@ -256,7 +265,7 @@ pub fn attach<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
 			// Write the LATEST state, not the snapshot captured at spawn: an
 			// event arriving during the sleep mutates `state` under the lock
 			// and would otherwise be lost if no further event re-triggers.
-			let latest = state_arc.lock().unwrap().clone();
+			let latest = lock_state(&state_arc).clone();
 			let _ = fs::write(&path, serde_json::to_string(&latest).unwrap_or_default());
 			saving.store(false, Ordering::SeqCst);
 		});

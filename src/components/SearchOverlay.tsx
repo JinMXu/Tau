@@ -76,12 +76,21 @@ export function SearchOverlay({
 				if (e.target === e.currentTarget) onClose();
 			}}
 		>
-			<div className="search-overlay">
+			{/* A modal command palette: aria-modal tells assistive tech to treat
+			    the page behind the backdrop as inert, matching what the
+			    backdrop already does visually. */}
+			<div
+				className="search-overlay"
+				role="dialog"
+				aria-modal="true"
+				aria-label={t.search.placeholder}
+			>
 				<div className="search-input-row">
 					<SearchIcon size={16} />
 					<input
 						ref={inputRef}
 						value={query}
+						aria-label={t.search.placeholder}
 						placeholder={t.search.placeholder}
 						onChange={(e) => setQuery(e.target.value)}
 						onKeyDown={(e) => {
@@ -102,13 +111,11 @@ export function SearchOverlay({
 					<kbd>esc</kbd>
 				</div>
 				<div className="search-results">
-					{loading && <div className="search-status">…</div>}
+					{loading && <div className="search-status" role="status">…</div>}
 					{!loading && query.trim() && hits.length === 0 && (
-						<div className="search-status">{t.search.noResults}</div>
+						<div className="search-status" role="status">{t.search.noResults}</div>
 					)}
-					{!query.trim() && (
-						<div className="search-status">{t.search.all}</div>
-					)}
+					{!query.trim() && <div className="search-status" role="status">{t.search.all}</div>}
 					{hits.map((hit, i) => (
 						<button
 							key={hit.path}
@@ -119,13 +126,9 @@ export function SearchOverlay({
 							<div className="search-hit-title">
 								<FolderIcon size={13} />
 								<span className="search-hit-name">{hit.title}</span>
-								{hit.project && (
-									<span className="search-hit-project">{hit.project}</span>
-								)}
+								{hit.project && <span className="search-hit-project">{hit.project}</span>}
 							</div>
-							{hit.snippet && (
-								<div className="search-hit-snippet">{hit.snippet}</div>
-							)}
+							{hit.snippet && <div className="search-hit-snippet">{hit.snippet}</div>}
 						</button>
 					))}
 				</div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { MessageCatalog } from "../i18n";
+import { Modal } from "./Modal";
 
 export interface ExtensionRequest {
 	id: string;
@@ -27,108 +28,94 @@ export function ExtensionDialog({
 	useEffect(() => {
 		if (request) {
 			setValue(request.prefill ?? "");
-			setTimeout(() => {
-				if (request.method === "editor") editorRef.current?.focus();
-				else inputRef.current?.focus();
-			}, 30);
 		}
 	}, [request]);
 
 	if (!request) return null;
 
-	const respond = (payload: Record<string, unknown>) =>
-		onRespond(request.id, payload);
+	const respond = (payload: Record<string, unknown>) => onRespond(request.id, payload);
+
+	// Dismissing (Escape or the Cancel button) must answer the request —
+	// pi blocks on it — so it maps to the same payload the Cancel button
+	// sends, not to a no-op.
+	const cancel = () =>
+		respond(request.method === "confirm" ? { confirmed: false } : { cancelled: true });
 
 	const title = request.title || t.extension.confirm;
 
 	return (
-		<div className="overlay-backdrop">
-			<div className="extension-dialog" role="dialog" aria-modal="true">
-				<h3>{title}</h3>
-				{request.method === "confirm" && (
-					<p className="extension-message">{request.message}</p>
-				)}
-				{request.method === "select" && (
-					<div className="extension-options">
-						{(request.options ?? []).map((option) => (
-							<button
-								key={option}
-								className="extension-option"
-								onClick={() => respond({ value: option })}
-							>
-								{option}
-							</button>
-						))}
-					</div>
+		<Modal
+			open
+			onClose={cancel}
+			title={title}
+			closeLabel={t.extension.cancel}
+			showClose={false}
+			closeOnBackdrop={false}
+			initialFocusRef={request.method === "editor" ? editorRef : inputRef}
+		>
+			{request.method === "confirm" && <p className="extension-message">{request.message}</p>}
+			{request.method === "select" && (
+				<div className="extension-options">
+					{(request.options ?? []).map((option) => (
+						<button
+							key={option}
+							className="extension-option"
+							onClick={() => respond({ value: option })}
+						>
+							{option}
+						</button>
+					))}
+				</div>
+			)}
+			{request.method === "input" && (
+				<input
+					ref={inputRef}
+					value={value}
+					placeholder={request.placeholder}
+					onChange={(e) => setValue(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") respond({ value });
+					}}
+				/>
+			)}
+			{request.method === "editor" && (
+				<textarea
+					ref={editorRef}
+					className="compact-textarea"
+					rows={8}
+					value={value}
+					placeholder={request.placeholder}
+					onChange={(e) => setValue(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+							e.preventDefault();
+							respond({ value });
+						}
+					}}
+				/>
+			)}
+			<div className="extension-dialog-actions">
+				<button className="btn secondary" onClick={cancel}>
+					{t.extension.cancel}
+				</button>
+				{(request.method === "confirm" || request.method === "editor") && (
+					<button
+						className="btn primary"
+						onClick={() => respond(request.method === "confirm" ? { confirmed: true } : { value })}
+					>
+						{t.extension.ok}
+					</button>
 				)}
 				{request.method === "input" && (
-					<input
-						ref={inputRef}
-						value={value}
-						placeholder={request.placeholder}
-						onChange={(e) => setValue(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === "Enter") respond({ value });
-							if (e.key === "Escape") respond({ cancelled: true });
-						}}
-					/>
-				)}
-				{request.method === "editor" && (
-					<textarea
-						ref={editorRef}
-						className="compact-textarea"
-						rows={8}
-						value={value}
-						placeholder={request.placeholder}
-						onChange={(e) => setValue(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === "Escape") respond({ cancelled: true });
-							if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-								e.preventDefault();
-								respond({ value });
-							}
-						}}
-					/>
-				)}
-				<div className="extension-dialog-actions">
 					<button
-						className="btn secondary"
-						onClick={() =>
-							respond(
-								request.method === "confirm"
-									? { confirmed: false }
-									: { cancelled: true },
-							)
-						}
+						className="btn primary"
+						disabled={!value.trim()}
+						onClick={() => respond({ value })}
 					>
-						{t.extension.cancel}
+						{t.extension.ok}
 					</button>
-					{(request.method === "confirm" ||
-						request.method === "editor") && (
-						<button
-							className="btn primary"
-							onClick={() =>
-								respond(
-									request.method === "confirm"
-										? { confirmed: true }
-										: { value },
-								)
-							}
-						>
-							{t.extension.ok}
-						</button>
-					)}
-					{request.method === "input" && (
-						<button
-							className="btn primary"
-							disabled={!value.trim()}
-							onClick={() => respond({ value })}
-						>
-							{t.extension.ok}
-						</button>
-					)}
-				</div>
+				)}
 			</div>
-		</div>
+		</Modal>
 	);
 }

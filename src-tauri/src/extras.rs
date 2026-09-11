@@ -597,10 +597,22 @@ fn mcp_write_path(
 ) -> Result<PathBuf, String> {
 	match scope {
 		"global" => Ok(pi_agent_dir().join("mcp.json")),
-		"project" => project
-			.filter(|p| !p.trim().is_empty())
-			.map(|p| PathBuf::from(p).join(".mcp.json"))
-			.ok_or_else(|| "no project open; cannot write project scope".to_string()),
+		"project" => {
+			let raw = project
+				.filter(|p| !p.trim().is_empty())
+				.ok_or_else(|| "no project open; cannot write project scope".to_string())?;
+			let dir = PathBuf::from(raw);
+			// Containment guard: only ever drop `.mcp.json` inside a real,
+			// existing directory. Without it the command was a "write a file
+			// into any directory on disk" primitive for the webview, which is
+			// a cheap thing to close and a nasty thing to leave open.
+			if !dir.is_dir() {
+				return Err(format!("not a directory: {raw}"));
+			}
+			let dir = std::fs::canonicalize(&dir)
+				.map_err(|e| format!("cannot resolve project directory: {e}"))?;
+			Ok(dir.join(".mcp.json"))
+		}
 		_ => Err(format!("unknown scope '{scope}'")),
 	}
 }

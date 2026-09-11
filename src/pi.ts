@@ -291,7 +291,6 @@ export async function forkSessionAt(
 	return invoke("pi_fork_session", { path, entryId: entryId ?? null });
 }
 
-
 export async function searchSessions(query: string, limit?: number): Promise<PiSearchHit[]> {
 	return invoke("pi_search_sessions", { query, limit });
 }

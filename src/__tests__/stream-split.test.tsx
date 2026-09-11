@@ -18,7 +18,11 @@ if (!(globalThis as Record<string, unknown>).ResizeObserver) {
 
 const t = getMessages("en");
 
-let render: (messages: ChatMessage[], stream: ChatMessage | null, streaming?: boolean) => Promise<void>;
+let render: (
+	messages: ChatMessage[],
+	stream: ChatMessage | null,
+	streaming?: boolean,
+) => Promise<void>;
 let container: HTMLElement;
 
 async function mount() {
@@ -106,10 +110,17 @@ describe("stream / committed split", () => {
 		const observer = new MutationObserver((list) => {
 			for (const r of list) {
 				const el = r.target as Element;
-				records.push(`${r.type}${r.attributeName ? `:${r.attributeName}` : ""} on ${el.nodeName}.${el.className || ""}`);
+				records.push(
+					`${r.type}${r.attributeName ? `:${r.attributeName}` : ""} on ${el.nodeName}.${el.className || ""}`,
+				);
 			}
 		});
-		observer.observe(committedRowEl, { childList: true, subtree: true, characterData: true, attributes: true });
+		observer.observe(committedRowEl, {
+			childList: true,
+			subtree: true,
+			characterData: true,
+			attributes: true,
+		});
 		const streamMsg: ChatMessage = { id: 2, role: "assistant", blocks: [], streaming: true };
 		for (const text of ["a", "ab", "abc", "abcd"]) {
 			await render([user], { ...streamMsg, blocks: [{ kind: "text", text }] }, false);
@@ -139,7 +150,12 @@ describe("stream / committed split", () => {
 			[
 				user,
 				assistant,
-				{ id: 3, role: "tool", blocks: [{ kind: "tool", name: "read", args: "FILE BODY", result: true }], streaming: false },
+				{
+					id: 3,
+					role: "tool",
+					blocks: [{ kind: "tool", name: "read", args: "FILE BODY", result: true }],
+					streaming: false,
+				},
 			],
 			null,
 			false,

@@ -1,10 +1,4 @@
-import {
-	useEffect,
-	useMemo,
-	useRef,
-	useState,
-	type KeyboardEvent,
-} from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { MessageCatalog } from "../i18n";
 import {
 	BranchIcon,
@@ -14,8 +8,8 @@ import {
 	CopyIcon,
 	SearchIcon,
 	TerminalIcon,
-	XIcon,
 } from "../icons";
+import { Modal } from "./Modal";
 
 /** One session entry as returned by pi's `get_tree` RPC command. */
 export interface PiTreeEntry {
@@ -69,7 +63,8 @@ function entryLabel(entry: PiTreeEntry, t: MessageCatalog): string {
 			if (role === "toolResult") {
 				return `${t.tree.toolResult}: ${m?.toolName ?? "tool"}`;
 			}
-			if (role === "custom") return `${t.tree.custom}: ${(entry.message as { customType?: string } | undefined)?.customType ?? ""}`;
+			if (role === "custom")
+				return `${t.tree.custom}: ${(entry.message as { customType?: string } | undefined)?.customType ?? ""}`;
 			return `${t.tree.message}: ${role ?? "?"}`;
 		}
 		case "model_change":
@@ -150,6 +145,7 @@ export function TreePanel({
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [copied, setCopied] = useState(false);
 	const listRef = useRef<HTMLDivElement>(null);
+	const searchRef = useRef<HTMLInputElement>(null);
 	const copyTimerRef = useRef<number>(0);
 	useEffect(() => () => window.clearTimeout(copyTimerRef.current), []);
 
@@ -172,7 +168,10 @@ export function TreePanel({
 			for (const node of nodes) {
 				const role = entryRole(node.entry);
 				let visible = true;
-				if (filter === "noTools" && (role === "tool" || node.entry.message?.role === "toolResult")) {
+				if (
+					filter === "noTools" &&
+					(role === "tool" || node.entry.message?.role === "toolResult")
+				) {
 					visible = false;
 				} else if (filter === "userOnly" && role !== "user") {
 					visible = false;
@@ -206,9 +205,7 @@ export function TreePanel({
 		const idx = selectedId ? visibleIds.indexOf(selectedId) : -1;
 		if (e.key === "ArrowDown") {
 			e.preventDefault();
-			setSelectedId(
-				idx < 0 ? visibleIds[0] : visibleIds[Math.min(idx + 1, visibleIds.length - 1)],
-			);
+			setSelectedId(idx < 0 ? visibleIds[0] : visibleIds[Math.min(idx + 1, visibleIds.length - 1)]);
 		} else if (e.key === "ArrowUp") {
 			e.preventDefault();
 			setSelectedId(idx < 0 ? visibleIds[0] : visibleIds[Math.max(idx - 1, 0)]);
@@ -218,6 +215,24 @@ export function TreePanel({
 		} else if (e.key === "End") {
 			e.preventDefault();
 			setSelectedId(visibleIds[visibleIds.length - 1]);
+		} else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+			// Standard tree behaviour: Right expands a collapsed branch, Left
+			// collapses an expanded one. Without this the chevron was only
+			// reachable by mouse.
+			const entry = flat.find((f) => f.node.entry.id === selectedId);
+			if (!entry || entry.node.children.length === 0) return;
+			const isCollapsed = collapsed.has(selectedId as string);
+			const shouldExpand = e.key === "ArrowRight" && isCollapsed;
+			const shouldCollapse = e.key === "ArrowLeft" && !isCollapsed;
+			if (!shouldExpand && !shouldCollapse) return;
+			e.preventDefault();
+			const id = selectedId as string;
+			setCollapsed((prev) => {
+				const next = new Set(prev);
+				if (shouldExpand) next.delete(id);
+				else next.add(id);
+				return next;
+			});
 		}
 	};
 
@@ -265,136 +280,122 @@ export function TreePanel({
 		role === "meta" ? "meta" : role;
 
 	return (
-		<div className="overlay-backdrop">
-			<div className="extension-dialog tree-dialog">
-				<div className="tree-dialog-header">
-					<h3>{t.chat.tree}</h3>
-					<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={onClose}>
-						<XIcon size={15} />
-					</button>
-				</div>
-				<div className="tree-toolbar">
-					<div className="tree-search">
-						<SearchIcon size={13} />
-						<input
-							autoFocus
-							value={query}
-							placeholder={t.tree.search}
-							onChange={(e) => {
-								setQuery(e.target.value);
-								setSelectedId(null);
-							}}
-							onKeyDown={(e) => {
-								if (e.key === "Escape") {
-									e.stopPropagation();
-									onClose();
-								}
-							}}
-						/>
-					</div>
-					<select
-						className="tree-filter"
-						value={filter}
+		<Modal
+			open
+			onClose={onClose}
+			title={t.chat.tree}
+			closeLabel={t.app.close}
+			className="tree-dialog"
+			initialFocusRef={searchRef}
+		>
+			<div className="tree-toolbar">
+				<div className="tree-search">
+					<SearchIcon size={13} />
+					<input
+						ref={searchRef}
+						value={query}
+						placeholder={t.tree.search}
 						onChange={(e) => {
-							setFilter(e.target.value as FilterMode);
+							setQuery(e.target.value);
 							setSelectedId(null);
 						}}
-					>
-						<option value="default">{t.tree.filterDefault}</option>
-						<option value="noTools">{t.tree.filterNoTools}</option>
-						<option value="userOnly">{t.tree.filterUserOnly}</option>
-						<option value="labeledOnly">{t.tree.filterLabeledOnly}</option>
-						<option value="all">{t.tree.filterAll}</option>
-					</select>
+					/>
 				</div>
-				<div
-					className="tree-list"
-					ref={listRef}
-					tabIndex={0}
-					onKeyDown={handleTreeKey}
+				<select
+					className="tree-filter"
+					value={filter}
+					onChange={(e) => {
+						setFilter(e.target.value as FilterMode);
+						setSelectedId(null);
+					}}
 				>
-					{flat.length === 0 && (
-						<div className="tree-empty">{t.tree.empty}</div>
-					)}
-					{flat.map(({ node, depth, visible }) => {
-						if (!visible) return null;
-						const id = node.entry.id;
-						const hasChildren = node.children.length > 0;
-						const isCollapsed = collapsed.has(id);
-						const role = entryRole(node.entry);
-						const label = entryLabel(node.entry, t);
-						const isSel = id === selectedId;
-						return (
-							<div
-								key={id}
-								className={`tree-node ${isSel ? "selected" : ""} ${isLeaf(id) ? "leaf" : ""} role-${roleClass(role)}`}
-								style={{ paddingLeft: 10 + Math.min(depth, 40) * 16 }}
-								onClick={() => setSelectedId(id)}
-							>
-								<span
-									className="tree-chevron"
-									onClick={(e) => {
-										e.stopPropagation();
-										if (hasChildren) toggleCollapse(id);
-									}}
-								>
-									{hasChildren &&
-										(isCollapsed ? (
-											<ChevronRightIcon size={12} />
-										) : (
-											<ChevronDownIcon size={12} />
-										))}
-								</span>
-								<span className="tree-role-icon">
-									{role === "user" ? (
-										<span className="tree-dot user" />
-									) : role === "assistant" ? (
-										<span className="tree-dot assistant" />
-									) : role === "tool" ? (
-										<TerminalIcon size={12} />
-									) : (
-										<BranchIcon size={12} />
-									)}
-								</span>
-								<span className="tree-node-label" title={label}>
-									{label}
-								</span>
-								{node.label && (
-									<span className="tree-node-tag">{node.label}</span>
-								)}
-								{isLeaf(id) && <span className="tree-leaf-mark">◀</span>}
-							</div>
-						);
-					})}
-				</div>
-				<div className="tree-actions">
-					{selected ? (
-						<>
-							<span className="tree-actions-hint">
-								{entryLabel(selected.entry, t)}
-							</span>
-							<div className="tree-actions-buttons">
-								{selected.entry.type === "message" &&
-									selected.entry.message?.role === "user" && (
-										<button
-											className="btn secondary"
-											onClick={() => onFork(selected.entry.id)}
-										>
-											<BranchIcon size={13} />
-											<span>{t.tree.forkHere}</span>
-										</button>
-									)}
-								<button className="btn secondary" onClick={() => void copySelected()}>
-									{copied ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
-									<span>{copied ? t.chat.copied : t.tree.copyText}</span>
-								</button>
-							</div>
-						</>
-					) : (
-						<span className="tree-actions-hint muted">{t.tree.selectHint}</span>
-					)}
-				</div>
+					<option value="default">{t.tree.filterDefault}</option>
+					<option value="noTools">{t.tree.filterNoTools}</option>
+					<option value="userOnly">{t.tree.filterUserOnly}</option>
+					<option value="labeledOnly">{t.tree.filterLabeledOnly}</option>
+					<option value="all">{t.tree.filterAll}</option>
+				</select>
 			</div>
-		</div>
+			<div
+				className="tree-list"
+				ref={listRef}
+				tabIndex={0}
+				onKeyDown={handleTreeKey}
+				role="tree"
+				aria-label={t.chat.tree}
+			>
+				{flat.length === 0 && <div className="tree-empty">{t.tree.empty}</div>}
+				{flat.map(({ node, depth, visible }) => {
+					if (!visible) return null;
+					const id = node.entry.id;
+					const hasChildren = node.children.length > 0;
+					const isCollapsed = collapsed.has(id);
+					const role = entryRole(node.entry);
+					const label = entryLabel(node.entry, t);
+					const isSel = id === selectedId;
+					return (
+						<div
+							key={id}
+							className={`tree-node ${isSel ? "selected" : ""} ${isLeaf(id) ? "leaf" : ""} role-${roleClass(role)}`}
+							style={{ paddingLeft: 10 + Math.min(depth, 40) * 16 }}
+							onClick={() => setSelectedId(id)}
+							role="treeitem"
+							aria-selected={isSel}
+							aria-level={depth + 1}
+							aria-expanded={hasChildren ? !isCollapsed : undefined}
+						>
+							<span
+								className="tree-chevron"
+								aria-hidden="true"
+								onClick={(e) => {
+									e.stopPropagation();
+									if (hasChildren) toggleCollapse(id);
+								}}
+							>
+								{hasChildren &&
+									(isCollapsed ? <ChevronRightIcon size={12} /> : <ChevronDownIcon size={12} />)}
+							</span>
+							<span className="tree-role-icon" aria-hidden="true">
+								{role === "user" ? (
+									<span className="tree-dot user" />
+								) : role === "assistant" ? (
+									<span className="tree-dot assistant" />
+								) : role === "tool" ? (
+									<TerminalIcon size={12} />
+								) : (
+									<BranchIcon size={12} />
+								)}
+							</span>
+							<span className="tree-node-label" title={label}>
+								{label}
+							</span>
+							{node.label && <span className="tree-node-tag">{node.label}</span>}
+							{isLeaf(id) && <span className="tree-leaf-mark">◀</span>}
+						</div>
+					);
+				})}
+			</div>
+			<div className="tree-actions">
+				{selected ? (
+					<>
+						<span className="tree-actions-hint">{entryLabel(selected.entry, t)}</span>
+						<div className="tree-actions-buttons">
+							{selected.entry.type === "message" && selected.entry.message?.role === "user" && (
+								<button className="btn secondary" onClick={() => onFork(selected.entry.id)}>
+									<BranchIcon size={13} />
+									<span>{t.tree.forkHere}</span>
+								</button>
+							)}
+							<button className="btn secondary" onClick={() => void copySelected()}>
+								{copied ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
+								<span>{copied ? t.chat.copied : t.tree.copyText}</span>
+							</button>
+						</div>
+					</>
+				) : (
+					<span className="tree-actions-hint muted">{t.tree.selectHint}</span>
+				)}
+			</div>
+		</Modal>
 	);
 }

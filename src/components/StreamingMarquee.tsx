@@ -62,8 +62,7 @@ export function StreamingMarquee({ text }: { text: string }) {
 	}, [text]);
 
 	useLayoutEffect(() => {
-		if (trackRef.current)
-			trackRef.current.style.transform = `translate3d(-${offset}px, 0, 0)`;
+		if (trackRef.current) trackRef.current.style.transform = `translate3d(-${offset}px, 0, 0)`;
 	}, [offset]);
 
 	return (

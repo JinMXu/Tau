@@ -1,12 +1,9 @@
 import { useEffect, useState } from "react";
 import type { MessageCatalog } from "../i18n";
-import {
-	piMcpRemoveServer,
-	piMcpUpsertServer,
-	type McpServerEntry,
-} from "../pi";
-import { ChevronDownIcon, ChevronRightIcon, LoaderIcon, XIcon } from "../icons";
+import { piMcpRemoveServer, piMcpUpsertServer, type McpServerEntry } from "../pi";
+import { ChevronDownIcon, ChevronRightIcon, LoaderIcon } from "../icons";
 import { ScopeSelect } from "./ScopeSelect";
+import { Modal } from "./Modal";
 
 type McpTransport = "stdio" | "http";
 type DialogMode = "form" | "json";
@@ -30,12 +27,7 @@ interface McpServerForm {
 }
 
 type FormError =
-	| "nameRequired"
-	| "nameExists"
-	| "commandRequired"
-	| "urlRequired"
-	| "urlInvalid"
-	| "envFormat";
+	"nameRequired" | "nameExists" | "commandRequired" | "urlRequired" | "urlInvalid" | "envFormat";
 
 const BLANK_FORM: McpServerForm = {
 	name: "",
@@ -114,26 +106,14 @@ function validateForm(
 		if (!/^https?:\/\//i.test(url)) return "urlInvalid";
 	}
 	if (linesToRecord(form.envText) === null) return "envFormat";
-	if (form.transport === "http" && linesToRecord(form.headersText) === null)
-		return "envFormat";
+	if (form.transport === "http" && linesToRecord(form.headersText) === null) return "envFormat";
 	return null;
 }
 
 /** Keys the form manages; everything else in an edited entry passes through. */
-const FORM_KEYS = [
-	"command",
-	"args",
-	"cwd",
-	"env",
-	"url",
-	"headers",
-	"requestTimeoutMs",
-] as const;
+const FORM_KEYS = ["command", "args", "cwd", "env", "url", "headers", "requestTimeoutMs"] as const;
 
-function buildConfig(
-	form: McpServerForm,
-	editing: McpServerEntry | null,
-): Record<string, unknown> {
+function buildConfig(form: McpServerForm, editing: McpServerEntry | null): Record<string, unknown> {
 	// In edit mode keep unknown keys (lifecycle, directTools, oauth, ...)
 	// untouched, exactly like the custom provider dialog.
 	const config: Record<string, unknown> = { ...(editing?.config ?? {}) };
@@ -156,9 +136,7 @@ function buildConfig(
 }
 
 /** Accepts {"name": {...}} or {"mcpServers": {...}} pastes. */
-function parseJsonServers(
-	text: string,
-): Record<string, Record<string, unknown>> {
+function parseJsonServers(text: string): Record<string, Record<string, unknown>> {
 	const parsed: unknown = JSON.parse(text);
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
 		throw new Error("root must be an object");
@@ -245,34 +223,23 @@ export function McpServerDialog({
 			const f = formFromEntry(editing, scopeProject);
 			setForm(f);
 			setShowEnv(Boolean(f.envText || f.headersText));
-			setJsonText(
-				JSON.stringify({ [editing.name]: editing.config }, null, 2),
-			);
+			setJsonText(JSON.stringify({ [editing.name]: editing.config }, null, 2));
 		} else {
 			setForm({ ...BLANK_FORM, scope: scopeProject ?? "" });
 			setShowEnv(false);
-			setJsonText(
-				JSON.stringify(
-					{ "my-mcp-server": { command: "npx", args: [] } },
-					null,
-					2,
-				),
-			);
+			setJsonText(JSON.stringify({ "my-mcp-server": { command: "npx", args: [] } }, null, 2));
 		}
 	}, [open, editing, scopeProject]);
 
 	if (!open) return null;
 
 	const nameLocked = editing !== null;
-	const patch = (p: Partial<McpServerForm>) =>
-		setForm((prev) => ({ ...prev, ...p }));
+	const patch = (p: Partial<McpServerForm>) => setForm((prev) => ({ ...prev, ...p }));
 
 	const switchToJson = () => {
 		// Carry the current form over so nothing typed is lost.
 		const name = form.name.trim() || "my-mcp-server";
-		setJsonText(
-			JSON.stringify({ [name]: buildConfig(form, editing) }, null, 2),
-		);
+		setJsonText(JSON.stringify({ [name]: buildConfig(form, editing) }, null, 2));
 		setMode("json");
 		setError(null);
 	};
@@ -285,12 +252,7 @@ export function McpServerDialog({
 		}
 		const name = form.name.trim();
 		const config = buildConfig(form, editing);
-		await piMcpUpsertServer(
-			form.scope ? "project" : "global",
-			form.scope || null,
-			name,
-			config,
-		);
+		await piMcpUpsertServer(form.scope ? "project" : "global", form.scope || null, name, config);
 		return name;
 	};
 
@@ -300,10 +262,7 @@ export function McpServerDialog({
 			servers = parseJsonServers(jsonText);
 		} catch (e) {
 			setError(
-				t.settings.mcpJsonInvalid.replace(
-					"{error}",
-					e instanceof Error ? e.message : String(e),
-				),
+				t.settings.mcpJsonInvalid.replace("{error}", e instanceof Error ? e.message : String(e)),
 			);
 			return null;
 		}
@@ -340,198 +299,168 @@ export function McpServerDialog({
 	};
 
 	return (
-		<div className="overlay-backdrop">
-			<div className="extension-dialog custom-provider-dialog">
-				<div className="tree-dialog-header">
-					<h3>{nameLocked ? t.settings.mcpTitleEdit : t.settings.mcpTitleAdd}</h3>
-					<div className="tree-dialog-header-actions">
-						<div className="segmented">
-							<button
-								className={mode === "form" ? "active" : ""}
-								onClick={() => {
-									setMode("form");
-									setError(null);
-								}}
-							>
-								{t.settings.mcpFormTab}
-							</button>
-							<button
-								className={mode === "json" ? "active" : ""}
-								onClick={switchToJson}
-							>
-								{t.settings.mcpJsonTab}
-							</button>
+		<Modal
+			open
+			onClose={onClose}
+			title={nameLocked ? t.settings.mcpTitleEdit : t.settings.mcpTitleAdd}
+			closeLabel={t.app.close}
+			className="custom-provider-dialog"
+			headerActions={
+				<div className="segmented">
+					<button
+						className={mode === "form" ? "active" : ""}
+						onClick={() => {
+							setMode("form");
+							setError(null);
+						}}
+					>
+						{t.settings.mcpFormTab}
+					</button>
+					<button className={mode === "json" ? "active" : ""} onClick={switchToJson}>
+						{t.settings.mcpJsonTab}
+					</button>
+				</div>
+			}
+		>
+			<div className="cp-field">
+				<label className="cp-label">{t.settings.mcpScope}</label>
+				<ScopeSelect
+					value={form.scope}
+					options={projects}
+					disabled={nameLocked}
+					fullWidth
+					t={t}
+					onChange={(v) => patch({ scope: v })}
+				/>
+			</div>
+
+			{mode === "form" ? (
+				<>
+					<div className="cp-grid">
+						<div className="cp-field">
+							<label className="cp-label">{t.settings.mcpName}</label>
+							<input
+								value={form.name}
+								disabled={nameLocked}
+								placeholder="my-mcp-server"
+								spellCheck={false}
+								onChange={(e) => patch({ name: e.target.value })}
+							/>
+							{!nameLocked && <p className="cp-note">{t.settings.mcpNameHint}</p>}
 						</div>
-						<button
-							className="icon-btn"
-							title={t.app.close}
-							aria-label={t.app.close}
-							onClick={onClose}
-						>
-							<XIcon size={15} />
-						</button>
+						<div className="cp-field">
+							<label className="cp-label">{t.settings.mcpTransport}</label>
+							<select
+								value={form.transport}
+								onChange={(e) => patch({ transport: e.target.value as McpTransport })}
+							>
+								<option value="stdio">{t.settings.mcpTransportStdio}</option>
+								<option value="http">{t.settings.mcpTransportHttp}</option>
+							</select>
+						</div>
 					</div>
-				</div>
 
-				<div className="cp-field">
-					<label className="cp-label">{t.settings.mcpScope}</label>
-					<ScopeSelect
-						value={form.scope}
-						options={projects}
-						disabled={nameLocked}
-						fullWidth
-						t={t}
-						onChange={(v) => patch({ scope: v })}
-					/>
-				</div>
-
-				{mode === "form" ? (
-					<>
-						<div className="cp-grid">
+					{form.transport === "stdio" ? (
+						<>
 							<div className="cp-field">
-								<label className="cp-label">{t.settings.mcpName}</label>
-								<input
-									value={form.name}
-									disabled={nameLocked}
-									placeholder="my-mcp-server"
-									spellCheck={false}
-									onChange={(e) => patch({ name: e.target.value })}
-								/>
-								{!nameLocked && (
-									<p className="cp-note">{t.settings.mcpNameHint}</p>
-								)}
-							</div>
-							<div className="cp-field">
-								<label className="cp-label">{t.settings.mcpTransport}</label>
-								<select
-									value={form.transport}
-									onChange={(e) =>
-										patch({ transport: e.target.value as McpTransport })
-									}
-								>
-									<option value="stdio">{t.settings.mcpTransportStdio}</option>
-									<option value="http">{t.settings.mcpTransportHttp}</option>
-								</select>
-							</div>
-						</div>
-
-						{form.transport === "stdio" ? (
-							<>
-								<div className="cp-field">
-									<label className="cp-label">{t.settings.mcpCommand}</label>
-									<input
-										className="mono"
-										value={form.command}
-										placeholder="npx"
-										spellCheck={false}
-										onChange={(e) => patch({ command: e.target.value })}
-									/>
-								</div>
-								<div className="cp-field">
-									<label className="cp-label">{t.settings.mcpArgs}</label>
-									<input
-										className="mono"
-										value={form.argsText}
-										placeholder={t.settings.mcpArgsPlaceholder}
-										spellCheck={false}
-										onChange={(e) => patch({ argsText: e.target.value })}
-									/>
-								</div>
-							</>
-						) : (
-							<div className="cp-field">
-								<label className="cp-label">{t.settings.mcpUrl}</label>
+								<label className="cp-label">{t.settings.mcpCommand}</label>
 								<input
 									className="mono"
-									value={form.url}
-									placeholder="https://example.com/mcp"
+									value={form.command}
+									placeholder="npx"
 									spellCheck={false}
-									onChange={(e) => patch({ url: e.target.value })}
+									onChange={(e) => patch({ command: e.target.value })}
 								/>
 							</div>
-						)}
-
+							<div className="cp-field">
+								<label className="cp-label">{t.settings.mcpArgs}</label>
+								<input
+									className="mono"
+									value={form.argsText}
+									placeholder={t.settings.mcpArgsPlaceholder}
+									spellCheck={false}
+									onChange={(e) => patch({ argsText: e.target.value })}
+								/>
+							</div>
+						</>
+					) : (
 						<div className="cp-field">
-							<label className="cp-label">{t.settings.mcpTimeout}</label>
+							<label className="cp-label">{t.settings.mcpUrl}</label>
 							<input
 								className="mono"
-								type="number"
-								min={1}
-								value={form.timeout}
-								placeholder="30000"
-								onChange={(e) => patch({ timeout: e.target.value })}
+								value={form.url}
+								placeholder="https://example.com/mcp"
+								spellCheck={false}
+								onChange={(e) => patch({ url: e.target.value })}
 							/>
 						</div>
+					)}
 
-						<button
-							className="mcp-collapsible"
-							onClick={() => setShowEnv((v) => !v)}
-						>
-							{showEnv ? (
-								<ChevronDownIcon size={13} />
-							) : (
-								<ChevronRightIcon size={13} />
-							)}
-							<span>
-								{form.transport === "stdio"
-									? t.settings.mcpEnvOptional
-									: t.settings.mcpHeadersOptional}
-							</span>
-						</button>
-						{showEnv && (
-							<div className="cp-field">
-								<textarea
-									className="compact-textarea mono"
-									rows={3}
-									value={
-										form.transport === "stdio"
-											? form.envText
-											: form.headersText
-									}
-									placeholder={
-										form.transport === "stdio"
-											? "API_KEY=…"
-											: "Authorization=Bearer …"
-									}
-									spellCheck={false}
-									onChange={(e) =>
-										patch(
-											form.transport === "stdio"
-												? { envText: e.target.value }
-												: { headersText: e.target.value },
-										)
-									}
-								/>
-							</div>
-						)}
-					</>
-				) : (
-					<>
+					<div className="cp-field">
+						<label className="cp-label">{t.settings.mcpTimeout}</label>
+						<input
+							className="mono"
+							type="number"
+							min={1}
+							value={form.timeout}
+							placeholder="30000"
+							onChange={(e) => patch({ timeout: e.target.value })}
+						/>
+					</div>
+
+					<button className="mcp-collapsible" onClick={() => setShowEnv((v) => !v)}>
+						{showEnv ? <ChevronDownIcon size={13} /> : <ChevronRightIcon size={13} />}
+						<span>
+							{form.transport === "stdio"
+								? t.settings.mcpEnvOptional
+								: t.settings.mcpHeadersOptional}
+						</span>
+					</button>
+					{showEnv && (
 						<div className="cp-field">
 							<textarea
-								className="compact-textarea mono mcp-json-editor"
-								rows={12}
-								value={jsonText}
+								className="compact-textarea mono"
+								rows={3}
+								value={form.transport === "stdio" ? form.envText : form.headersText}
+								placeholder={form.transport === "stdio" ? "API_KEY=…" : "Authorization=Bearer …"}
 								spellCheck={false}
-								onChange={(e) => setJsonText(e.target.value)}
+								onChange={(e) =>
+									patch(
+										form.transport === "stdio"
+											? { envText: e.target.value }
+											: { headersText: e.target.value },
+									)
+								}
 							/>
-							<p className="cp-note">{t.settings.mcpJsonHint}</p>
 						</div>
-					</>
-				)}
+					)}
+				</>
+			) : (
+				<>
+					<div className="cp-field">
+						<textarea
+							className="compact-textarea mono mcp-json-editor"
+							rows={12}
+							value={jsonText}
+							spellCheck={false}
+							onChange={(e) => setJsonText(e.target.value)}
+						/>
+						<p className="cp-note">{t.settings.mcpJsonHint}</p>
+					</div>
+				</>
+			)}
 
-				{error && <div className="error-banner">{error}</div>}
+			{error && <div className="error-banner">{error}</div>}
 
-				<div className="extension-dialog-actions">
-					<button className="btn secondary" onClick={onClose} disabled={busy}>
-						{t.app.cancel}
-					</button>
-					<button className="btn primary" disabled={busy} onClick={() => void save()}>
-						{busy && <LoaderIcon size={12} className="spin" />}
-						{t.settings.saveKey}
-					</button>
-				</div>
+			<div className="extension-dialog-actions">
+				<button className="btn secondary" onClick={onClose} disabled={busy}>
+					{t.app.cancel}
+				</button>
+				<button className="btn primary" disabled={busy} onClick={() => void save()}>
+					{busy && <LoaderIcon size={12} className="spin" />}
+					{t.settings.saveKey}
+				</button>
 			</div>
-		</div>
+		</Modal>
 	);
 }

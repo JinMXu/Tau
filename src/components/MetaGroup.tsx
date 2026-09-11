@@ -5,8 +5,8 @@ import { useSweepHighlight } from "./use-sweep-highlight";
 import { ThinkingOrb, type OrbState } from "thinking-orbs";
 import { PreviewTicker, type LivePreviewItem } from "./PreviewTicker";
 import { ToolCard, ThinkingBlock } from "./ToolCard";
+import { formatDuration } from "../format";
 import {
-	formatDuration,
 	summarizeCategories,
 	type GroupEntry,
 	type ToolCategory,
@@ -127,10 +127,7 @@ export const MetaGroup = memo(
 		);
 		// Codex-style sweep highlight shared by the label and the preview's
 		// tool name (percho: one band, constant speed, rAF-painted).
-		const { labelRef, wrapRef } = useSweepHighlight(
-			live,
-			liveItems.map((i) => i.id).join(","),
-		);
+		const { labelRef, wrapRef } = useSweepHighlight(live, liveItems.map((i) => i.id).join(","));
 		// Single settled entry (e.g. one thinking block before the text)
 		// renders as a bare row without the folding chrome — same as percho,
 		// which only wraps groups of 2+ (or working) in the shell.

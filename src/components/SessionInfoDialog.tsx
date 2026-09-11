@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import type { MessageCatalog } from "../i18n";
 import type { SessionStats } from "../chat-types";
-import { XIcon, CopyIcon, CheckIcon } from "../icons";
+import { CopyIcon, CheckIcon } from "../icons";
+import { Modal } from "./Modal";
 
 interface ModelInfo {
 	id?: string;
@@ -66,7 +67,8 @@ export function SessionInfoDialog({
 			{copyKey && (
 				<button
 					className="icon-btn session-info-copy"
-					title={t.chat.copy} aria-label={t.chat.copy}
+					title={t.chat.copy}
+					aria-label={t.chat.copy}
 					onClick={() => void copy(copyKey, value)}
 				>
 					{copied === copyKey ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
@@ -79,94 +81,62 @@ export function SessionInfoDialog({
 		(t.chat.thinkingLevels as Record<string, string>)[level] ?? level;
 
 	return (
-		<div className="overlay-backdrop">
-			<div className="extension-dialog session-info-dialog">
-				<div className="tree-dialog-header">
-					<h3>{t.chat.sessionInfo}</h3>
-					<button className="icon-btn" title={t.app.close} aria-label={t.app.close} onClick={onClose}>
-						<XIcon size={15} />
-					</button>
-				</div>
-				<div className="session-info-body">
-					<Row
-						label={t.sessionInfo.name}
-						value={String(s.sessionName ?? "")}
-						copyKey="name"
-					/>
-					<Row
-						label={t.sessionInfo.file}
-						value={String(s.sessionFile ?? "")}
-						copyKey="file"
-						mono
-					/>
-					<Row
-						label={t.sessionInfo.id}
-						value={String(s.sessionId ?? "")}
-						copyKey="id"
-						mono
-					/>
-					<Row
-						label={t.sessionInfo.model}
-						value={
-							model
-								? `${model.name ?? model.id ?? ""} (${model.provider ?? ""}/${model.id ?? ""})`.trim()
-								: ""
-						}
-						copyKey="model"
-					/>
-					<Row
-						label={t.sessionInfo.thinking}
-						value={s.thinkingLevel ? thinkingLabel(String(s.thinkingLevel)) : ""}
-					/>
-					<Row
-						label={t.sessionInfo.messages}
-						value={String(s.messageCount ?? 0)}
-					/>
-					<Row
-						label={t.sessionInfo.pending}
-						value={String(s.pendingMessageCount ?? 0)}
-					/>
-					<Row
-						label={t.sessionInfo.steeringMode}
-						value={String(s.steeringMode ?? "")}
-					/>
-					<Row
-						label={t.sessionInfo.followUpMode}
-						value={String(s.followUpMode ?? "")}
-					/>
-					<Row
-						label={t.sessionInfo.autoCompaction}
-						value={
-							s.autoCompactionEnabled === false
-								? t.sessionInfo.off
-								: t.sessionInfo.on
-						}
-					/>
-					{stats && (
-						<>
-							<div className="session-info-sep" />
+		<Modal
+			open
+			onClose={onClose}
+			title={t.chat.sessionInfo}
+			closeLabel={t.app.close}
+			className="session-info-dialog"
+		>
+			<div className="session-info-body">
+				<Row label={t.sessionInfo.name} value={String(s.sessionName ?? "")} copyKey="name" />
+				<Row label={t.sessionInfo.file} value={String(s.sessionFile ?? "")} copyKey="file" mono />
+				<Row label={t.sessionInfo.id} value={String(s.sessionId ?? "")} copyKey="id" mono />
+				<Row
+					label={t.sessionInfo.model}
+					value={
+						model
+							? `${model.name ?? model.id ?? ""} (${model.provider ?? ""}/${model.id ?? ""})`.trim()
+							: ""
+					}
+					copyKey="model"
+				/>
+				<Row
+					label={t.sessionInfo.thinking}
+					value={s.thinkingLevel ? thinkingLabel(String(s.thinkingLevel)) : ""}
+				/>
+				<Row label={t.sessionInfo.messages} value={String(s.messageCount ?? 0)} />
+				<Row label={t.sessionInfo.pending} value={String(s.pendingMessageCount ?? 0)} />
+				<Row label={t.sessionInfo.steeringMode} value={String(s.steeringMode ?? "")} />
+				<Row label={t.sessionInfo.followUpMode} value={String(s.followUpMode ?? "")} />
+				<Row
+					label={t.sessionInfo.autoCompaction}
+					value={s.autoCompactionEnabled === false ? t.sessionInfo.off : t.sessionInfo.on}
+				/>
+				{stats && (
+					<>
+						<div className="session-info-sep" />
+						<Row
+							label={t.sessionInfo.tokensIn}
+							value={stats.tokens?.input?.toLocaleString() ?? "—"}
+						/>
+						<Row
+							label={t.sessionInfo.tokensOut}
+							value={stats.tokens?.output?.toLocaleString() ?? "—"}
+						/>
+						<Row
+							label={t.sessionInfo.tokensCache}
+							value={stats.tokens?.cacheRead?.toLocaleString() ?? "—"}
+						/>
+						{stats.contextUsage && (
 							<Row
-								label={t.sessionInfo.tokensIn}
-								value={stats.tokens?.input?.toLocaleString() ?? "—"}
+								label={t.sessionInfo.context}
+								value={`${stats.contextUsage.tokens.toLocaleString()} / ${stats.contextUsage.contextWindow.toLocaleString()} (${Math.round(stats.contextUsage.percent)}%)`}
 							/>
-							<Row
-								label={t.sessionInfo.tokensOut}
-								value={stats.tokens?.output?.toLocaleString() ?? "—"}
-							/>
-							<Row
-								label={t.sessionInfo.tokensCache}
-								value={stats.tokens?.cacheRead?.toLocaleString() ?? "—"}
-							/>
-							{stats.contextUsage && (
-								<Row
-									label={t.sessionInfo.context}
-									value={`${stats.contextUsage.tokens.toLocaleString()} / ${stats.contextUsage.contextWindow.toLocaleString()} (${Math.round(stats.contextUsage.percent)}%)`}
-								/>
-							)}
-						</>
-					)}
-				</div>
+						)}
+					</>
+				)}
 			</div>
-		</div>
+		</Modal>
 	);
 }

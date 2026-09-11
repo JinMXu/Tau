@@ -180,9 +180,9 @@ Tau 通过以下 JSON-RPC 命令与 Pi 通信：
 | Agent | Pi Coding Agent（`pi --mode rpc`；打包版内置运行时，开发时用系统 pi） |
 | 状态 | localStorage + 会话 JSONL 直接读取 |
 
-## 🎨 设计参考
+## 🎨 界面设计
 
-本项目参考了 [Ousia](https://github.com/s1dashu/ousia) 的设计理念：
+Tau 的界面以暖中性色调为基调：
 
 - 暖中性色调（Mist 默认）的侧边栏 + 浅色聊天面板
 - 项目分组的侧边栏会话列表

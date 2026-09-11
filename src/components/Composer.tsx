@@ -1,6 +1,7 @@
 import {
 	useCallback,
 	useEffect,
+	useId,
 	useLayoutEffect,
 	useMemo,
 	useRef,
@@ -10,8 +11,8 @@ import {
 	type DragEvent,
 } from "react";
 import type { Attachment, SendBehavior } from "../chat-types";
-import { formatBytes } from "../format";
-import { projectNameFromPath, type MessageCatalog } from "../i18n";
+import { formatBytes, projectNameFromPath } from "../format";
+import type { MessageCatalog } from "../i18n";
 import type { GitBranchState, PiCommand } from "../pi";
 import { externalEdit, projectFiles } from "../pi";
 import {
@@ -84,13 +85,7 @@ function AttachmentChip({
 	);
 }
 
-function ContextUsageRing({
-	stats,
-	t,
-}: {
-	stats: SessionStats;
-	t: MessageCatalog;
-}) {
+function ContextUsageRing({ stats, t }: { stats: SessionStats; t: MessageCatalog }) {
 	const usage = stats.contextUsage;
 	if (!usage) return null;
 	const pct = Math.round(Math.max(0, Math.min(100, usage.percent)));
@@ -125,16 +120,11 @@ function ContextUsageRing({
 			</svg>
 			<div className="context-tooltip">
 				<div className="context-tooltip-header">
-					<span className="context-tooltip-label">
-						{t.chat.contextUsage}
-					</span>
+					<span className="context-tooltip-label">{t.chat.contextUsage}</span>
 					<span className="context-tooltip-pct">{pct}%</span>
 				</div>
 				<div className="context-tooltip-bar">
-					<div
-						className="context-tooltip-bar-fill"
-						style={{ width: `${pct}%` }}
-					/>
+					<div className="context-tooltip-bar-fill" style={{ width: `${pct}%` }} />
 				</div>
 				<div className="context-tooltip-rows">
 					<div className="context-tooltip-row">
@@ -163,41 +153,38 @@ function ContextUsageRing({
 							{stats.tokens.cacheRead > 0 && (
 								<div className="context-tooltip-row">
 									<span className="ct-label">{t.chat.tokensCache}</span>
-									<span className="ct-value">
-										{fmt(stats.tokens.cacheRead)}
-									</span>
+									<span className="ct-value">{fmt(stats.tokens.cacheRead)}</span>
 								</div>
 							)}
 						</div>
 					</>
 				)}
-			{perf && (perf.cacheHitRate != null || perf.avgTTFT != null || perf.tokensPerSec != null) && (
-				<>
-					<div className="context-tooltip-divider" />
-					<div className="context-tooltip-rows">
-						{perf.cacheHitRate != null && (
-							<div className="context-tooltip-row">
-								<span className="ct-label">{t.chat.cacheHitRate}</span>
-								<span className="ct-value">{perf.cacheHitRate.toFixed(1)}%</span>
+				{perf &&
+					(perf.cacheHitRate != null || perf.avgTTFT != null || perf.tokensPerSec != null) && (
+						<>
+							<div className="context-tooltip-divider" />
+							<div className="context-tooltip-rows">
+								{perf.cacheHitRate != null && (
+									<div className="context-tooltip-row">
+										<span className="ct-label">{t.chat.cacheHitRate}</span>
+										<span className="ct-value">{perf.cacheHitRate.toFixed(1)}%</span>
+									</div>
+								)}
+								{perf.avgTTFT != null && (
+									<div className="context-tooltip-row">
+										<span className="ct-label">{t.chat.avgTTFT}</span>
+										<span className="ct-value">{fmtTTFT(perf.avgTTFT)}</span>
+									</div>
+								)}
+								{perf.tokensPerSec != null && (
+									<div className="context-tooltip-row">
+										<span className="ct-label">{t.chat.tokensPerSec}</span>
+										<span className="ct-value">{perf.tokensPerSec.toFixed(1)} t/s</span>
+									</div>
+								)}
 							</div>
-						)}
-						{perf.avgTTFT != null && (
-							<div className="context-tooltip-row">
-								<span className="ct-label">{t.chat.avgTTFT}</span>
-								<span className="ct-value">{fmtTTFT(perf.avgTTFT)}</span>
-							</div>
-						)}
-						{perf.tokensPerSec != null && (
-							<div className="context-tooltip-row">
-								<span className="ct-label">{t.chat.tokensPerSec}</span>
-								<span className="ct-value">
-									{perf.tokensPerSec.toFixed(1)} t/s
-								</span>
-							</div>
-						)}
-					</div>
-				</>
-			)}
+						</>
+					)}
 			</div>
 		</div>
 	);
@@ -299,6 +286,7 @@ export function Composer({
 	const [attachments, setAttachments] = useState<Attachment[]>([]);
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
 	const [modelQuery, setModelQuery] = useState("");
+	const modelMenuId = useId();
 	const [isComposing, setIsComposing] = useState(false);
 	const [branchMenuOpen, setBranchMenuOpen] = useState(false);
 	const [branchCreating, setBranchCreating] = useState(false);
@@ -309,6 +297,7 @@ export function Composer({
 	const [workspaceQuery, setWorkspaceQuery] = useState("");
 	const [workspaceMenuUp, setWorkspaceMenuUp] = useState(false);
 	const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
+	const thinkingMenuId = useId();
 	const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
 	const [dragQueueId, setDragQueueId] = useState<string | null>(null);
 	const [slashIndex, setSlashIndex] = useState(0);
@@ -358,10 +347,7 @@ export function Composer({
 	useEffect(() => {
 		historyRef.current = history;
 		try {
-			localStorage.setItem(
-				"pi-gui.promptHistory.v1",
-				JSON.stringify(history.slice(0, 100)),
-			);
+			localStorage.setItem("pi-gui.promptHistory.v1", JSON.stringify(history.slice(0, 100)));
 		} catch {
 			/* ignore */
 		}
@@ -388,35 +374,20 @@ export function Composer({
 
 	useEffect(() => {
 		function onClick(e: MouseEvent) {
-			if (
-				modelMenuRef.current &&
-				!modelMenuRef.current.contains(e.target as Node)
-			) {
+			if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
 				setModelMenuOpen(false);
 			}
-			if (
-				branchMenuRef.current &&
-				!branchMenuRef.current.contains(e.target as Node)
-			) {
+			if (branchMenuRef.current && !branchMenuRef.current.contains(e.target as Node)) {
 				setBranchMenuOpen(false);
 				setBranchCreating(false);
 			}
-			if (
-				workspaceMenuRef.current &&
-				!workspaceMenuRef.current.contains(e.target as Node)
-			) {
+			if (workspaceMenuRef.current && !workspaceMenuRef.current.contains(e.target as Node)) {
 				setWorkspaceMenuOpen(false);
 			}
-			if (
-				thinkingMenuRef.current &&
-				!thinkingMenuRef.current.contains(e.target as Node)
-			) {
+			if (thinkingMenuRef.current && !thinkingMenuRef.current.contains(e.target as Node)) {
 				setThinkingMenuOpen(false);
 			}
-			if (
-				toolsMenuRef.current &&
-				!toolsMenuRef.current.contains(e.target as Node)
-			) {
+			if (toolsMenuRef.current && !toolsMenuRef.current.contains(e.target as Node)) {
 				setToolsMenuOpen(false);
 			}
 		}
@@ -451,10 +422,7 @@ export function Composer({
 			// send-during-run mode (steer/followUp); App queues it and
 			// delivers it when pi is ready (pi rejects a plain `prompt`
 			// mid-stream, so the message must never go out unqueued).
-			if (
-				(!trimmed && attachments.length === 0) ||
-				(!editingQueueId && !connected && !workspace)
-			)
+			if ((!trimmed && attachments.length === 0) || (!editingQueueId && !connected && !workspace))
 				return;
 			// App.submit resolves `false` when it rejects the send (no
 			// workspace, connect canceled, API-key dialog canceled) — keep the
@@ -568,9 +536,7 @@ export function Composer({
 			const images = items.filter((i) => i.type.startsWith("image/"));
 			if (images.length === 0) return;
 			e.preventDefault();
-			const files = images
-				.map((i) => i.getAsFile())
-				.filter((f): f is File => f !== null);
+			const files = images.map((i) => i.getAsFile()).filter((f): f is File => f !== null);
 			if (files.length) await addFiles(files);
 		},
 		[addFiles],
@@ -585,18 +551,13 @@ export function Composer({
 		[addFiles],
 	);
 
-	const selectedModel = models.find(
-		(m) => `${m.provider}/${m.id}` === model,
-	);
+	const selectedModel = models.find((m) => `${m.provider}/${m.id}` === model);
 	const availableThinkingLevels =
-		(selectedModel?.thinkingLevels?.length ? selectedModel.thinkingLevels : thinkingLevels) ??
-		[];
+		(selectedModel?.thinkingLevels?.length ? selectedModel.thinkingLevels : thinkingLevels) ?? [];
 	const normalizedQuery = modelQuery.trim().toLowerCase();
 	const visibleModels = normalizedQuery
 		? models.filter((m) =>
-				`${m.provider} ${m.id} ${m.name ?? ""}`
-					.toLowerCase()
-					.includes(normalizedQuery),
+				`${m.provider} ${m.id} ${m.name ?? ""}`.toLowerCase().includes(normalizedQuery),
 			)
 		: models;
 	const providers = [...new Set(visibleModels.map((m) => m.provider))];
@@ -604,18 +565,14 @@ export function Composer({
 	const normalizedWorkspaceQuery = workspaceQuery.trim().toLowerCase();
 	const visibleWorkspaces = normalizedWorkspaceQuery
 		? workspaces.filter((w) =>
-				`${projectNameFromPath(w)} ${w}`
-					.toLowerCase()
-					.includes(normalizedWorkspaceQuery),
+				`${projectNameFromPath(w)} ${w}`.toLowerCase().includes(normalizedWorkspaceQuery),
 			)
 		: workspaces;
 
 	const normalizedBranchQuery = branchQuery.trim().toLowerCase();
 	const visibleBranches = gitState
 		? normalizedBranchQuery
-			? gitState.branches.filter((b) =>
-					b.toLowerCase().includes(normalizedBranchQuery),
-				)
+			? gitState.branches.filter((b) => b.toLowerCase().includes(normalizedBranchQuery))
 			: gitState.branches
 		: [];
 
@@ -683,12 +640,7 @@ export function Composer({
 	);
 
 	useLayoutEffect(() => {
-		fitMenuDirection(
-			workspaceMenuOpen,
-			workspaceMenuRef,
-			".workspace-menu",
-			setWorkspaceMenuUp,
-		);
+		fitMenuDirection(workspaceMenuOpen, workspaceMenuRef, ".workspace-menu", setWorkspaceMenuUp);
 	}, [workspaceMenuOpen, workspaceQuery, fitMenuDirection]);
 
 	useLayoutEffect(() => {
@@ -713,8 +665,7 @@ export function Composer({
 	// so typing arguments after picking a command closes it.
 	const slashMatch = text.match(/^\/(\S*)$/);
 	const slashQuery = slashMatch?.[1]?.toLowerCase() ?? "";
-	const slashOpen =
-		Boolean(slashMatch) && commands.length > 0 && !slashDismissed;
+	const slashOpen = Boolean(slashMatch) && commands.length > 0 && !slashDismissed;
 	const slashFiltered = slashOpen
 		? slashQuery
 			? commands.filter(
@@ -724,8 +675,7 @@ export function Composer({
 				)
 			: commands
 		: [];
-	const activeSlash =
-		slashFiltered[Math.min(slashIndex, slashFiltered.length - 1)] ?? null;
+	const activeSlash = slashFiltered[Math.min(slashIndex, slashFiltered.length - 1)] ?? null;
 
 	// Reset the selection when the query changes; re-open after dismissal
 	// once the draft no longer starts with `/`.
@@ -740,9 +690,7 @@ export function Composer({
 	const slashListRef = useRef<HTMLDivElement>(null);
 	useEffect(() => {
 		const list = slashListRef.current;
-		const active = list?.querySelector(".slash-item.active") as
-			| HTMLElement
-			| null;
+		const active = list?.querySelector(".slash-item.active") as HTMLElement | null;
 		if (!list || !active) return;
 		const itemTop = active.offsetTop;
 		const itemBottom = itemTop + active.offsetHeight;
@@ -753,20 +701,17 @@ export function Composer({
 		}
 	}, [slashIndex, slashFiltered.length]);
 
-	const insertSlashCommand = useCallback(
-		(command: PiCommand) => {
-			setText(`/${command.name} `);
-			setSlashIndex(0);
-			requestAnimationFrame(() => {
-				const el = textareaRef.current;
-				if (!el) return;
-				el.focus();
-				const pos = el.value.length;
-				el.setSelectionRange(pos, pos);
-			});
-		},
-		[],
-	);
+	const insertSlashCommand = useCallback((command: PiCommand) => {
+		setText(`/${command.name} `);
+		setSlashIndex(0);
+		requestAnimationFrame(() => {
+			const el = textareaRef.current;
+			if (!el) return;
+			el.focus();
+			const pos = el.value.length;
+			el.setSelectionRange(pos, pos);
+		});
+	}, []);
 
 	const slashSourceLabel = useCallback(
 		(source: PiCommand["source"]): string => {
@@ -809,39 +754,39 @@ export function Composer({
 			.map((x) => x.f);
 		return scored;
 	}, [atMatch, projectFileCache]);
-	const activeAt =
-		atFiltered[Math.min(atIndex, atFiltered.length - 1)] ?? null;
+	const activeAt = atFiltered[Math.min(atIndex, atFiltered.length - 1)] ?? null;
 
 	useEffect(() => {
 		setAtIndex(0);
 	}, [atMatch?.query]);
 
-	const insertAtReference = useCallback((path: string) => {
-		if (!atMatch) return;
-		const before = text.slice(0, caretRef.current);
-		const after = text.slice(caretRef.current);
-		const start = before.lastIndexOf(atMatch.token);
-		const replacement = path;
-		setText(before.slice(0, start) + replacement + after);
-		setAtIndex(0);
-		requestAnimationFrame(() => {
-			const el = textareaRef.current;
-			if (!el) return;
-			el.focus();
-			const pos = start + replacement.length;
-			el.setSelectionRange(pos, pos);
-			caretRef.current = pos;
-		});
-	}, [text, atMatch]);
+	const insertAtReference = useCallback(
+		(path: string) => {
+			if (!atMatch) return;
+			const before = text.slice(0, caretRef.current);
+			const after = text.slice(caretRef.current);
+			const start = before.lastIndexOf(atMatch.token);
+			const replacement = path;
+			setText(before.slice(0, start) + replacement + after);
+			setAtIndex(0);
+			requestAnimationFrame(() => {
+				const el = textareaRef.current;
+				if (!el) return;
+				el.focus();
+				const pos = start + replacement.length;
+				el.setSelectionRange(pos, pos);
+				caretRef.current = pos;
+			});
+		},
+		[text, atMatch],
+	);
 
 	// ---- prompt history navigation ----
 	const historyPrev = useCallback(() => {
 		const list = historyRef.current;
 		if (list.length === 0) return;
 		const next =
-			historyIndexRef.current < 0
-				? 0
-				: Math.min(historyIndexRef.current + 1, list.length - 1);
+			historyIndexRef.current < 0 ? 0 : Math.min(historyIndexRef.current + 1, list.length - 1);
 		historyIndexRef.current = next;
 		setText(list[next] ?? "");
 		setAttachments([]);
@@ -958,193 +903,186 @@ export function Composer({
 							</div>
 						))}
 					</div>
-					{queuePaused && (
-						<div className="queue-paused-hint">{t.chat.queuePaused}</div>
-					)}
+					{queuePaused && <div className="queue-paused-hint">{t.chat.queuePaused}</div>}
 				</div>
 			)}
 			<div className="composer-context">
-					<div className="composer-select" ref={workspaceMenuRef}>
+				<div className="composer-select" ref={workspaceMenuRef}>
+					<button
+						className={`composer-chip ${workspaceMenuOpen ? "open" : ""}`}
+						onClick={toggleWorkspaceMenu}
+						aria-expanded={workspaceMenuOpen}
+						title={workspace ?? t.sidebar.workspaceHint}
+					>
+						<FolderIcon size={13} />
+						<span className="composer-chip-name">
+							{workspace ? projectNameFromPath(workspace) : t.app.pickWorkspace}
+						</span>
+						<ChevronDownIcon size={12} />
+					</button>
+					{workspaceMenuOpen && (
+						<div className={`workspace-menu${workspaceMenuUp ? " up" : ""}`}>
+							<div className="menu-search">
+								<SearchIcon size={13} />
+								<input
+									autoFocus
+									value={workspaceQuery}
+									placeholder={t.chat.searchWorkspace}
+									onChange={(e) => setWorkspaceQuery(e.target.value)}
+									onKeyDown={(e) => {
+										e.stopPropagation();
+										if (e.key === "Escape") setWorkspaceMenuOpen(false);
+										if (e.key === "Enter" && visibleWorkspaces.length > 0) {
+											const target = visibleWorkspaces[0];
+											if (target !== workspace) onSelectWorkspace(target);
+											setWorkspaceMenuOpen(false);
+										}
+									}}
+								/>
+							</div>
+							<div className="workspace-menu-list">
+								{visibleWorkspaces.length === 0 && (
+									<div className="menu-empty">{t.chat.noWorkspaces}</div>
+								)}
+								{visibleWorkspaces.map((w) => {
+									const active = w === workspace;
+									return (
+										<button
+											key={w}
+											className={`workspace-item ${active ? "active" : ""}`}
+											title={w}
+											onClick={() => {
+												if (!active) onSelectWorkspace(w);
+												setWorkspaceMenuOpen(false);
+											}}
+										>
+											<FolderIcon size={13} />
+											<span className="workspace-item-name">{projectNameFromPath(w)}</span>
+											{active && <CheckIcon size={13} />}
+										</button>
+									);
+								})}
+							</div>
+							<div className="menu-sep" />
+							<button
+								className="workspace-open-btn"
+								onClick={() => {
+									setWorkspaceMenuOpen(false);
+									onPickWorkspace();
+								}}
+							>
+								<FolderOpenIcon size={13} />
+								<span>{t.chat.openFolder}</span>
+							</button>
+						</div>
+					)}
+				</div>
+				{gitState?.isRepository && (
+					<div className="composer-select" ref={branchMenuRef}>
 						<button
-							className={`composer-chip ${workspaceMenuOpen ? "open" : ""}`}
-							onClick={toggleWorkspaceMenu} aria-expanded={workspaceMenuOpen}
-							title={workspace ?? t.sidebar.workspaceHint}
+							className={`composer-chip ${branchMenuOpen ? "open" : ""}`}
+							disabled={!workspace}
+							title={`${t.chat.gitBranch}: ${gitState.currentBranch ?? ""}${gitState.dirtyFileCount > 0 ? ` · ${t.chat.gitDirty.replace("{count}", String(gitState.dirtyFileCount))}` : ""}`}
+							onClick={toggleBranchMenu}
+							aria-expanded={branchMenuOpen}
 						>
-							<FolderIcon size={13} />
-							<span className="composer-chip-name">
-								{workspace ? projectNameFromPath(workspace) : t.app.pickWorkspace}
+							<BranchIcon size={13} />
+							<span className="composer-chip-name mono">
+								{gitState.currentBranch ?? t.chat.gitNotRepo}
 							</span>
+							{gitState.dirtyFileCount > 0 && (
+								<span
+									className="branch-dirty"
+									title={t.chat.gitDirty.replace("{count}", String(gitState.dirtyFileCount))}
+								>
+									{gitState.dirtyFileCount}
+								</span>
+							)}
 							<ChevronDownIcon size={12} />
 						</button>
-						{workspaceMenuOpen && (
-							<div className={`workspace-menu${workspaceMenuUp ? " up" : ""}`}>
+						{branchMenuOpen && (
+							<div className={`branch-menu drop-down${branchMenuUp ? " up" : ""}`}>
 								<div className="menu-search">
 									<SearchIcon size={13} />
 									<input
 										autoFocus
-										value={workspaceQuery}
-										placeholder={t.chat.searchWorkspace}
-										onChange={(e) => setWorkspaceQuery(e.target.value)}
+										value={branchQuery}
+										placeholder={t.chat.searchBranch}
+										onChange={(e) => setBranchQuery(e.target.value)}
 										onKeyDown={(e) => {
 											e.stopPropagation();
-											if (e.key === "Escape") setWorkspaceMenuOpen(false);
-											if (e.key === "Enter" && visibleWorkspaces.length > 0) {
-												const target = visibleWorkspaces[0];
-												if (target !== workspace) onSelectWorkspace(target);
-												setWorkspaceMenuOpen(false);
+											if (e.key === "Escape") {
+												setBranchMenuOpen(false);
+												setBranchCreating(false);
+											}
+											if (e.key === "Enter") {
+												const target = visibleBranches.find((b) => b !== gitState.currentBranch);
+												if (target) {
+													onCheckoutBranch(target);
+													setBranchMenuOpen(false);
+												}
 											}
 										}}
 									/>
 								</div>
-								<div className="workspace-menu-list">
-									{visibleWorkspaces.length === 0 && (
-										<div className="menu-empty">{t.chat.noWorkspaces}</div>
+								<div className="menu-label">{t.chat.branches}</div>
+								<div className="branch-menu-list">
+									{visibleBranches.length === 0 && (
+										<div className="menu-empty">{t.chat.noBranches}</div>
 									)}
-									{visibleWorkspaces.map((w) => {
-										const active = w === workspace;
+									{visibleBranches.map((name) => {
+										const active = name === gitState.currentBranch;
 										return (
 											<button
-												key={w}
-												className={`workspace-item ${active ? "active" : ""}`}
-												title={w}
+												key={name}
+												className={`branch-item ${active ? "active" : ""}`}
+												title={t.chat.checkoutBranch}
 												onClick={() => {
-													if (!active) onSelectWorkspace(w);
-													setWorkspaceMenuOpen(false);
+													if (!active) onCheckoutBranch(name);
+													setBranchMenuOpen(false);
 												}}
 											>
-												<FolderIcon size={13} />
-												<span className="workspace-item-name">
-													{projectNameFromPath(w)}
+												<BranchIcon size={13} />
+												<span className="branch-item-text">
+													<span className="branch-item-name">{name}</span>
+													{active && gitState.dirtyFileCount > 0 && (
+														<span className="branch-item-sub">
+															{t.chat.gitDirtyDetail.replace(
+																"{count}",
+																String(gitState.dirtyFileCount),
+															)}
+														</span>
+													)}
 												</span>
 												{active && <CheckIcon size={13} />}
 											</button>
 										);
 									})}
 								</div>
-								<div className="menu-sep" />
-								<button
-									className="workspace-open-btn"
-									onClick={() => {
-										setWorkspaceMenuOpen(false);
-										onPickWorkspace();
-									}}
-								>
-									<FolderOpenIcon size={13} />
-									<span>{t.chat.openFolder}</span>
-								</button>
-							</div>
-						)}
-					</div>
-					{gitState?.isRepository && (
-						<div className="composer-select" ref={branchMenuRef}>
-							<button
-								className={`composer-chip ${branchMenuOpen ? "open" : ""}`}
-								disabled={!workspace}
-								title={`${t.chat.gitBranch}: ${gitState.currentBranch ?? ""}${gitState.dirtyFileCount > 0 ? ` · ${t.chat.gitDirty.replace("{count}", String(gitState.dirtyFileCount))}` : ""}`}
-								onClick={toggleBranchMenu} aria-expanded={branchMenuOpen}
-							>
-								<BranchIcon size={13} />
-								<span className="composer-chip-name mono">
-									{gitState.currentBranch ?? t.chat.gitNotRepo}
-								</span>
-								{gitState.dirtyFileCount > 0 && (
-									<span
-										className="branch-dirty"
-										title={t.chat.gitDirty.replace("{count}", String(gitState.dirtyFileCount))}
-									>
-										{gitState.dirtyFileCount}
-									</span>
-								)}
-								<ChevronDownIcon size={12} />
-							</button>
-							{branchMenuOpen && (
-								<div className={`branch-menu drop-down${branchMenuUp ? " up" : ""}`}>
-									<div className="menu-search">
-										<SearchIcon size={13} />
+								{branchCreating ? (
+									<div className="branch-create">
 										<input
 											autoFocus
-											value={branchQuery}
-											placeholder={t.chat.searchBranch}
-											onChange={(e) => setBranchQuery(e.target.value)}
+											value={newBranchName}
+											placeholder={t.chat.newBranchPlaceholder}
+											onChange={(e) => setNewBranchName(e.target.value)}
 											onKeyDown={(e) => {
 												e.stopPropagation();
-												if (e.key === "Escape") {
-													setBranchMenuOpen(false);
-													setBranchCreating(false);
-												}
-												if (e.key === "Enter") {
-													const target = visibleBranches.find(
-														(b) => b !== gitState.currentBranch,
-													);
-													if (target) {
-														onCheckoutBranch(target);
-														setBranchMenuOpen(false);
-													}
-												}
+												if (e.key === "Enter") createBranch();
+												if (e.key === "Escape") setBranchCreating(false);
 											}}
 										/>
 									</div>
-									<div className="menu-label">{t.chat.branches}</div>
-									<div className="branch-menu-list">
-										{visibleBranches.length === 0 && (
-											<div className="menu-empty">{t.chat.noBranches}</div>
-										)}
-										{visibleBranches.map((name) => {
-												const active = name === gitState.currentBranch;
-												return (
-													<button
-														key={name}
-														className={`branch-item ${active ? "active" : ""}`}
-														title={t.chat.checkoutBranch}
-														onClick={() => {
-															if (!active) onCheckoutBranch(name);
-															setBranchMenuOpen(false);
-														}}
-													>
-														<BranchIcon size={13} />
-														<span className="branch-item-text">
-															<span className="branch-item-name">{name}</span>
-															{active && gitState.dirtyFileCount > 0 && (
-																<span className="branch-item-sub">
-																	{t.chat.gitDirtyDetail.replace(
-																		"{count}",
-																		String(gitState.dirtyFileCount),
-																	)}
-																</span>
-															)}
-														</span>
-														{active && <CheckIcon size={13} />}
-													</button>
-												);
-											})}
-									</div>
-									{branchCreating ? (
-										<div className="branch-create">
-											<input
-												autoFocus
-												value={newBranchName}
-												placeholder={t.chat.newBranchPlaceholder}
-												onChange={(e) => setNewBranchName(e.target.value)}
-												onKeyDown={(e) => {
-													e.stopPropagation();
-													if (e.key === "Enter") createBranch();
-													if (e.key === "Escape") setBranchCreating(false);
-												}}
-											/>
-										</div>
-									) : (
-										<button
-											className="branch-create-btn"
-											onClick={() => setBranchCreating(true)}
-										>
-											<PlusIcon size={13} />
-											<span>{t.chat.createCheckoutBranch}</span>
-										</button>
-									)}
-								</div>
-							)}
-						</div>
-					)}
+								) : (
+									<button className="branch-create-btn" onClick={() => setBranchCreating(true)}>
+										<PlusIcon size={13} />
+										<span>{t.chat.createCheckoutBranch}</span>
+									</button>
+								)}
+							</div>
+						)}
+					</div>
+				)}
 			</div>
 			<div className="composer">
 				{atOpen && (
@@ -1161,11 +1099,7 @@ export function Composer({
 										onMouseEnter={() => setAtIndex(i)}
 										onClick={() => insertAtReference(f)}
 									>
-										{f.endsWith("/") ? (
-											<FolderIcon size={13} />
-										) : (
-											<FileIcon size={13} />
-										)}
+										{f.endsWith("/") ? <FolderIcon size={13} /> : <FileIcon size={13} />}
 										<span className="slash-name mono">{f}</span>
 									</button>
 								))}
@@ -1188,12 +1122,8 @@ export function Composer({
 										onClick={() => insertSlashCommand(c)}
 									>
 										<span className="slash-name">/{c.name}</span>
-										<span className="slash-desc">
-											{c.description ?? ""}
-										</span>
-										<span className={`slash-source ${c.source}`}>
-											{slashSourceLabel(c.source)}
-										</span>
+										<span className="slash-desc">{c.description ?? ""}</span>
+										<span className={`slash-source ${c.source}`}>{slashSourceLabel(c.source)}</span>
 									</button>
 								))}
 							</div>
@@ -1230,193 +1160,182 @@ export function Composer({
 							<AttachmentChip
 								key={a.id}
 								attachment={a}
-								onRemove={() =>
-									setAttachments((prev) =>
-										prev.filter((x) => x.id !== a.id),
-									)
-								}
+								onRemove={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
 							/>
 						))}
 					</div>
 				)}
-			<div
-				className={`composer-input-wrap${isComposing ? " composing" : ""}`}
-			>
-				<textarea
-					ref={textareaRef}
-					rows={2}
-					value={text}
-					disabled={!connected && !workspace}
-					placeholder={
-						!workspace
-							? t.chat.noWorkspace
-							: running
-								? t.chat.placeholderBusy
-								: t.chat.placeholder
-					}
-					onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
-						caretRef.current = e.target.selectionStart;
-						setText(e.target.value);
-					}}
-					onSelect={(e) => {
-						caretRef.current = (e.target as HTMLTextAreaElement).selectionStart;
-						setCaretTick((n) => n + 1);
-					}}
-					onClick={(e) => {
-						caretRef.current = (e.target as HTMLTextAreaElement).selectionStart;
-						setCaretTick((n) => n + 1);
-					}}
-					onKeyUp={(e) => {
-						caretRef.current = (e.target as HTMLTextAreaElement).selectionStart;
-						setCaretTick((n) => n + 1);
-					}}
-					onScroll={syncHighlightScroll}
-					onPaste={handlePaste}
-					onKeyDown={(e) => {
-						// `@` file-reference menu navigation (takes priority).
-						if (atOpen) {
-							if (e.key === "ArrowDown") {
-								e.preventDefault();
-								setAtIndex((i) => Math.min(i + 1, atFiltered.length - 1));
-								return;
-							}
-							if (e.key === "ArrowUp") {
-								e.preventDefault();
-								setAtIndex((i) => Math.max(i - 1, 0));
-								return;
-							}
-							if (e.key === "Tab" && activeAt) {
-								e.preventDefault();
-								insertAtReference(activeAt);
-								return;
-							}
-							if (e.key === "Escape") {
-								e.preventDefault();
-								// Replace the `@query` token with a plain `@` and close.
-								setText((cur) => {
-									const before = cur.slice(0, caretRef.current);
-									const start = atMatch ? before.lastIndexOf(atMatch.token) : -1;
-									if (start < 0) return cur;
-									return cur.slice(0, start) + "@" + cur.slice(caretRef.current);
-								});
-								return;
-							}
-							if (e.key === "Enter" && !e.shiftKey && activeAt) {
-								e.preventDefault();
-								insertAtReference(activeAt);
-								return;
-							}
+				<div className={`composer-input-wrap${isComposing ? " composing" : ""}`}>
+					<textarea
+						ref={textareaRef}
+						rows={2}
+						value={text}
+						disabled={!connected && !workspace}
+						placeholder={
+							!workspace
+								? t.chat.noWorkspace
+								: running
+									? t.chat.placeholderBusy
+									: t.chat.placeholder
 						}
-						// Slash-command menu navigation (takes priority over send).
-						if (slashOpen) {
-							if (e.key === "ArrowDown") {
-								e.preventDefault();
-								setSlashIndex((i) =>
-									Math.min(i + 1, slashFiltered.length - 1),
-								);
-								return;
-							}
-							if (e.key === "ArrowUp") {
-								e.preventDefault();
-								setSlashIndex((i) => Math.max(i - 1, 0));
-								return;
-							}
-							if (e.key === "Tab" && activeSlash) {
-								e.preventDefault();
-								insertSlashCommand(activeSlash);
-								return;
-							}
-							if (e.key === "Escape") {
-								e.preventDefault();
-								setSlashDismissed(true);
-								setSlashIndex(0);
-								return;
-							}
-							if (
-								e.key === "Enter" &&
-								!e.shiftKey &&
-								!isComposing &&
-								!e.nativeEvent.isComposing &&
-								activeSlash
-							) {
-								e.preventDefault();
-								insertSlashCommand(activeSlash);
-								return;
-							}
-						}
-						if (e.key === "Enter" && !e.shiftKey) {
-							if (isComposing || e.nativeEvent.isComposing) return;
-							e.preventDefault();
-							submit(editingQueueId ? "normal" : (running ? sendDuringRun : "normal"));
-							return;
-						}
-						// Prompt history: ↑ on the first line / empty draft goes
-						// back; ↓ returns to newer entries (TUI historyPrevious/Next).
-						if (e.key === "ArrowUp") {
-							const caret = caretRef.current;
-							const atLineStart =
-								caret === 0 || text.slice(0, caret).lastIndexOf("\n") === -1;
-							if (!e.shiftKey && atLineStart && historyRef.current.length > 0) {
-								e.preventDefault();
-								historyPrev();
-								return;
-							}
-						}
-						if (e.key === "ArrowDown") {
-							const caret = caretRef.current;
-							const atLineEnd =
-								caret === text.length ||
-								text.slice(caret).indexOf("\n") === -1;
-							if (!e.shiftKey && atLineEnd && historyIndexRef.current >= 0) {
-								e.preventDefault();
-								historyNext();
-								return;
-							}
-						}
-						// Shift+Tab cycles the thinking level (TUI shift+tab) when no
-						// completion menu is open.
-						if (e.shiftKey && e.key === "Tab" && !slashOpen && !atOpen) {
-							e.preventDefault();
-							onCycleThinking();
-							return;
-						}
-						// Ctrl+G: edit the draft in the system editor (TUI ctrl+g).
-						if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "g") {
-							e.preventDefault();
-							void (async () => {
-								try {
-									const edited = await externalEdit(text);
-									setText(edited);
-									caretRef.current = edited.length;
-									requestAnimationFrame(() => {
-										const el = textareaRef.current;
-										if (el) {
-											el.focus();
-											el.setSelectionRange(edited.length, edited.length);
-										}
-									});
-								} catch (err) {
-									setExtError(String(err));
+						onChange={(e: ChangeEvent<HTMLTextAreaElement>) => {
+							caretRef.current = e.target.selectionStart;
+							setText(e.target.value);
+						}}
+						onSelect={(e) => {
+							caretRef.current = (e.target as HTMLTextAreaElement).selectionStart;
+							setCaretTick((n) => n + 1);
+						}}
+						onClick={(e) => {
+							caretRef.current = (e.target as HTMLTextAreaElement).selectionStart;
+							setCaretTick((n) => n + 1);
+						}}
+						onKeyUp={(e) => {
+							caretRef.current = (e.target as HTMLTextAreaElement).selectionStart;
+							setCaretTick((n) => n + 1);
+						}}
+						onScroll={syncHighlightScroll}
+						onPaste={handlePaste}
+						onKeyDown={(e) => {
+							// `@` file-reference menu navigation (takes priority).
+							if (atOpen) {
+								if (e.key === "ArrowDown") {
+									e.preventDefault();
+									setAtIndex((i) => Math.min(i + 1, atFiltered.length - 1));
+									return;
 								}
-							})();
-							return;
-						}
-					}}
-					onCompositionStart={() => setIsComposing(true)}
-					onCompositionEnd={() => setIsComposing(false)}
-				/>
-				<div className="composer-highlight" ref={highlightRef} aria-hidden>
-					{slashHighlight}
-				</div>
+								if (e.key === "ArrowUp") {
+									e.preventDefault();
+									setAtIndex((i) => Math.max(i - 1, 0));
+									return;
+								}
+								if (e.key === "Tab" && activeAt) {
+									e.preventDefault();
+									insertAtReference(activeAt);
+									return;
+								}
+								if (e.key === "Escape") {
+									e.preventDefault();
+									// Replace the `@query` token with a plain `@` and close.
+									setText((cur) => {
+										const before = cur.slice(0, caretRef.current);
+										const start = atMatch ? before.lastIndexOf(atMatch.token) : -1;
+										if (start < 0) return cur;
+										return cur.slice(0, start) + "@" + cur.slice(caretRef.current);
+									});
+									return;
+								}
+								if (e.key === "Enter" && !e.shiftKey && activeAt) {
+									e.preventDefault();
+									insertAtReference(activeAt);
+									return;
+								}
+							}
+							// Slash-command menu navigation (takes priority over send).
+							if (slashOpen) {
+								if (e.key === "ArrowDown") {
+									e.preventDefault();
+									setSlashIndex((i) => Math.min(i + 1, slashFiltered.length - 1));
+									return;
+								}
+								if (e.key === "ArrowUp") {
+									e.preventDefault();
+									setSlashIndex((i) => Math.max(i - 1, 0));
+									return;
+								}
+								if (e.key === "Tab" && activeSlash) {
+									e.preventDefault();
+									insertSlashCommand(activeSlash);
+									return;
+								}
+								if (e.key === "Escape") {
+									e.preventDefault();
+									setSlashDismissed(true);
+									setSlashIndex(0);
+									return;
+								}
+								if (
+									e.key === "Enter" &&
+									!e.shiftKey &&
+									!isComposing &&
+									!e.nativeEvent.isComposing &&
+									activeSlash
+								) {
+									e.preventDefault();
+									insertSlashCommand(activeSlash);
+									return;
+								}
+							}
+							if (e.key === "Enter" && !e.shiftKey) {
+								if (isComposing || e.nativeEvent.isComposing) return;
+								e.preventDefault();
+								submit(editingQueueId ? "normal" : running ? sendDuringRun : "normal");
+								return;
+							}
+							// Prompt history: ↑ on the first line / empty draft goes
+							// back; ↓ returns to newer entries (TUI historyPrevious/Next).
+							if (e.key === "ArrowUp") {
+								const caret = caretRef.current;
+								const atLineStart = caret === 0 || text.slice(0, caret).lastIndexOf("\n") === -1;
+								if (!e.shiftKey && atLineStart && historyRef.current.length > 0) {
+									e.preventDefault();
+									historyPrev();
+									return;
+								}
+							}
+							if (e.key === "ArrowDown") {
+								const caret = caretRef.current;
+								const atLineEnd = caret === text.length || text.slice(caret).indexOf("\n") === -1;
+								if (!e.shiftKey && atLineEnd && historyIndexRef.current >= 0) {
+									e.preventDefault();
+									historyNext();
+									return;
+								}
+							}
+							// Shift+Tab cycles the thinking level (TUI shift+tab) when no
+							// completion menu is open.
+							if (e.shiftKey && e.key === "Tab" && !slashOpen && !atOpen) {
+								e.preventDefault();
+								onCycleThinking();
+								return;
+							}
+							// Ctrl+G: edit the draft in the system editor (TUI ctrl+g).
+							if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "g") {
+								e.preventDefault();
+								void (async () => {
+									try {
+										const edited = await externalEdit(text);
+										setText(edited);
+										caretRef.current = edited.length;
+										requestAnimationFrame(() => {
+											const el = textareaRef.current;
+											if (el) {
+												el.focus();
+												el.setSelectionRange(edited.length, edited.length);
+											}
+										});
+									} catch (err) {
+										setExtError(String(err));
+									}
+								})();
+								return;
+							}
+						}}
+						onCompositionStart={() => setIsComposing(true)}
+						onCompositionEnd={() => setIsComposing(false)}
+					/>
+					<div className="composer-highlight" ref={highlightRef} aria-hidden>
+						{slashHighlight}
+					</div>
 				</div>
 				<div className="composer-toolbar">
 					<div className="composer-left">
-					<button
-						className="icon-btn"
-						title={t.chat.attach}
-						disabled={!connected && !workspace}
-						onClick={() => fileInputRef.current?.click()}
-					>
+						<button
+							className="icon-btn"
+							title={t.chat.attach}
+							disabled={!connected && !workspace}
+							onClick={() => fileInputRef.current?.click()}
+						>
 							<PlusIcon size={16} />
 						</button>
 						<input
@@ -1437,30 +1356,31 @@ export function Composer({
 									className={`composer-model-btn ${thinkingMenuOpen ? "open" : ""}`}
 									disabled={!connected}
 									title={t.app.thinking}
-									onClick={toggleThinkingMenu} aria-expanded={thinkingMenuOpen}
+									onClick={toggleThinkingMenu}
+									aria-haspopup="listbox"
+									aria-expanded={thinkingMenuOpen}
+									aria-controls={thinkingMenuOpen ? thinkingMenuId : undefined}
 								>
 									<BrainIcon size={14} />
-									<span className="composer-model-name">
-										{thinkingLabel(thinkingLevel)}
-									</span>
+									<span className="composer-model-name">{thinkingLabel(thinkingLevel)}</span>
 									<ChevronDownIcon size={13} />
 								</button>
 								{thinkingMenuOpen && (
-									<div className="thinking-menu">
+									<div className="thinking-menu" id={thinkingMenuId} role="listbox">
 										{availableThinkingLevels.map((level) => {
 											const active = level === thinkingLevel;
 											return (
 												<button
 													key={level}
 													className={`thinking-item ${active ? "active" : ""}`}
+													role="option"
+													aria-selected={active}
 													onClick={() => {
 														if (!active) onThinkingLevelChange(level);
 														setThinkingMenuOpen(false);
 													}}
 												>
-													<span className="thinking-item-name">
-														{thinkingLabel(level)}
-													</span>
+													<span className="thinking-item-name">{thinkingLabel(level)}</span>
 													{active && <CheckIcon size={13} />}
 												</button>
 											);
@@ -1493,7 +1413,8 @@ export function Composer({
 						<div className="composer-select" ref={toolsMenuRef}>
 							<button
 								className={`composer-model-btn ${toolsMenuOpen ? "open" : ""}`}
-								title={t.chat.customTools} aria-expanded={toolsMenuOpen}
+								title={t.chat.customTools}
+								aria-expanded={toolsMenuOpen}
 								onClick={() => {
 									setToolsMenuOpen((v) => {
 										if (v) return false;
@@ -1518,8 +1439,7 @@ export function Composer({
 									</div>
 									<p className="tools-menu-hint">{t.chat.customToolsHint}</p>
 									{ALL_AGENT_TOOLS.map((tool) => {
-										const enabled =
-											customTools.length === 0 || customTools.includes(tool);
+										const enabled = customTools.length === 0 || customTools.includes(tool);
 										return (
 											<button
 												key={tool}
@@ -1541,21 +1461,20 @@ export function Composer({
 					</div>
 
 					<div className="composer-right">
-						{showContextUsage && stats && (
-							<ContextUsageRing stats={stats} t={t} />
-						)}
+						{showContextUsage && stats && <ContextUsageRing stats={stats} t={t} />}
 						<div className="composer-select" ref={modelMenuRef}>
 							<button
 								className="composer-model-btn"
-								onClick={() => setModelMenuOpen((v) => !v)} aria-expanded={modelMenuOpen}
+								onClick={() => setModelMenuOpen((v) => !v)}
+								aria-haspopup="listbox"
+								aria-expanded={modelMenuOpen}
+								aria-controls={modelMenuOpen ? modelMenuId : undefined}
 							>
 								<span className="model-dot" />
 								<span className="composer-model-name">
 									{modelsLoading
 										? t.settings.loading
-										: (selectedModel?.name ??
-												selectedModel?.id ??
-												(model || t.app.model))}
+										: (selectedModel?.name ?? selectedModel?.id ?? (model || t.app.model))}
 								</span>
 								{modelsLoading ? (
 									<LoaderIcon size={13} className="spin" />
@@ -1578,40 +1497,47 @@ export function Composer({
 											}}
 										/>
 									</div>
-									<div className="model-menu-list">
+									<div
+										className="model-menu-list"
+										id={modelMenuId}
+										role="listbox"
+										aria-label={t.app.model}
+									>
 										{!connected ? (
-											<div className="model-menu-empty">
-												{t.chat.connectToPickModel}
-											</div>
+											<div className="model-menu-empty">{t.chat.connectToPickModel}</div>
 										) : providers.length === 0 ? (
 											<div className="model-menu-empty">{t.chat.noModels}</div>
-										) : providers.map((provider) => (
-											<div className="model-group" key={provider}>
-												<div className="model-group-label">{provider}</div>
-												{visibleModels
-													.filter((m) => m.provider === provider)
-													.map((m) => {
-														const value = `${m.provider}/${m.id}`;
-														const active = value === model;
-														return (
-															<button
-																key={value}
-																className={`model-item ${active ? "active" : ""}`}
-																onClick={() => {
-																	onModelChange(value);
-																	setModelMenuOpen(false);
-																}}
-															>
-																<span className="model-item-name">
-																	{m.name ?? m.id}
-																</span>
-																<span className="model-item-id">{m.id}</span>
-																{active && <CheckIcon size={14} />}
-															</button>
-														);
-													})}
-											</div>
-										))}
+										) : (
+											providers.map((provider) => (
+												<div className="model-group" key={provider} role="group" aria-label={provider}>
+													<div className="model-group-label" aria-hidden="true">
+														{provider}
+													</div>
+													{visibleModels
+														.filter((m) => m.provider === provider)
+														.map((m) => {
+															const value = `${m.provider}/${m.id}`;
+															const active = value === model;
+															return (
+																<button
+																	key={value}
+																	className={`model-item ${active ? "active" : ""}`}
+																	role="option"
+																	aria-selected={active}
+																	onClick={() => {
+																		onModelChange(value);
+																		setModelMenuOpen(false);
+																	}}
+																>
+																	<span className="model-item-name">{m.name ?? m.id}</span>
+																	<span className="model-item-id">{m.id}</span>
+																	{active && <CheckIcon size={14} />}
+																</button>
+															);
+														})}
+												</div>
+											))
+										)}
 									</div>
 								</div>
 							)}
@@ -1623,11 +1549,7 @@ export function Composer({
 								disabled={aborting}
 								title={t.chat.abort}
 							>
-								{aborting ? (
-									<LoaderIcon size={16} className="spin" />
-								) : (
-									<StopIcon size={16} />
-								)}
+								{aborting ? <LoaderIcon size={16} className="spin" /> : <StopIcon size={16} />}
 							</button>
 						)}
 						{/* The send button stays visible while running only when there

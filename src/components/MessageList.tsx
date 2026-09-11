@@ -4,6 +4,7 @@ import type { SubagentRun } from "../pi";
 import type { MessageCatalog } from "../i18n";
 import { BranchIcon, CheckIcon, CopyIcon, SparkleIcon, UndoIcon } from "../icons";
 import { ErrorNote } from "./ErrorNote";
+import { formatClockDuration } from "../format";
 import { splitOnQuery } from "./message-utils";
 import { ToolCard, ThinkingBlock } from "./ToolCard";
 import { MetaGroup, TurnDiffRow } from "./MetaGroup";
@@ -80,13 +81,6 @@ function useShownWorking(working: boolean, endImmediately: boolean, resetKey?: n
 }
 
 /** Compact elapsed duration for the live "working…" status: `42s`, `1:05`. */
-function formatElapsed(ms: number): string {
-	const total = Math.max(0, Math.floor(ms / 1000));
-	const minutes = Math.floor(total / 60);
-	const seconds = total % 60;
-	return minutes > 0 ? `${minutes}:${String(seconds).padStart(2, "0")}` : `${seconds}s`;
-}
-
 
 /**
  * Turn-level activity label shown while the model is working — covering the
@@ -114,7 +108,7 @@ export function TurnStatus({ startTime }: { startTime: number }) {
 			Working...
 			{showClock && (
 				<span className="turn-status-clock" aria-hidden="true">
-					{formatElapsed(elapsedMs)}
+					{formatClockDuration(elapsedMs)}
 				</span>
 			)}
 		</div>
@@ -174,11 +168,17 @@ const imageSrc = (img: MessageImage) => `data:${img.mimeType};base64,${img.data}
 
 /** Percho UserMessage image grid: 1 = contain (144/192px), <=3 = 96px
  * squares, <=6 = 80px, else 64px; click opens the fullscreen overlay. */
-function MessageImages({ images }: { images: MessageImage[] }) {
+function MessageImages({ images, t }: { images: MessageImage[]; t: MessageCatalog }) {
 	const [preview, setPreview] = useState<number | null>(null);
 	const count = images.length;
 	const sizeCls =
-		count === 1 ? "msg-img single" : count <= 3 ? "msg-img md" : count <= 6 ? "msg-img sm" : "msg-img xs";
+		count === 1
+			? "msg-img single"
+			: count <= 3
+				? "msg-img md"
+				: count <= 6
+					? "msg-img sm"
+					: "msg-img xs";
 	useEffect(() => {
 		if (preview === null) return;
 		const onKey = (e: KeyboardEvent) => {
@@ -192,30 +192,38 @@ function MessageImages({ images }: { images: MessageImage[] }) {
 	}, [preview, images.length]);
 	return (
 		<>
-		<div className="msg-images">
-			{images.map((img, i) => (
-				<button
-					key={i}
-					type="button"
-					className="msg-img-btn"
-					aria-label={`image ${i + 1}/${count}`}
-					onClick={() => setPreview(i)}
-				>
-					{/* biome-ignore lint/suspicious/noArrayIndexKey: image list is immutable */}
-					<img src={imageSrc(img)} alt="" className={sizeCls} />
-				</button>
-			))}
-		</div>
-		{preview !== null && (
-			<div className="img-overlay" onClick={() => setPreview(null)}>
-				<img src={imageSrc(images[preview])} alt="" />
-				{count > 1 && (
-					<span className="img-overlay-count">
-						{preview + 1} / {count}
-					</span>
-				)}
+			<div className="msg-images">
+				{images.map((img, i) => (
+					<button
+						key={i}
+						type="button"
+						className="msg-img-btn"
+						aria-label={t.chat.imageIndex
+							.replace("{n}", String(i + 1))
+							.replace("{total}", String(count))}
+						onClick={() => setPreview(i)}
+					>
+						{/* biome-ignore lint/suspicious/noArrayIndexKey: image list is immutable */}
+						<img src={imageSrc(img)} alt="" className={sizeCls} />
+					</button>
+				))}
 			</div>
-		)}
+			{preview !== null && (
+				<div
+					className="img-overlay"
+					onClick={() => setPreview(null)}
+					role="dialog"
+					aria-modal="true"
+					aria-label={t.chat.imagePreview}
+				>
+					<img src={imageSrc(images[preview])} alt="" />
+					{count > 1 && (
+						<span className="img-overlay-count">
+							{preview + 1} / {count}
+						</span>
+					)}
+				</div>
+			)}
 		</>
 	);
 }
@@ -247,33 +255,57 @@ function MessageActions({
 }) {
 	const [copied, setCopied] = useState(false);
 	const timerRef = useRef<number | null>(null);
-	useEffect(() => () => {
-		if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-	}, []);
+	useEffect(
+		() => () => {
+			if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+		},
+		[],
+	);
 	if (!text || (!canRecall && !canFork)) return null;
 	const copy = () => {
 		if (!text) return;
-		void navigator.clipboard.writeText(text).then(() => {
-			setCopied(true);
-			if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-			timerRef.current = window.setTimeout(() => setCopied(false), 1200);
-		}).catch(() => {});
+		void navigator.clipboard
+			.writeText(text)
+			.then(() => {
+				setCopied(true);
+				if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+				timerRef.current = window.setTimeout(() => setCopied(false), 1200);
+			})
+			.catch(() => {});
 		onCopy?.(text);
 	};
 	return (
 		<div className="message-actions">
 			{text && (
-				<button type="button" className="message-action" aria-label={copied ? t.chat.copied : t.chat.copyText} title={copied ? t.chat.copied : t.chat.copyText} onClick={copy}>
+				<button
+					type="button"
+					className="message-action"
+					aria-label={copied ? t.chat.copied : t.chat.copyText}
+					title={copied ? t.chat.copied : t.chat.copyText}
+					onClick={copy}
+				>
 					{copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
 				</button>
 			)}
 			{canFork && (
-				<button type="button" className="message-action" aria-label={t.chat.fork} title={t.chat.fork} onClick={() => onFork?.()}>
+				<button
+					type="button"
+					className="message-action"
+					aria-label={t.chat.fork}
+					title={t.chat.fork}
+					onClick={() => onFork?.()}
+				>
 					<BranchIcon size={14} />
 				</button>
 			)}
 			{canRecall && (
-				<button type="button" className="message-action" aria-label={t.chat.recall} title={t.chat.recall} onClick={() => onRecall?.()}>
+				<button
+					type="button"
+					className="message-action"
+					aria-label={t.chat.recall}
+					title={t.chat.recall}
+					onClick={() => onRecall?.()}
+				>
 					<UndoIcon size={14} />
 				</button>
 			)}
@@ -332,7 +364,7 @@ const MessageRow = memo(function MessageRow({
 			className={`message ${m.role}${isSearchTarget ? " message-search-target" : ""}`}
 		>
 			{m.role === "user" && m.images && m.images.length > 0 && (
-				<MessageImages images={m.images} />
+				<MessageImages images={m.images} t={t} />
 			)}
 			{m.blocks.map((b: Block, i: number) => {
 				if (item.consumed.has(i) || skip.has(i)) return null;
@@ -383,13 +415,9 @@ const MessageRow = memo(function MessageRow({
 					}
 					return (
 						<div className="text-block" key={i}>
-								{/* Percho UserMessage: user input is always plain text
+							{/* Percho UserMessage: user input is always plain text
 								    (whitespace-pre-wrap) - no markdown pass. */}
-								{m.role === "user" ? (
-									b.text
-								) : (
-									<Markdown text={b.text} streaming={m.streaming} />
-								)}
+							{m.role === "user" ? b.text : <Markdown text={b.text} streaming={m.streaming} />}
 						</div>
 					);
 				}
@@ -426,7 +454,13 @@ const MessageRow = memo(function MessageRow({
 				);
 			})}
 			{last && m.error && typeof m.error !== "string" && (
-				<ErrorNote error={m.error} t={t} onRetry={onRetry} onCompact={onCompact} onOpenSettings={onOpenSettings} />
+				<ErrorNote
+					error={m.error}
+					t={t}
+					onRetry={onRetry}
+					onCompact={onCompact}
+					onOpenSettings={onOpenSettings}
+				/>
 			)}
 			{last && typeof m.error === "string" && <div className="msg-error">error: {m.error}</div>}
 			{!m.streaming && (m.role === "user" || canFork) && (
@@ -701,12 +735,14 @@ export const MessageList = memo(function MessageList({
 	// on session switch and never on a plain re-render — otherwise the extra
 	// render that follows turn_end would strip the animation class again.
 	const sessionKey = messages[0]?.id ?? null;
-	const turnBaselineRef = useRef<{ key: number | null; count: number }>({ key: sessionKey, count: 0 });
+	const turnBaselineRef = useRef<{ key: number | null; count: number }>({
+		key: sessionKey,
+		count: 0,
+	});
 	if (turnBaselineRef.current.key !== sessionKey) {
 		turnBaselineRef.current = { key: sessionKey, count: timings.length };
 	}
-	const enteringTurn =
-		timings.length > turnBaselineRef.current.count ? timings.length - 1 : null;
+	const enteringTurn = timings.length > turnBaselineRef.current.count ? timings.length - 1 : null;
 	const rows = useMemo(
 		() =>
 			buildChatRows(items, {
@@ -764,13 +800,11 @@ export const MessageList = memo(function MessageList({
 		return null;
 	}, [all, streaming]);
 
-
 	return (
 		<div ref={scrollRef} className="messages">
 			{rows.map((row, i) => {
 				if (row.kind === "turn") {
-					const gapChip =
-						gapLive && i === rows.length - 1 ? <GapLiveChip t={t} /> : null;
+					const gapChip = gapLive && i === rows.length - 1 ? <GapLiveChip t={t} /> : null;
 					return (
 						<Fragment key={row.key}>
 							{gapChip}
@@ -809,18 +843,19 @@ export const MessageList = memo(function MessageList({
 						searchActiveMessageId={searchActiveMessageId}
 						refCb={refCb}
 						onCopy={onCopyMessage}
-						onRecall={row.item.msg.role === "user" ? () => onRecallMessage?.(row.item.msg) : undefined}
-						canRecall={row.item.msg.id === lastUserMessageId}
-						canFork={
-							row.item.msg.role === "assistant" &&
-							row.item.msg.id === turnFinalAssistantId
+						onRecall={
+							row.item.msg.role === "user" ? () => onRecallMessage?.(row.item.msg) : undefined
 						}
+						canRecall={row.item.msg.id === lastUserMessageId}
+						canFork={row.item.msg.role === "assistant" && row.item.msg.id === turnFinalAssistantId}
 						onFork={
-							row.item.msg.role === "assistant"
-								? () => onForkMessage?.(row.item.msg)
+							row.item.msg.role === "assistant" ? () => onForkMessage?.(row.item.msg) : undefined
+						}
+						onRetry={
+							row.item.msg.error && typeof row.item.msg.error !== "string"
+								? () => onRetryMessage?.(row.item.msg)
 								: undefined
 						}
-						onRetry={row.item.msg.error && typeof row.item.msg.error !== "string" ? () => onRetryMessage?.(row.item.msg) : undefined}
 						onCompact={onCompact}
 						onOpenSettings={onOpenSettings}
 					/>

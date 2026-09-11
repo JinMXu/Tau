@@ -28,9 +28,6 @@ dist-ssr
 src-tauri/target
 scripts/pdbresolve/target
 
-# Reference project (ousia is only a design reference, not part of Tau)
-ousia/
-
 src-tauri/resources/pi-runtime/*
 !src-tauri/resources/pi-runtime/README.txt
 

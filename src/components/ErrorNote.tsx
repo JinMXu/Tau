@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { MessageCatalog } from "../i18n";
 import type { UiError } from "../errors";
+import { formatTimeOfDay } from "../format";
 import { CopyIcon, GearIcon, RefreshIcon } from "../icons";
 
 /**
@@ -29,12 +30,14 @@ export function ErrorNote({
 	const [copied, setCopied] = useState(false);
 	const [open, setOpen] = useState(false);
 
-	const title = t.settings.error.titleKey[error.titleKey as keyof typeof t.settings.error.titleKey] ?? error.titleKey;
+	const title =
+		t.settings.error.titleKey[error.titleKey as keyof typeof t.settings.error.titleKey] ??
+		error.titleKey;
 	const hint = error.hintKey
 		? t.settings.error.hintKey[error.hintKey as keyof typeof t.settings.error.hintKey]
 		: undefined;
 	const source = t.settings.error.source[error.source] ?? error.source;
-	const time = formatTime(error.timestamp);
+	const time = formatTimeOfDay(error.timestamp);
 	const severityClass =
 		error.severity === "warning"
 			? "error-sev-warn"
@@ -129,16 +132,4 @@ export function ErrorNote({
 			)}
 		</div>
 	);
-}
-
-function formatTime(timestamp: number): string {
-	try {
-		return new Date(timestamp).toLocaleTimeString(undefined, {
-			hour: "2-digit",
-			minute: "2-digit",
-			hour12: false,
-		});
-	} catch {
-		return "";
-	}
 }

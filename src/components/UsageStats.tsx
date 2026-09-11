@@ -3,14 +3,7 @@ import type { Language, MessageCatalog } from "../i18n";
 import { usageStats, type PiUsageEntry } from "../pi";
 
 /** Series colors for the trend/donut charts (legible on both themes). */
-const MODEL_COLORS = [
-	"#4c8dff",
-	"#34c98e",
-	"#f5a623",
-	"#a67cf5",
-	"#ef6a6a",
-	"#3bbfd9",
-];
+const MODEL_COLORS = ["#4c8dff", "#34c98e", "#f5a623", "#a67cf5", "#ef6a6a", "#3bbfd9"];
 const MAX_SERIES = 5;
 const MAX_DONUT = 6;
 
@@ -93,9 +86,7 @@ export function UsageStats({ t, lang }: { t: MessageCatalog; lang: Language }) {
 	const [heatMode, setHeatMode] = useState<HeatMode>("daily");
 	const [range, setRange] = useState<TrendRange>(30);
 	const [hoverIdx, setHoverIdx] = useState<number | null>(null);
-	const [donutHover, setDonutHover] = useState<{ i: number; x: number; y: number } | null>(
-		null,
-	);
+	const [donutHover, setDonutHover] = useState<{ i: number; x: number; y: number } | null>(null);
 	const trendSvgRef = useRef<SVGSVGElement>(null);
 	const donutWrapRef = useRef<HTMLDivElement>(null);
 
@@ -313,7 +304,9 @@ export function UsageStats({ t, lang }: { t: MessageCatalog; lang: Language }) {
 	const stepX = n > 1 ? (W - PADL - PADR) / (n - 1) : 0;
 	const xOf = (i: number) => PADL + i * stepX;
 	const yOf = (v: number) => PADT + (1 - v / trend.maxV) * (H - PADT - PADB);
-	const tickIdxs = [...new Set([0, Math.floor(n / 4), Math.floor(n / 2), Math.floor((3 * n) / 4), n - 1])];
+	const tickIdxs = [
+		...new Set([0, Math.floor(n / 4), Math.floor(n / 2), Math.floor((3 * n) / 4), n - 1]),
+	];
 
 	const onTrendHover = (e: React.MouseEvent<SVGSVGElement>) => {
 		const el = trendSvgRef.current;
@@ -401,10 +394,7 @@ export function UsageStats({ t, lang }: { t: MessageCatalog; lang: Language }) {
 				<div className="usage-heatmap-scroll">
 					<div className="usage-heatmap-months">
 						{heatmap.monthLabels.map((m) => (
-							<span
-								key={m.col}
-								style={{ left: `${(m.col / heatmap.weeks.length) * 100}%` }}
-							>
+							<span key={m.col} style={{ left: `${(m.col / heatmap.weeks.length) * 100}%` }}>
 								{m.label}
 							</span>
 						))}
@@ -437,11 +427,7 @@ export function UsageStats({ t, lang }: { t: MessageCatalog; lang: Language }) {
 				<span className="usage-section-title">{t.settings.usageRange}</span>
 				<div className="usage-toggle">
 					{([7, 30] as const).map((r) => (
-						<button
-							key={r}
-							className={range === r ? "active" : ""}
-							onClick={() => setRange(r)}
-						>
+						<button key={r} className={range === r ? "active" : ""} onClick={() => setRange(r)}>
 							{r === 7 ? t.settings.usageLast7 : t.settings.usageLast30}
 						</button>
 					))}
@@ -580,14 +566,10 @@ export function UsageStats({ t, lang }: { t: MessageCatalog; lang: Language }) {
 									className="usage-dot"
 									style={{ background: donut.items[donutHover.i].color }}
 								/>
-								<span className="usage-trend-tooltip-name">
-									{donut.items[donutHover.i].name}
-								</span>
+								<span className="usage-trend-tooltip-name">{donut.items[donutHover.i].name}</span>
 							</div>
 							<div className="usage-trend-tooltip-row">
-								<span>
-									{formatTokens(donut.items[donutHover.i].value, lang)} tokens
-								</span>
+								<span>{formatTokens(donut.items[donutHover.i].value, lang)} tokens</span>
 								<span>
 									{donut.total > 0
 										? Math.round((donut.items[donutHover.i].value / donut.total) * 100)
@@ -604,9 +586,7 @@ export function UsageStats({ t, lang }: { t: MessageCatalog; lang: Language }) {
 								<span className="usage-donut-name" title={it.name}>
 									{it.name}
 								</span>
-								<span className="usage-donut-tokens">
-									{formatTokens(it.value, lang)} tokens
-								</span>
+								<span className="usage-donut-tokens">{formatTokens(it.value, lang)} tokens</span>
 								<span className="usage-donut-pct">
 									{donut.total > 0 ? Math.round((it.value / donut.total) * 100) : 0}%
 								</span>
@@ -617,11 +597,7 @@ export function UsageStats({ t, lang }: { t: MessageCatalog; lang: Language }) {
 			</div>
 
 			<div className="usage-footer">
-				<button
-					className="btn secondary usage-refresh"
-					disabled={refreshing}
-					onClick={load}
-				>
+				<button className="btn secondary usage-refresh" disabled={refreshing} onClick={load}>
 					{t.settings.usageRefresh}
 				</button>
 			</div>
