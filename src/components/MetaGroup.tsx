@@ -183,7 +183,10 @@ export const MetaGroup = memo(
 						/>
 					))}
 				</div>
-				{open && (
+				{/* body 常驻 DOM：展开只过渡高度（percho globals.css:873-891 .drawer-details 抽屉动画，
+				    这里用等价的 grid-rows 0fr→1fr，见 App.css .meta-body-wrap）。常驻是为了展开时不重挂内容
+				    —— 否则 .tool-card 的 dsh-block-in 会在展开瞬间再播一次入场。 */}
+				<div className={`meta-body-wrap${open ? " open" : ""}`} inert={!open}>
 					<div className="meta-body">
 						{entries.map((e) =>
 							e.kind === "thinking" ? (
@@ -199,7 +202,7 @@ export const MetaGroup = memo(
 							),
 						)}
 					</div>
-				)}
+				</div>
 			</div>
 		);
 	},
@@ -274,6 +277,9 @@ export function TurnDiffRow({
 	endedAt,
 	live,
 	liveStart,
+	/** 该 chip 刚出现（轮末首次渲染）时为 true：最外层额外挂 .turn-diff-enter 播一次入场 pop
+	 *  （percho globals.css:988-1002），由 MessageList 传入。 */
+	entering,
 	onOpenDiff,
 	t,
 }: {
@@ -282,19 +288,21 @@ export function TurnDiffRow({
 	endedAt: number | null;
 	live: boolean;
 	liveStart: number | null;
+	entering?: boolean;
 	onOpenDiff?: () => void;
 	t: MessageCatalog;
 }) {
 	const [open, setOpen] = useState(false);
+	const enterCls = entering ? " turn-diff-enter" : "";
 	const timer = (
 		<TurnTimer startedAt={startedAt} endedAt={endedAt} live={live} liveStart={liveStart} />
 	);
 	if (!changes) {
-		return <div className={`turn-diff-plain${live ? " live" : ""}`}>{timer}</div>;
+		return <div className={`turn-diff-plain${live ? " live" : ""}${enterCls}`}>{timer}</div>;
 	}
 	const fileCount = changes.files.length;
 	return (
-		<div className={`turn-diff${live ? " live" : ""}`}>
+		<div className={`turn-diff${live ? " live" : ""}${enterCls}`}>
 			<button
 				type="button"
 				className="turn-diff-head"

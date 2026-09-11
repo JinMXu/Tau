@@ -20,6 +20,26 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 const SMOOTH_OPTIONS: SmoothMarkdownStreamOptions = {
 	minCharsPerSecond: 80,
 };
+/**
+ * 代码块外观（percho 同款）：标题栏按钮只留复制 —— 字号三键/全屏/预览/折叠全部关掉
+ * （showHeader:false 会把复制键一起干掉，所以逐个关）。monacoOptions 的首行灰底修复：
+ * 库对 diff 块默认关掉了 renderLineHighlight，普通块裸奔 → 只读编辑器光标恒停第一行，
+ * 当前行高亮让首行比其他行多一层灰底；右侧概览标尺同理（只读块无导航价值，光标行在
+ * 右缘留一枚黑短杠）。App.css 的「纯净化」注释就是按这些 props 写的。
+ */
+const CODE_BLOCK_PROPS = {
+	showFontSizeButtons: false,
+	showExpandButton: false,
+	showPreviewButton: false,
+	showCollapseButton: false,
+	monacoOptions: {
+		renderLineHighlight: "none",
+		overviewRulerLanes: 0,
+		renderOverviewRuler: false,
+		overviewRulerBorder: false,
+		hideCursorInOverviewRuler: true,
+	},
+} as const;
 
 /** 减速动效偏好：直接关闭 pacing（直出）；库 CSS 自带 animation:none 处理淡入 */
 const REDUCED_MOTION =
@@ -98,7 +118,19 @@ export const Markdown = memo(function Markdown({ text, streaming }: { text: stri
 	return (
 		<div className="markdown-host markdown-body" onClick={onMarkdownClick}>
 			{/* deferNodesUntilVisible=false: markstream 0.0.55's deferred-node
-			    bug leaves placeholder bars behind once streaming stops. */}
+			    bug leaves placeholder bars behind once streaming stops.
+			    indexKey：必须给一个「跨渲染恒定」的值。库用它在两处做身份判定 ——
+			      · indexPrefix → 顶层节点的 React key 前缀；
+			      · 是否丢弃「已播过入场淡入的节点」集合：
+			          const reset = props.indexKey !== undefined
+			            ? props.indexKey !== prev.key
+			            : nodes.length !== prev.total;
+			          if (reset) { fadedNodes.clear(); ... }
+			    不传 indexKey 时走 nodes.length 分支：流式回答的顶层节点数几乎每段都在变
+			    （段落收尾、列表项出现、代码围栏闭合……），于是每变一次，之后的渲染就把
+			    **整篇**已渲染节点重新打上 .fade-node（opacity:0 → 280ms 淡入）——
+			    观感就是「输出完了之后整段回答从头到尾又渲染了一遍」。恒定 indexKey 让
+			    reset 恒为 false，只有真正新出现的节点播一次淡入。 */}
 			<MarkdownRender
 				content={text}
 				final={!streaming}
@@ -106,8 +138,10 @@ export const Markdown = memo(function Markdown({ text, streaming }: { text: stri
 				smoothStreaming={smoothableRef.current}
 				smoothStreamingOptions={SMOOTH_OPTIONS}
 				isDark={isDark}
+				indexKey="tau-markdown"
 				codeBlockLightTheme="vitesse-light"
 				codeBlockDarkTheme="vitesse-dark"
+				codeBlockProps={CODE_BLOCK_PROPS}
 				deferNodesUntilVisible={false}
 			/>
 		</div>

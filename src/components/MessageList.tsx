@@ -87,6 +87,7 @@ function formatElapsed(ms: number): string {
 	return minutes > 0 ? `${minutes}:${String(seconds).padStart(2, "0")}` : `${seconds}s`;
 }
 
+
 /**
  * Turn-level activity label shown while the model is working — covering the
  * pre-first-token wait and the streaming phases alike — rendered at the end
@@ -462,6 +463,7 @@ const GapLiveChip = memo(function GapLiveChip({ t }: { t: MessageCatalog }) {
 
 export const MessageList = memo(function MessageList({
 	messages,
+	stream,
 	streaming,
 	working,
 	textStreaming,
@@ -480,6 +482,8 @@ export const MessageList = memo(function MessageList({
 	onOpenSettings,
 }: {
 	messages: ChatMessage[];
+	/** The in-flight pi message (kept out of `messages`; see App.tsx). */
+	stream: ChatMessage | null;
 	streaming: boolean;
 	/** Whether the agent is mid-run (drives live group / live turn flags). */
 	working: boolean;
@@ -509,11 +513,19 @@ export const MessageList = memo(function MessageList({
 }) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const msgElsRef = useRef(new Map<number, HTMLDivElement>());
+	/**
+	 * What the transcript renders: the committed messages plus the in-flight
+	 * one. App keeps the two apart so `messages` (and therefore every item,
+	 * row and memo downstream) stays identity-stable while tokens stream; the
+	 * in-flight message is appended here, at the last moment, exactly like
+	 * percho's buildChatRows folds its StreamingState container in.
+	 */
+	const all = useMemo(() => (stream ? [...messages, stream] : messages), [messages, stream]);
 	// working→done hysteresis (percho useShownWorking): keep the live group
 	// (orb + label + dots) through turn/tool gaps so it never flickers; end
 	// immediately once the final answer text starts streaming. Switching
 	// sessions resets instantly (first message id changes).
-	const shownWorking = useShownWorking(working, textStreaming ?? false, messages[0]?.id);
+	const shownWorking = useShownWorking(working, textStreaming ?? false, all[0]?.id);
 	// Start "stuck" so the view lands at the latest message when a session
 	// (or history) is loaded; only the user's own scrolling can unstick it.
 	const stickRef = useRef(true);
@@ -534,7 +546,7 @@ export const MessageList = memo(function MessageList({
 	// history load…).
 	useEffect(() => {
 		follow();
-	}, [messages, streaming, autoScroll, follow]);
+	}, [all, streaming, autoScroll, follow]);
 
 	// Also follow growth that never re-renders: async content (images, fonts),
 	// the working-status row, window resizes.  Both observers are coalesced
@@ -681,21 +693,31 @@ export const MessageList = memo(function MessageList({
 	}, []);
 
 	// ---- row derivation ----
-	const items = useMemo(() => attachToolResults(messages), [messages]);
-	const changes = useMemo(
-		() => turnChanges ?? deriveTurnChanges(messages),
-		[turnChanges, messages],
-	);
+	const items = useMemo(() => attachToolResults(all), [all]);
+	const changes = useMemo(() => turnChanges ?? deriveTurnChanges(all), [turnChanges, all]);
+	const timings = useMemo(() => deriveTurnTimings(all), [all]);
+	// Percho's turn-entrance baseline: only a turn that newly appeared while
+	// this session was on screen plays the footer pop. The baseline is aligned
+	// on session switch and never on a plain re-render — otherwise the extra
+	// render that follows turn_end would strip the animation class again.
+	const sessionKey = messages[0]?.id ?? null;
+	const turnBaselineRef = useRef<{ key: number | null; count: number }>({ key: sessionKey, count: 0 });
+	if (turnBaselineRef.current.key !== sessionKey) {
+		turnBaselineRef.current = { key: sessionKey, count: timings.length };
+	}
+	const enteringTurn =
+		timings.length > turnBaselineRef.current.count ? timings.length - 1 : null;
 	const rows = useMemo(
 		() =>
 			buildChatRows(items, {
 				working,
 				streaming,
-				bypassIds: searchBypassIds(messages, searchQuery),
+				bypassIds: searchBypassIds(all, searchQuery),
 				turnChanges: changes,
-				turnTimings: deriveTurnTimings(messages),
+				turnTimings: timings,
+				enteringTurn,
 			}),
-		[items, working, streaming, messages, searchQuery, changes],
+		[items, working, streaming, all, searchQuery, changes, timings, enteringTurn],
 	);
 	// Live groups self-identify: chat-rows marks an entry `running` only when
 	// it is the last block of a message that is streaming right now, so the
@@ -710,11 +732,11 @@ export const MessageList = memo(function MessageList({
 	// changing the target behind the user's hand.
 	const lastUserMessageId = useMemo(() => {
 		if (streaming) return null;
-		for (let i = messages.length - 1; i >= 0; i--) {
-			if (messages[i].role === "user") return messages[i].id;
+		for (let i = all.length - 1; i >= 0; i--) {
+			if (all[i].role === "user") return all[i].id;
 		}
 		return null;
-	}, [messages, streaming]);
+	}, [all, streaming]);
 
 	// Submit-gap live chip: shown ONLY while the current turn has produced
 	// no content at all (the last message is still the user's own) — the
@@ -724,8 +746,8 @@ export const MessageList = memo(function MessageList({
 	// permanent chip there read as noise.
 	const gapLive =
 		shownWorking &&
-		messages.length > 0 &&
-		messages[messages.length - 1].role === "user" &&
+		all.length > 0 &&
+		all[all.length - 1].role === "user" &&
 		!rows.some((r) => r.kind === "group" && r.entries.some((e) => e.running));
 	// The last assistant message carrying text — the ONLY one that gets
 	// actions (percho showActions = turn-final text id): intermediate
@@ -733,14 +755,14 @@ export const MessageList = memo(function MessageList({
 	// carries Copy + Fork.
 	const turnFinalAssistantId = useMemo(() => {
 		if (streaming) return null;
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const m = messages[i];
+		for (let i = all.length - 1; i >= 0; i--) {
+			const m = all[i];
 			if (m.role === "assistant" && m.blocks.some((b) => b.kind === "text" && b.text.trim())) {
 				return m.id;
 			}
 		}
 		return null;
-	}, [messages, streaming]);
+	}, [all, streaming]);
 
 
 	return (
@@ -757,6 +779,7 @@ export const MessageList = memo(function MessageList({
 								startedAt={row.startedAt}
 								endedAt={row.endedAt}
 								live={row.live}
+								entering={row.entering}
 								liveStart={turnStartTime ?? null}
 								onOpenDiff={onOpenDiff}
 								t={t}

@@ -13,7 +13,10 @@
 // Usage:
 //   node scripts/vendor-pi.mjs            # skip when the manifest already matches
 //   node scripts/vendor-pi.mjs --force    # re-download / re-install
-//   node scripts/vendor-pi.mjs --pi=0.85.1 --node=v22.14.0
+//   node scripts/vendor-pi.mjs --pi=0.85.1 --node=v22.23.2
+//
+// Note: run it through `node` (or `npm run vendor:pi -- --pi=…/--node=…`) —
+// `npm run vendor:pi -- --force` does NOT work, npm swallows `--force` itself.
 //
 // Windows-only by project convention (AGENTS.md): the Node download is the
 // win-x64 build. Run from the repo root via `npm run vendor:pi`.
@@ -26,7 +29,13 @@ import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
 
 const PI_VERSION_DEFAULT = "0.84.3";
-const NODE_VERSION_DEFAULT = "v22.14.0"; // LTS, ≥20 required by pi
+// LTS, ≥20 required by pi. Floor is v22.15.0: zlib gained zstd support there
+// (zlib.createZstdDecompress), and pi's HTTP client dies with an unhandled
+// `TypeError: zlib.createZstdDecompress is not a function` as soon as any
+// endpoint answers `Content-Encoding: zstd` — pi.dev's model catalog and
+// version endpoints already do on the older runtime, which crash-loops the
+// whole app on startup.
+const NODE_VERSION_DEFAULT = "v22.23.2";
 
 const args = process.argv.slice(2);
 const force = args.includes("--force");
@@ -96,6 +105,24 @@ async function downloadNode() {
 	log(`node.exe written (${mb} MB)`);
 }
 
+/// Guard the zstd floor at vendor time: pi's HTTP client calls
+/// `zlib.createZstdDecompress()` whenever a response says
+/// `Content-Encoding: zstd`, and on Node < v22.15.0 that throws an unhandled
+/// `'error'` event that kills the process — crash-looping the app on startup.
+function assertNodeHasZstd() {
+	const probe = spawnSync(
+		nodeExe,
+		["-e", "process.stdout.write(typeof require('node:zlib').createZstdDecompress)"],
+		{ encoding: "utf8" },
+	);
+	if (probe.status !== 0 || probe.stdout.trim() !== "function") {
+		die(
+			`${NODE_VERSION} has no zlib zstd support (needs >= v22.15.0) — pi would crash on zstd responses`,
+		);
+	}
+	log(`node ${NODE_VERSION} supports zstd`);
+}
+
 function installPi() {
 	log(`npm install @earendil-works/pi-coding-agent@${PI_VERSION} into ${dest}`);
 	mkdirSync(dest, { recursive: true });
@@ -128,6 +155,7 @@ if (force) {
 }
 
 await downloadNode();
+assertNodeHasZstd();
 installPi();
 
 if (!existsSync(cliJs)) die(`pi entrypoint missing after install: ${cliJs}`);

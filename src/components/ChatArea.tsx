@@ -120,6 +120,7 @@ export const ChatArea = memo(function ChatArea({
 	t,
 	session,
 	messages,
+	stream,
 	streaming,
 	textStreaming,
 	working,
@@ -197,6 +198,8 @@ export const ChatArea = memo(function ChatArea({
 	t: MessageCatalog;
 	session: PiSessionInfo | null;
 	messages: ChatMessage[];
+	/** The in-flight pi message (kept out of `messages`; see App.tsx). */
+	stream: ChatMessage | null;
 	streaming: boolean;
 	/** Assistant TEXT streaming (see App) — ends the live group instantly. */
 	textStreaming?: boolean;
@@ -287,12 +290,15 @@ export const ChatArea = memo(function ChatArea({
 	const [searchQuery, setSearchQuery] = useState("");
 	const [activeHit, setActiveHit] = useState(0);
 	const searchInputRef = useRef<HTMLInputElement>(null);
-	const hits = useMemo(() => searchMessages(messages, searchQuery), [messages, searchQuery]);
+	// Committed transcript + the in-flight message: every derivation below (and
+	// the rows downstream) has to see the same sequence the user is looking at.
+	const liveMessages = useMemo(() => (stream ? [...messages, stream] : messages), [messages, stream]);
+	const hits = useMemo(() => searchMessages(liveMessages, searchQuery), [liveMessages, searchQuery]);
 	const activeMessageId = useMemo(() => {
 		if (!searchOpen || hits.length === 0) return null;
 		const hit = hits[Math.min(activeHit, hits.length - 1)];
-		return messages[hit.messageIndex]?.id ?? null;
-	}, [searchOpen, hits, activeHit, messages]);
+		return liveMessages[hit.messageIndex]?.id ?? null;
+	}, [searchOpen, hits, activeHit, liveMessages]);
 
 	const stepHit = (delta: number) => {
 		if (hits.length === 0) return;
@@ -320,10 +326,10 @@ export const ChatArea = memo(function ChatArea({
 
 	// ---- task list + turn changes + diff sidebar (Percho ports) ----
 	// Todos: the latest `todo` tool call in the stream (empty → panel hidden).
-	const todos = useMemo(() => extractTodos(messages), [messages]);
+	const todos = useMemo(() => extractTodos(liveMessages), [liveMessages]);
 	// Per-turn file changes: one derivation shared by the turn footer rows
 	// and the diff sidebar.
-	const turnChanges = useMemo(() => deriveTurnChanges(messages), [messages]);
+	const turnChanges = useMemo(() => deriveTurnChanges(liveMessages), [liveMessages]);
 	const [diffOpen, setDiffOpen] = useState(false);
 	const [diffScope, setDiffScope] = useState<DiffScope>("all");
 
@@ -416,7 +422,7 @@ export const ChatArea = memo(function ChatArea({
 		/>
 	);
 
-	if (messages.length === 0) {
+	if (liveMessages.length === 0) {
 		return (
 			<main className="chat">
 				{sidebarCollapsed && (
@@ -699,6 +705,7 @@ export const ChatArea = memo(function ChatArea({
 					<div className="chat-scroll">
 						<MessageList
 							messages={messages}
+							stream={stream}
 							streaming={streaming}
 							textStreaming={textStreaming}
 							working={working}

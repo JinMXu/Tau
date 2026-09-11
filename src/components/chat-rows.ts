@@ -67,6 +67,8 @@ export type ChatRow =
 			endedAt: number | null;
 			/** The turn in flight right now — timer ticks live. */
 			live: boolean;
+			/** Chip that just appeared while the user watched (turn-end pop). */
+			entering: boolean;
 	  };
 
 // ---------------------------------------------------------------------------
@@ -423,6 +425,9 @@ export function buildChatRows(
 		bypassIds?: Set<number>;
 		turnChanges?: TurnChanges[];
 		turnTimings?: TurnTiming[];
+		/** The turn whose footer chip should play the entrance pop (percho's
+		 *  enteringTurn); null when nothing new appeared while viewing. */
+		enteringTurn?: number | null;
 	},
 ): ChatRow[] {
 	const bypass = opts.bypassIds ?? new Set<number>();
@@ -455,6 +460,9 @@ export function buildChatRows(
 			startedAt: timing?.startedAt ?? null,
 			endedAt: timing?.endedAt ?? null,
 			live,
+			// 刚出现的那一轮才播入场 pop（percho TurnDiffChip 的 entering 门控：
+			// 基线不随渲染更新，否则 turn_end 紧随的二次渲染会把动画类摘掉）。
+			entering: turnIndex === (opts.enteringTurn ?? -1),
 		});
 	};
 
@@ -561,7 +569,17 @@ export function buildChatRows(
 				flushGroup();
 				rows.push({
 					kind: "msg",
-					key: segments.length > 1 ? `m${msg.id}-${si}` : `m${msg.id}`,
+					// Row key must NOT depend on how many segments the message
+					// currently has: mid-stream a thinking/tool block landing
+					// after the text flips segments.length 1→2, and a key change
+					// makes React unmount + remount the whole row — which
+					// remounts <Markdown>, rebuilds markstream's smooth
+					// controller and retypes the finished paragraph from an
+					// empty buffer (plus replays the enter animation). Percho
+					// keys rows by message.id and never remounts; the text
+					// segment's ordinal is fixed by the block order, so it is
+					// stable across the whole stream.
+					key: `m${msg.id}-${si}`,
 					item,
 					skip,
 					textAllow: new Set(seg.textIdx),

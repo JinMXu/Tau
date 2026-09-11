@@ -221,6 +221,7 @@ function Preview() {
 					<div className="chat-scroll" style={{ flex: 1, overflowY: "auto" }}>
 						<MessageList
 							messages={messages}
+							stream={null}
 							streaming={false}
 							working={true}
 							t={t}

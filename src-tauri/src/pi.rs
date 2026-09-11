@@ -858,6 +858,10 @@ impl PiProcess {
 		let chan_thread = chan_id.clone();
 		let chan_stderr = chan_id.clone();
 		let stop_flag_thread = stop_flag.clone();
+		// Keep the last stderr line around so a pi exit can be diagnosed from
+		// tau.log alone (the stdout thread logs it on unexpected exits).
+		let last_stderr = Arc::new(Mutex::new(String::new()));
+		let last_stderr_stdout = Arc::clone(&last_stderr);
 		thread::spawn(move || {
 			let reader = BufReader::new(stdout);
 			// Stream diagnostics: how many events were forwarded and how many
@@ -912,7 +916,7 @@ impl PiProcess {
 				.get(&key_thread)
 				.and_then(|p| p.child.as_ref())
 				.is_some_and(|c| c.id() == pid);
-			let child = if is_current {
+			let mut child = if is_current {
 				if let Some(p) = guard.get_mut(&key_thread) {
 					p.stdin = None;
 					p.child.take()
@@ -926,19 +930,31 @@ impl PiProcess {
 			// Reap the child OUTSIDE the lock (wait() blocks): dropping the
 			// Child handle without wait() would leave a naturally-exited pi as
 			// a zombie on Unix.
-			if let Some(mut child) = child {
-				let _ = child.wait();
-			}
+			let exit_code = child
+				.as_mut()
+				.and_then(|c| c.wait().ok())
+				.and_then(|s| s.code());
+			drop(child);
 			// Only report the exit when the *current* pi process died and it
 			// was not stopped on purpose. Processes replaced by a newer
 			// `pi_start` or killed by `pi_stop` must not make the frontend
 			// think the connection dropped.
 			if is_current && !stop_flag_thread.load(Ordering::Relaxed) {
-				crate::runtime_log::log_error(&app_stdout, "pi process exited");
+				let code = exit_code
+					.map(|c| c.to_string())
+					.unwrap_or_else(|| "signal".to_string());
+				let last_err = last_stderr_stdout.lock().map(|s| s.clone()).unwrap_or_default();
+				crate::runtime_log::log_error(
+					&app_stdout,
+					&format!(
+						"pi process exited (code={code}) stderr-last: {last_err}"
+					),
+				);
 				let _ = win_stdout.emit("pi://exit", serde_json::json!({ "chan": chan_thread }));
 			}
 		});
 
+		let last_stderr_thread = Arc::clone(&last_stderr);
 		thread::spawn(move || {
 			let reader = BufReader::new(stderr);
 			for line in reader.lines() {
@@ -946,6 +962,9 @@ impl PiProcess {
 					Ok(line) => line,
 					Err(_) => break,
 				};
+				if let Ok(mut slot) = last_stderr_thread.lock() {
+					*slot = line.clone();
+				}
 				// Channel-scoped emit: each channel's stderr is tagged so the
 				// webview can attribute diagnostics to the right session.
 				let _ = win_stderr

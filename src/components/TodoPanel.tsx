@@ -61,7 +61,7 @@ function TodoRow({ todo, spinning }: { todo: TodoItem; spinning: boolean }) {
 						strokeLinecap="round"
 						strokeLinejoin="round"
 					>
-						<path d="M20 6 9 17l-5-5" />
+						<path d="M20 6 9 17l-5-5" className="todo-check-path" />
 					</svg>
 				) : spinning ? (
 					<span className="todo-spinner" />

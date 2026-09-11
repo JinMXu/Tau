@@ -1494,12 +1494,22 @@ html[data-platform="macos"] .collapsed-actions-bar {
  * growth rather than a series of discrete refreshes. Applies on mount only;
  * growing content inside a block never re-animates.
  * ------------------------------------------------------------------------- */
+/* 入场淡入只给「出现即定稿」的块：折叠组条目、工具卡、错误条，以及用户气泡。
+   助手正文块（.text-block）刻意不在这里 —— 它是流式生长的：
+     · 块级 opacity 0→1 只应在「元素刚挂载」时播一次；
+     · 但任何挂在会翻转的类上的动画（例如曾经用过的 `.text-block:not(.streaming)`）
+       会在 streaming 标记由 true→false（= 输出定稿）那一帧从 animation:none
+       变成 dsh-block-in，浏览器当场重新播放整块淡入 —— 实测：定稿瞬间
+       opacity 掉到 0.31，整段回答「又渲染了一遍」；
+     · 正文自身的淡入由 markstream 的节点级 fade / text-delta fade 负责
+       （percho 对正文块同样没有这类入场动画）。
+   用户气泡的类不会翻转，所以可以安全保留。 */
 .think-row,
 .tool-card,
 .tool-io-card,
 .tool-diffs,
-.text-block,
-.msg-error {
+.msg-error,
+.message.user .text-block {
 	animation: dsh-block-in 0.18s var(--dsh-ease);
 }
 
@@ -1519,8 +1529,8 @@ html[data-platform="macos"] .collapsed-actions-bar {
 	.tool-card,
 	.tool-io-card,
 	.tool-diffs,
-	.text-block,
-	.msg-error {
+	.msg-error,
+	.message.user .text-block {
 		animation: none;
 	}
 }
@@ -3283,13 +3293,24 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 	border-radius: var(--r-md);
 	padding: var(--sp-2) var(--sp-4);
 	font-size: var(--fs-sm);
-	animation: toast-in var(--dur) var(--ease);
+	/* 入场对齐 percho globals.css:1707-1718 .toast / toast-in：
+	   0.35s + 带回弹过冲的 cubic-bezier(0.2, 0.9, 0.3, 1.05)（原为 var(--dur)=150ms + var(--ease)）。
+	   percho 的 toast 栈在右上角、从右侧滑入；pi-gui 的 .toasts 是底部居中，故保留 translateY(6px)
+	   方向，只对齐时长与缓动。 */
+	animation: toast-in 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.05);
 }
 
 @keyframes toast-in {
 	from {
 		opacity: 0;
 		transform: translateY(6px);
+	}
+}
+
+/* percho globals.css:1761-1764：reduced motion 下关闭 toast 入场 */
+@media (prefers-reduced-motion: reduce) {
+	.toast {
+		animation: none;
 	}
 }
 
@@ -6668,9 +6689,13 @@ html[data-theme="dark"] {
 	opacity: 0.8;
 }
 
+/* 运行中 = 空心点，只呼吸 opacity（percho globals.css:318-331 .meta-dot-running + meta-dot-breathe：
+   0%/100% opacity 1，50% opacity 0.35）。pi-gui 原来是 scale(.85↔1.15) + opacity(.55↔1) 的缩放脉动；
+   尺寸/描边宽度也对齐 percho：4px（h-1 w-1，原本已是 4px）+ 1px 描边（原 1.2px）。描边颜色保留
+   pi-gui 的 --status-run（percho 用 ink-dim，pi-gui 把 ink-dim 映射成运行中蓝）。 */
 .meta-dot.running {
 	background: none;
-	border: 1.2px solid var(--status-run);
+	border: 1px solid var(--status-run);
 	opacity: 1;
 	animation: meta-dot-breathe 1.6s ease-in-out infinite;
 }
@@ -6678,12 +6703,10 @@ html[data-theme="dark"] {
 @keyframes meta-dot-breathe {
 	0%,
 	100% {
-		transform: scale(0.85);
-		opacity: 0.55;
+		opacity: 1;
 	}
 	50% {
-		transform: scale(1.15);
-		opacity: 1;
+		opacity: 0.35;
 	}
 }
 
@@ -6693,11 +6716,39 @@ html[data-theme="dark"] {
 	}
 }
 
+/* 折叠组展开/收起：真实高度过渡（percho globals.css:873-891 .drawer-details + ::details-content，
+   height 0.28s cubic-bezier(0.16, 1, 0.3, 1)）。pi-gui 用等价的 grid-template-rows 0fr→1fr
+   （同 .todo-body-wrap 手法，WebView2 无需依赖 Chromium 131 的 calc-size）。
+   .meta-group 仍是 flex column gap 4px，会给 0 高度的内容盒也留 4px，故用 -4px 抵消，展开时随抽屉同步回 0。 */
+.meta-body-wrap {
+	display: grid;
+	grid-template-rows: 0fr;
+	margin-top: -4px;
+	transition:
+		grid-template-rows 0.28s cubic-bezier(0.16, 1, 0.3, 1),
+		margin-top 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.meta-body-wrap.open {
+	grid-template-rows: 1fr;
+	margin-top: 0;
+}
+
+/* 裁剪层 = grid item：随轨道 0→auto 撑开，未展开的部分被 overflow 裁掉 */
 .meta-body {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
 	padding: 4px 0 2px;
+	overflow: hidden;
+	min-height: 0;
+}
+
+/* percho globals.css:888-892 同款：reduced motion 下不做高度过渡 */
+@media (prefers-reduced-motion: reduce) {
+	.meta-body-wrap {
+		transition: none;
+	}
 }
 
 /* --- todo panel (floating task list) --- */
@@ -6863,6 +6914,29 @@ html[data-theme="dark"] {
 	color: var(--todo-green);
 }
 
+/* 完成对勾描边绘制（percho globals.css:278-288 .todo-check-path + todo-check-draw + 309-312 reduced motion）：
+   只在勾新挂载（行首次变成 completed）时播一次；dash 长度按 pi-gui 勾形路径长取值
+   （d="M20 6 9 17l-5-5" ≈ 22.6，取 23；percho 的 viewBox 0 0 16 16 勾形长 16，故两边数值不同），
+   关键帧/时长/缓动与 percho 一致。 */
+.todo-check-path {
+	stroke-dasharray: 23;
+	stroke-dashoffset: 23;
+	animation: todo-check-draw 0.45s cubic-bezier(0.65, 0, 0.35, 1) 0.05s forwards;
+}
+
+@keyframes todo-check-draw {
+	to {
+		stroke-dashoffset: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.todo-check-path {
+		animation: none;
+		stroke-dashoffset: 0;
+	}
+}
+
 .todo-row.completed .todo-text {
 	text-decoration: line-through;
 	color: var(--text-3);
@@ -6915,6 +6989,32 @@ html[data-theme="dark"] {
 	align-items: flex-start;
 }
 
+/* chip 进场 pop（percho globals.css:987-1002 .turn-diff-enter + turn-diff-in）：
+   上浮 6px + scale 0.97 + 去模糊，0.42s 带回弹过冲的缓动；由 MessageList 传 entering 触发，
+   TurnDiffRow 的最外层（.turn-diff / .turn-diff-plain）挂这个类。 */
+.turn-diff-enter {
+	animation: turn-diff-in 0.42s cubic-bezier(0.34, 1.35, 0.64, 1) both;
+}
+
+@keyframes turn-diff-in {
+	from {
+		opacity: 0;
+		transform: translateY(6px) scale(0.97);
+		filter: blur(1px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+		filter: none;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.turn-diff-enter {
+		animation: none;
+	}
+}
+
 .turn-diff-head {
 	display: flex;
 	align-items: center;
@@ -6948,8 +7048,11 @@ html[data-theme="dark"] {
 	font-variant-numeric: tabular-nums;
 }
 
+/* 运行中数字呼吸：percho globals.css:952-957 .turn-diff-timer-live .turn-diff-timer-num
+   为 2.2s（pi-gui 原 2s）；幅度沿用 pi-gui 的 0.65↔1（percho 是 1↔0.45，且 live 态另换 ink-dim 颜色，
+   这两点未在本次范围内改动）。 */
 .turn-diff-timer-live .turn-diff-timer-num {
-	animation: turn-timer-breathe 2s ease-in-out infinite;
+	animation: turn-timer-breathe 2.2s ease-in-out infinite;
 }
 
 @keyframes turn-timer-breathe {
@@ -7183,10 +7286,23 @@ html[data-theme="dark"] {
 	font-size: var(--fs-sm);
 }
 
+/* 轮次分组入场（percho globals.css:1226-1240 .diff-turn-group + diff-group-in） */
 .diff-turn-group {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
+	animation: diff-group-in 0.5s cubic-bezier(0.34, 1.25, 0.64, 1) both;
+}
+
+@keyframes diff-group-in {
+	from {
+		opacity: 0;
+		transform: translateY(-10px) scale(0.98);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
 }
 
 .diff-tg-head {
@@ -7213,6 +7329,25 @@ html[data-theme="dark"] {
 	border-radius: 10px;
 	background: var(--surface-1);
 	overflow: hidden;
+}
+
+/* 文件卡跳转定位闪烁（percho globals.css:1271-1285 .diff-file-card.jump-flash + diff-jump-flash）：
+   percho 的卡片带 shadow-pop，闪烁 = 阴影 + accent 描边环；pi-gui 的卡片本是描边无阴影，
+   故只闪 brand 色描边环（--dsh-brand ≈ percho --color-accent），收在 none 保持原状。
+   注意：pi-gui 目前没有 chip→具体文件的定位状态（DiffSidebar 没有 focusSectionKey，
+   ChatArea 只传 open），这条规则要等 App.tsx/ChatArea.tsx 接线后才生效。 */
+.diff-file-card.jump-flash {
+	animation: diff-jump-flash 1.15s ease-out;
+}
+
+@keyframes diff-jump-flash {
+	0%,
+	40% {
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsh-brand) 22%, transparent);
+	}
+	100% {
+		box-shadow: none;
+	}
 }
 
 .diff-file-head {
@@ -7279,10 +7414,25 @@ html[data-theme="dark"] {
 	overflow-x: auto;
 }
 
+/* 逐行 stagger 进入（percho globals.css:1392-1407 .diff-line / .diff-hunk + diff-line-in）：
+   --i（行序号，DiffLineView 内联写入）折算 14ms/行，上限 24 行防长 diff 拖沓。 */
 .diff-line-row {
 	display: flex;
 	align-items: stretch;
 	min-width: max-content;
+	animation: diff-line-in 0.3s both;
+	animation-delay: calc(min(var(--i, 0), 24) * 14ms);
+}
+
+@keyframes diff-line-in {
+	from {
+		opacity: 0;
+		transform: translateX(5px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
 }
 
 .diff-g {
@@ -7365,6 +7515,15 @@ html[data-theme="dark"] {
 	color: var(--text-1);
 }
 
+/* percho globals.css:305-316 同款：reduced motion 下关闭 diff 栏的新动画 */
+@media (prefers-reduced-motion: reduce) {
+	.diff-turn-group,
+	.diff-line-row,
+	.diff-file-card.jump-flash {
+		animation: none;
+	}
+}
+
 /* narrow windows: the sidebar overlays instead of squeezing the chat */
 @media (max-width: 980px) {
 	.diff-sidebar {
@@ -7441,14 +7600,28 @@ html[data-theme="dark"] {
 }
 
 /* markstream-react 视觉覆写：组件样式均为 :where() 零优先级，此处规则必覆盖；对齐原 react-markdown 设计 */
+/* 下面这些规则是从 percho 逐条搬过来的，引用的是 percho（Tailwind v4）的 token 名。
+   本项目没有 Tailwind，也没有任何地方定义过 --color-* / --markdown-* / --shadow-soft
+   → 那些声明在计算值阶段整条失效：inline code 没有底色、代码卡片丢掉阴影、表格与分隔线
+   退回库默认色、悬浮按钮丢边框。这里把 percho 的名字映射到本项目现有 token。
+   （不覆盖 --link-color / --ms-radius / --stream-update-fade-duration：上面那个
+   .markdown-body 块已经给了 tau 值，重复定义只会互相打架——原来这里用
+   --link-color: var(--color-accent) 把有效的 --status-run 顶成未定义，链接变回库默认蓝。） */
 .markdown-body {
-	--link-color: var(--color-accent);
-	/* 库的 rounded-lg 等工具类吃 --ms-radius，CSS 里无默认定义（→ 直角）；在此补上 */
-	--ms-radius: 10px;
-	/* 流式 delta 近乎直出：默认 280ms 从 opacity 0 淡入，快模型 burst（catch-up 模式 ≤80 字/commit）
-	   会让整段文字反复从透明往上爬，观感是「隔一会儿闪一下」。压到 8ms = 视觉直出；
-	   不能用 animation:none——那会截断 animationend，库内的 fading span 沉淀/合并逻辑会停摆。 */
-	--stream-update-fade-duration: 8ms;
+	--color-canvas: var(--dsh-code-block);
+	--color-surface: var(--dsh-code-banner);
+	--color-hover: var(--hover);
+	--color-border: var(--border-2);
+	--color-border-strong: var(--dsh-border-l3);
+	--color-ink: var(--dsh-fg-primary);
+	--color-ink-2: var(--dsh-fg-secondary);
+	--shadow-soft: var(--shadow-1);
+	--markdown-code-bg: var(--dsh-inline-code);
+	--markdown-code-text: var(--dsh-fg-primary);
+	--markdown-table-border: var(--border-2);
+	--markdown-table-head-bg: var(--dsh-bg-layer);
+	--markdown-link-decoration: var(--border-2);
+	--markdown-link-hover: var(--link);
 }
 .markdown-body .paragraph-node {
 	margin: 0.55rem 0;

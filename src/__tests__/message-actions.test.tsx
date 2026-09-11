@@ -40,6 +40,7 @@ describe("MessageList message actions", () => {
 			root.render(
 				<MessageList
 					messages={[userMsg, assistantMsg]}
+					stream={null}
 					streaming={false}
 					working={false}
 					t={t}
@@ -64,6 +65,7 @@ describe("MessageList message actions", () => {
 			root.render(
 				<MessageList
 					messages={[userMsg, streamingAssistant]}
+					stream={null}
 					streaming={true}
 					working={true}
 					t={t}
@@ -90,6 +92,7 @@ describe("MessageList message actions", () => {
 			root.render(
 				<MessageList
 					messages={[olderUser, assistantMsg, newerUser]}
+					stream={null}
 					streaming={false}
 					working={false}
 					t={t}
@@ -121,6 +124,7 @@ describe("MessageList message actions", () => {
 			root.render(
 				<MessageList
 					messages={[userMsg, mid, fin]}
+					stream={null}
 					streaming={false}
 					working={false}
 					t={t}

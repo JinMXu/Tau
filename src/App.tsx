@@ -153,6 +153,35 @@ interface RenameState {
 	initial: string;
 }
 
+/**
+ * Reconcile pi's authoritative block list with what the stream already
+ * rendered. markstream (and its smooth-streaming controller) treats a content
+ * change that is not a prefix-extension of what it has as a hard reset: the
+ * whole message re-parses and re-renders in a single frame. pi's snapshot can
+ * lag the streamed text by a few characters, so a text block whose streamed
+ * version is a prefix-extension of the authoritative one keeps the streamed
+ * text — the tail is real content that pi is about to confirm anyway, and
+ * dropping it would produce exactly the end-of-output repaint this app is
+ * trying to avoid.
+ */
+function keepStreamedText(streamed: Block[], authoritative: Block[]): Block[] {
+	if (streamed.length !== authoritative.length) return authoritative;
+	let kept = false;
+	const merged = authoritative.map((block, index) => {
+		const previous = streamed[index];
+		if (
+			block.kind === "text" &&
+			previous?.kind === "text" &&
+			previous.text.length > block.text.length &&
+			previous.text.startsWith(block.text)
+		) {
+			kept = true;
+			return previous;
+		}
+		return block;
+	});
+	return kept ? merged : authoritative;
+}
 export default function App() {
 	const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
 	const t = useMemo(() => getMessages(settings.language), [settings.language]);
@@ -182,6 +211,15 @@ export default function App() {
 	const [archived, setArchived] = useState<PiArchivedSession[]>([]);
 	const [selectedSessionPath, setSelectedSessionPath] = useState<string | null>(null);
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
+	// The in-flight pi message lives outside the committed transcript (percho's
+	// StreamingState container): text/thinking/tool deltas only ever touch this
+	// object, so `messages` keeps its identity for the whole stream.
+	const [stream, setStream] = useState<ChatMessage | null>(null);
+	const streamRef = useRef<ChatMessage | null>(null);
+	// Latest-value mirror for the event handlers. They run after a render, so
+	// the ref always holds the current in-flight message — commitStream reads it
+	// synchronously while setState is still in flight.
+	streamRef.current = stream;
 	const [streaming, setStreaming] = useState(false);
 	// Assistant TEXT streaming (percho streaming.text): true from text_start
 	// until message_end / settle. Distinct from `streaming`, which is already
@@ -498,69 +536,96 @@ export default function App() {
 		thinking?: string;
 		tool?: string;
 	} | null>(null);
-	const deltaFlushRef = useRef<number | null>(null);
+	const deltaFlushRef = useRef<{ raf: number | null; timer: number | null } | null>(null);
+	// Generation counter for buffered deltas. Deltas are applied inside
+	// startTransition (low priority), so a batch that was already taken out of
+	// the buffer can still commit AFTER a terminal event (text_end /
+	// message_end / agent_end) replaced the block with pi's authoritative
+	// content. React applies the urgent update first and the transition
+	// updater on top of it, which appended the stale delta to the final text
+	// (duplicated tail). The next authoritative rewrite then SHRANK the text,
+	// and markstream treats a non-prefix content change as a hard reset —
+	// the whole answer re-rendered in one frame. Bumping the generation on
+	// every terminal event makes the stale batch a no-op instead.
+	const deltaGenRef = useRef(0);
 	const clearPendingDeltas = useCallback(() => {
-		if (deltaFlushRef.current !== null) {
-			cancelAnimationFrame(deltaFlushRef.current);
+		const pending = deltaFlushRef.current;
+		if (pending) {
+			if (pending.raf !== null) cancelAnimationFrame(pending.raf);
+			if (pending.timer !== null) window.clearTimeout(pending.timer);
 			deltaFlushRef.current = null;
 		}
 		pendingDeltaRef.current = null;
+		deltaGenRef.current += 1;
 	}, []);
-	const scheduleDeltaFlush = useCallback(() => {
-		if (deltaFlushRef.current !== null) return;
-		deltaFlushRef.current = requestAnimationFrame(() => {
-			deltaFlushRef.current = null;
-			const d = pendingDeltaRef.current;
-			pendingDeltaRef.current = null;
-			if (!d) return;
-			// Mark as a transition so React can yield to the browser mid-render
-			// (keeping input / scroll responsive) and drop stale renders when
-			// deltas arrive faster than the parse can keep up.
-			startTransition(() => {
-				setMessages((prev) => {
-					const idx = prev.length - 1;
-					if (idx < 0) return prev;
-					const role = prev[idx].role;
-					if (role !== "assistant" && role !== "tool") return prev;
-					const blocks = [...prev[idx].blocks];
-					if (d.text) {
-						const last = blocks[blocks.length - 1];
-						if (last?.kind === "text") {
-							blocks[blocks.length - 1] = { kind: "text", text: last.text + d.text };
-						} else {
-							blocks.push({ kind: "text", text: d.text });
-						}
+	/** Apply the buffered deltas (whichever of the rAF callback / the fallback
+	 *  timer fires first wins; the other is cancelled). */
+	const flushDeltas = useCallback(() => {
+		const pending = deltaFlushRef.current;
+		if (!pending) return;
+		if (pending.raf !== null) cancelAnimationFrame(pending.raf);
+		if (pending.timer !== null) window.clearTimeout(pending.timer);
+		deltaFlushRef.current = null;
+		const gen = deltaGenRef.current;
+		const d = pendingDeltaRef.current;
+		pendingDeltaRef.current = null;
+		if (!d) return;
+		// Mark as a transition so React can yield to the browser mid-render
+		// (keeping input / scroll responsive) and drop stale renders when
+		// deltas arrive faster than the parse can keep up.
+		startTransition(() => {
+			setStream((cur) => {
+				// Drop a batch that a terminal event has already superseded.
+				if (gen !== deltaGenRef.current) return cur;
+				if (!cur) return cur;
+				const blocks = [...cur.blocks];
+				if (d.text) {
+					const last = blocks[blocks.length - 1];
+					if (last?.kind === "text") {
+						blocks[blocks.length - 1] = { kind: "text", text: last.text + d.text };
+					} else {
+						blocks.push({ kind: "text", text: d.text });
 					}
-					if (d.thinking) {
-						const last = blocks[blocks.length - 1];
-						if (last?.kind === "thinking") {
-							blocks[blocks.length - 1] = {
-								kind: "thinking",
-								text: last.text + d.thinking,
-							};
-						} else {
-							blocks.push({ kind: "thinking", text: d.thinking });
-						}
+				}
+				if (d.thinking) {
+					const last = blocks[blocks.length - 1];
+					if (last?.kind === "thinking") {
+						blocks[blocks.length - 1] = {
+							kind: "thinking",
+							text: last.text + d.thinking,
+						};
+					} else {
+						blocks.push({ kind: "thinking", text: d.thinking });
 					}
-					if (d.tool) {
-						const last = blocks[blocks.length - 1];
-						if (last?.kind === "tool") {
-							blocks[blocks.length - 1] = {
-								kind: "tool",
-								name: last.name,
-								args: last.args + d.tool,
-							};
-						} else {
-							blocks.push({ kind: "tool", name: "…", args: d.tool });
-						}
+				}
+				if (d.tool) {
+					const last = blocks[blocks.length - 1];
+					if (last?.kind === "tool") {
+						blocks[blocks.length - 1] = {
+							kind: "tool",
+							name: last.name,
+							args: last.args + d.tool,
+						};
+					} else {
+						blocks.push({ kind: "tool", name: "…", args: d.tool });
 					}
-					const next = [...prev];
-					next[idx] = { ...prev[idx], blocks };
-					return next;
-				});
+				}
+				return { ...cur, blocks };
 			});
 		});
 	}, []);
+	/** rAF is the fast path (one commit per frame). A hidden/occluded window
+	 *  freezes rAF completely (measured: zero callbacks over several seconds),
+	 *  which would leave the buffered deltas — and the text on screen — stuck
+	 *  until the next unrelated event. A timer therefore arms the same flush as
+	 *  a fallback; whichever fires first wins. */
+	const scheduleDeltaFlush = useCallback(() => {
+		if (deltaFlushRef.current !== null) return;
+		deltaFlushRef.current = {
+			raf: requestAnimationFrame(flushDeltas),
+			timer: window.setTimeout(flushDeltas, 80),
+		};
+	}, [flushDeltas]);
 	// Guards against overlapping connect() calls (double clicks, racing
 	// auto-connect effects): the second caller awaits the in-flight attempt.
 	const connectInFlightRef = useRef<Promise<boolean> | null>(null);
@@ -570,6 +635,10 @@ export default function App() {
 	// Cooldown/failure tracking for the auto-connect effect so a broken pi
 	// binary doesn't produce a reconnect loop.
 	const autoConnectStateRef = useRef({ failures: 0 });
+	// When the current channel's pi was last spawned. A pi that dies shortly
+	// after spawn counts as a connect failure (see the pi://exit handler) so
+	// the exponential backoff engages instead of hammering out new processes.
+	const piLastSpawnAtRef = useRef(0);
 
 	// ---- settings side effects ----
 	useEffect(() => {
@@ -794,17 +863,48 @@ export default function App() {
 	);
 
 	// ---- pi event handling ----
-	const patchLast = useCallback((fn: (m: ChatMessage) => ChatMessage) => {
-		setMessages((prev) => {
-			const idx = prev.length - 1;
-			if (idx < 0) return prev;
-			const role = prev[idx].role;
-			if (role !== "assistant" && role !== "tool") return prev;
-			const next = [...prev];
-			next[idx] = fn(next[idx]);
-			return next;
-		});
+	// ---- in-flight message (percho's StreamingState) ----
+	// The message pi is currently producing lives OUTSIDE the committed
+	// transcript: deltas mutate only this object, so `messages` keeps its
+	// identity for the whole stream. Every derivation keyed on it (in-session
+	// search, per-turn diffs/timings, todos, the row items) therefore stops
+	// re-running per token, and committed rows keep their memo identity. It is
+	// committed with the SAME id at message_end / run end, so the row never
+	// remounts and markstream's smooth-streaming controller survives the
+	// streaming → committed hand-off (percho finalizeStreaming).
+	const patchStream = useCallback((fn: (m: ChatMessage) => ChatMessage) => {
+		setStream((cur) => (cur ? fn(cur) : cur));
 	}, []);
+	/** Start a new in-flight message; a stale one is committed first so content
+	 *  can never be dropped when pi skips a message_end (aborted runs). */
+	const startStream = useCallback((msg: ChatMessage) => {
+		const stale = streamRef.current;
+		streamRef.current = msg;
+		setStream(msg);
+		if (stale) setMessages((prev) => [...prev, stale]);
+	}, []);
+	/** Commit the in-flight message into the transcript (same id → same row
+	 *  key). `fallback` covers a message_end whose message_start was missed. */
+	const commitStream = useCallback(
+		(fn?: (m: ChatMessage) => ChatMessage, fallback?: () => ChatMessage) => {
+			const cur = streamRef.current;
+			streamRef.current = null;
+			setStream(null);
+			if (cur) setMessages((prev) => [...prev, fn ? fn(cur) : cur]);
+			else if (fallback) setMessages((prev) => [...prev, fallback()]);
+		},
+		[],
+	);
+	const clearStream = useCallback(() => {
+		streamRef.current = null;
+		setStream(null);
+	}, []);
+	/** Drop the transcript AND the in-flight message (session switch / new task
+	 *  / fork / compaction replay). */
+	const clearTranscript = useCallback(() => {
+		clearStream();
+		setMessages([]);
+	}, [clearStream]);
 
 	const handleResponse = useCallback(
 		async (
@@ -1272,28 +1372,22 @@ export default function App() {
 				clearPendingDeltas();
 				const message = event.message as { role?: string; id?: string } | undefined;
 				if (message?.role === "assistant") {
-					setMessages((prev) => [
-						...prev,
-						{
-							id: nextId++,
-							role: "assistant",
-							blocks: [],
-							streaming: true,
-							timestamp: new Date().toISOString(),
-						},
-					]);
+					startStream({
+						id: nextId++,
+						role: "assistant",
+						blocks: [],
+						streaming: true,
+						timestamp: new Date().toISOString(),
+					});
 					setStreaming(true);
 				} else if (message?.role === "toolResult") {
-					setMessages((prev) => [
-						...prev,
-						{
-							id: nextId++,
-							role: "tool",
-							blocks: [],
-							streaming: true,
-							timestamp: new Date().toISOString(),
-						},
-					]);
+					startStream({
+						id: nextId++,
+						role: "tool",
+						blocks: [],
+						streaming: true,
+						timestamp: new Date().toISOString(),
+					});
 				} else if (message?.role === "user") {
 					// Attach the entry id to the most recent user message so it can be
 					// forked later.
@@ -1358,35 +1452,39 @@ export default function App() {
 						message.stopReason === "error" && !isUserAbortError(message.errorMessage ?? "")
 							? buildLlmUiError(message.errorMessage ?? "error", Date.now())
 							: undefined;
-								patchLast((m) => {
-									const next = { ...m, streaming: false, error: errorMsg };
-									// Keep the streamed block objects when the
-									// authoritative content is identical: fresh
-									// identities here re-render every row (and re-run
-									// the markdown final pass) for zero visual change.
-									if (JSON.stringify(m.blocks) !== JSON.stringify(blocks)) {
-										next.blocks = blocks;
-									}
-									return next;
-								});
+					commitStream((m) => {
+						const next = { ...m, streaming: false, error: errorMsg };
+						// Keep the streamed block objects when the authoritative
+						// content is identical: fresh identities here re-render
+						// every row (and re-run the markdown final pass) for zero
+						// visual change.
+						if (JSON.stringify(m.blocks) !== JSON.stringify(blocks)) {
+							next.blocks = keepStreamedText(m.blocks, blocks);
+						}
+						return next;
+					});
 				} else if (message?.role === "toolResult") {
 					const text = (message.content ?? [])
 						.filter((item) => item.type === "text")
 						.map((item) => item.text ?? "")
 						.join("");
-					patchLast((m) => ({
-						...m,
-						blocks: [
-							{
-								kind: "tool",
-								name: message.toolName ?? "tool",
-								args: text,
-								result: true,
-								error: message.isError ? true : undefined,
-							},
-						],
-						streaming: false,
-					}));
+					const resultBlock: Block = {
+						kind: "tool",
+						name: message.toolName ?? "tool",
+						args: text,
+						result: true,
+						error: message.isError ? true : undefined,
+					};
+					commitStream(
+						(m) => ({ ...m, blocks: [resultBlock], streaming: false }),
+						() => ({
+							id: nextId++,
+							role: "tool",
+							blocks: [resultBlock],
+							streaming: false,
+							timestamp: new Date().toISOString(),
+						}),
+					);
 				}
 				setStreaming(false);
 				return;
@@ -1398,7 +1496,7 @@ export default function App() {
 				switch (ame.type) {
 					case "text_start":
 						setTextStreaming(true);
-						patchLast((m) => ({
+						patchStream((m) => ({
 							...m,
 							blocks: [...m.blocks, { kind: "text", text: "" }],
 						}));
@@ -1414,24 +1512,37 @@ export default function App() {
 						break;
 					case "text_end":
 						// content is the authoritative full text; drop buffered
-						// text deltas so they can't append on top of it.
-						if (pendingDeltaRef.current) {
-							pendingDeltaRef.current.text = undefined;
-						}
-						patchLast((m) => {
+						// text deltas so they can't append on top of it. The
+						// generation bump also voids any batch that was already
+						// handed to startTransition (it would otherwise commit
+						// after this write and duplicate the tail).
+						pendingDeltaRef.current = pendingDeltaRef.current
+							? { ...pendingDeltaRef.current, text: undefined }
+							: null;
+						deltaGenRef.current += 1;
+						patchStream((m) => {
 							const blocks = [...m.blocks];
 							const last = blocks[blocks.length - 1];
 							if (last?.kind === "text" && ame.content !== undefined) {
+								// pi's authoritative snapshot can lag the text we have
+								// already rendered (coalescing / whitespace). Rewriting
+								// the block with a SHORTER text makes markstream treat
+								// the change as a non-prefix reset and re-render the
+								// whole message in one frame, so when our streamed text
+								// is a prefix-extension of it, keep what we rendered.
+								const keepStreamed =
+									last.text.length > ame.content.length &&
+									last.text.startsWith(ame.content);
 								blocks[blocks.length - 1] = {
 									kind: "text",
-									text: ame.content,
+									text: keepStreamed ? last.text : ame.content,
 								};
 							}
 							return { ...m, blocks };
 						});
 						break;
 					case "thinking_start":
-						patchLast((m) => ({
+						patchStream((m) => ({
 							...m,
 							blocks: [...m.blocks, { kind: "thinking", text: "" }],
 						}));
@@ -1444,7 +1555,7 @@ export default function App() {
 						scheduleDeltaFlush();
 						break;
 					case "toolcall_start":
-						patchLast((m) => ({
+						patchStream((m) => ({
 							...m,
 							blocks: [...m.blocks, { kind: "tool", name: "…", args: "" }],
 						}));
@@ -1458,12 +1569,15 @@ export default function App() {
 						break;
 					case "toolcall_end": {
 						// The full arguments replace the streamed ones; drop
-						// buffered tool deltas first.
-						if (pendingDeltaRef.current) {
-							pendingDeltaRef.current.tool = undefined;
-						}
+						// buffered tool deltas first (generation bump: an
+						// already-scheduled transition batch must not land on
+						// top of the authoritative args either).
+						pendingDeltaRef.current = pendingDeltaRef.current
+							? { ...pendingDeltaRef.current, tool: undefined }
+							: null;
+						deltaGenRef.current += 1;
 						const toolCall = ame.toolCall as { name?: string; arguments?: unknown } | undefined;
-						patchLast((m) => {
+						patchStream((m) => {
 							const blocks = [...m.blocks];
 							const last = blocks[blocks.length - 1];
 							if (last?.kind === "tool") {
@@ -1496,7 +1610,18 @@ export default function App() {
 				setTextStreaming(false);
 				if (isCurrent) {
 					clearPendingDeltas();
-					patchLast((m) => ({ ...m, streaming: false }));
+					commitStream((m) => ({ ...m, streaming: false }));
+					// Defensive sweep: a run that died without its message_end
+					// must not leave a committed assistant message flagged as
+					// streaming — it would keep the cursor alive and leave
+					// markstream in unfinished mode forever.
+					setMessages((prev) =>
+						prev.some((m) => m.streaming && m.role === "assistant")
+							? prev.map((m) =>
+									m.streaming && m.role === "assistant" ? { ...m, streaming: false } : m,
+								)
+							: prev,
+					);
 					setStreaming(false);
 					setWorking(false);
 					setPendingSession(null);
@@ -1537,7 +1662,9 @@ export default function App() {
 		},
 		[
 			deliverQueuedNext,
-			patchLast,
+			patchStream,
+			startStream,
+			commitStream,
 			refreshSessions,
 			refreshStats,
 			toast,
@@ -1586,6 +1713,21 @@ export default function App() {
 						prevOutputTokensRef.current = 0;
 						ttftHistoryRef.current = [];
 						setPendingSession(null);
+						// A short-lived pi (exits seconds after spawn) counts as an
+						// auto-connect failure so the exponential backoff actually
+						// engages; otherwise connect success resets the counter and
+						// every retry fires immediately — a measured 270 spawns in
+						// 15 minutes.
+						const aliveMs = Date.now() - piLastSpawnAtRef.current;
+						if (aliveMs < 15000) {
+							autoConnectStateRef.current.failures = Math.min(
+								autoConnectStateRef.current.failures + 1,
+								10,
+							);
+						}
+						void invoke("log_frontend", {
+							message: `[exit] pi died after ${aliveMs}ms (failures=${autoConnectStateRef.current.failures})`,
+						}).catch(() => {});
 						// The backend only emits this on real crashes (deliberate
 						// stops are flagged), so surface it; the auto-connect effect
 						// below will try to resume the session.
@@ -1673,6 +1815,61 @@ export default function App() {
 	}, [working, selectedSessionPath, subagentRuns.length]);
 
 	// ---- connection ----
+	// Latest-transcript mirror for identity-preserving history reloads.
+	const messagesRef = useRef<ChatMessage[]>([]);
+	useEffect(() => {
+		messagesRef.current = messages;
+	}, [messages]);
+
+	/** Content signature for identity matching across transcript rebuilds:
+	 *  role + the head of the first substantial text/thinking block. Streamed
+	 *  and JSONL-reloaded versions of the same message agree on the head even
+	 *  when the tail differs by a few buffered characters. */
+	const messageSignature = (m: ChatMessage): string => {
+		const head =
+			m.blocks
+				.map((b) => (b.kind === "text" || b.kind === "thinking" ? b.text : ""))
+				.find((t) => t.trim().length > 0)
+				?.slice(0, 80) ?? "";
+		return `${m.role}|${head}`;
+	};
+
+	/**
+	 * Reuse already-rendered message objects when a rebuilt transcript matches
+	 * what is on screen (auto-reconnect resume, re-attach). Fresh objects for
+	 * unchanged messages would change every row key and remount every
+	 * <Markdown> — replaying the whole conversation's entrance animation right
+	 * after the reconnect, which reads as "the entire answer rendered again".
+	 * Match by entryId first (authoritative), then by a role+content-head
+	 * signature for streamed messages that never carried one.
+	 */
+	const reuseRenderedMessages = useCallback((loaded: ChatMessage[]): ChatMessage[] => {
+		let prev = messagesRef.current;
+		if (prev.length === 0) return loaded;
+		const byEntry = new Map<string, ChatMessage>();
+		const bySig = new Map<string, ChatMessage>();
+		for (const m of prev) {
+			if (m.entryId) byEntry.set(m.entryId, m);
+			const sig = messageSignature(m);
+			if (!bySig.has(sig)) bySig.set(sig, m);
+		}
+		const used = new Set<number>();
+		return loaded.map((item) => {
+			const byIdMatch = item.entryId ? byEntry.get(item.entryId) : undefined;
+			if (byIdMatch && !used.has(byIdMatch.id)) {
+				used.add(byIdMatch.id);
+				return byIdMatch;
+			}
+			const sig = messageSignature(item);
+			const sigMatch = bySig.get(sig);
+			if (sigMatch && !used.has(sigMatch.id)) {
+				used.add(sigMatch.id);
+				return sigMatch;
+			}
+			return item;
+		});
+	}, []);
+
 	const loadHistory = useCallback(async (path: string) => {
 		try {
 			const parsed = await readSession(path);
@@ -1730,11 +1927,12 @@ export default function App() {
 					...(images.length > 0 ? { images } : {}),
 				});
 			}
-			setMessages(items);
+			clearStream();
+			setMessages(reuseRenderedMessages(items));
 		} catch {
-			setMessages([]);
+			clearTranscript();
 		}
-	}, []);
+	}, [reuseRenderedMessages, clearStream, clearTranscript]);
 
 	// Attach the UI to an already-running background channel: rebuild the
 	// transcript from the session file (streamed events were not applied
@@ -1753,8 +1951,7 @@ export default function App() {
 			isNewSessionRef.current = false;
 			setWorkspace(entry.workspace);
 			setConnected(true);
-			setError(null);
-			setMessages([]);
+			clearTranscript();
 			setStreaming(false);
 			setTextStreaming(false);
 			setAborting(false);
@@ -1847,6 +2044,7 @@ export default function App() {
 					}
 					if (sessionFile) setPendingSession(null);
 					navEpochRef.current += 1;
+					const prevSessionPath = sessionPathRef.current;
 					sessionPathRef.current = sessionFile;
 					setSelectedSessionPath(sessionFile);
 					isNewSessionRef.current = !sessionFile;
@@ -1933,8 +2131,18 @@ export default function App() {
 					}
 					// The RPC pipe is live as soon as pi spawns — mark connected
 					// before loading history so the composer/model picker are
-					// usable immediately instead of waiting on a big file read.
-					setMessages([]);
+					// Reconnecting to the SAME session (auto-resume after a pi
+					// crash): keep the rendered transcript mounted. Tearing it
+					// down here flips ChatArea to the empty path and back,
+					// remounting every <Markdown> — which replays the whole
+					// conversation's entrance animation (reads as "the entire
+					// answer rendered again"). loadHistory reuses the rendered
+					// message identities instead (reuseRenderedMessages).
+					const sameSessionResume =
+						effectiveSession !== null && effectiveSession === prevSessionPath;
+					if (!sameSessionResume) {
+						clearTranscript();
+					}
 					setConnected(true);
 					// Context ring: refresh for the session being opened right
 					// away. The init effect only reruns when the displayed channel
@@ -1945,6 +2153,7 @@ export default function App() {
 					setStats(null);
 					void refreshStats(false);
 					autoConnectStateRef.current.failures = 0;
+					piLastSpawnAtRef.current = Date.now();
 					if (effectiveSession) {
 						await loadHistory(effectiveSession).catch(() => {
 							/* history is best-effort; the connection is already up */
@@ -2051,8 +2260,7 @@ export default function App() {
 		setWorkspace(ws);
 		if (connected) {
 			void (async () => {
-				await disconnect();
-				setMessages([]);
+				clearTranscript();
 				await connect({ sessionFile: null, workspace: ws });
 			})();
 		} else if (busy) {
@@ -2071,8 +2279,7 @@ export default function App() {
 				// task in the new workspace, so the session always belongs to
 				// the directory shown in the composer picker.
 				void (async () => {
-					await disconnect();
-					setMessages([]);
+					clearTranscript();
 					await connect({ sessionFile: null, workspace: ws });
 				})();
 			} else if (busy) {
@@ -2113,7 +2320,7 @@ export default function App() {
 			return;
 		}
 		await disconnect();
-		setMessages([]);
+		clearTranscript();
 		await connect({ sessionFile: null });
 	}, [connect, disconnect, pendingSession, toast, t]);
 
@@ -2131,7 +2338,7 @@ export default function App() {
 			setWorkspace(ws);
 			void (async () => {
 				await disconnect();
-				setMessages([]);
+				clearTranscript();
 				await connect({ sessionFile: null, workspace: ws });
 			})();
 		},
@@ -2402,13 +2609,16 @@ export default function App() {
 		setApiKeyDialog(null);
 	}, []);
 
+	/** Committed transcript + the in-flight message: what the user sees (copy /
+	 *  export paths read this, everything else keeps the two apart). */
+	const transcript = useMemo(() => (stream ? [...messages, stream] : messages), [messages, stream]);
 	const exportSession = useCallback(
 		async (format: "markdown" | "jsonl") => {
 			const path = sessionPathRef.current;
 			if (!path) return;
 			const markdown =
 				format === "markdown"
-					? messages.map(chatMessageToMarkdown).filter(Boolean).join("\n\n")
+					? transcript.map(chatMessageToMarkdown).filter(Boolean).join("\n\n")
 					: null;
 			try {
 				const result = await exportChat(path, markdown, format);
@@ -2768,7 +2978,7 @@ export default function App() {
 	);
 
 	const copyConversation = useCallback(async (): Promise<boolean> => {
-		const md = messages.map(chatMessageToMarkdown).filter(Boolean).join("\n\n");
+		const md = transcript.map(chatMessageToMarkdown).filter(Boolean).join("\n\n");
 		if (!md) return false;
 		try {
 			await navigator.clipboard.writeText(md);
@@ -2863,7 +3073,7 @@ export default function App() {
 					// moved copy; on Windows the rename just fails.
 					await disconnect();
 					await archiveSessionCmd(path);
-					setMessages([]);
+					clearTranscript();
 					await refreshSessions();
 					// Reconnect to a fresh session so the composer stays usable
 					// as long as a workspace is selected.
@@ -2891,7 +3101,7 @@ export default function App() {
 						}
 						await archiveSessionCmd(path);
 						if (wasCurrent) {
-							setMessages([]);
+						clearTranscript();
 						}
 						await refreshSessions();
 						if (wasCurrent && workspace) void connect({ sessionFile: null });
@@ -2922,7 +3132,7 @@ export default function App() {
 				try {
 					await disconnect();
 					await deleteSessionCmd(path);
-					setMessages([]);
+					clearTranscript();
 					await refreshSessions();
 					if (workspace) void connect({ sessionFile: null });
 					toast(t.app.delete);
@@ -3036,7 +3246,7 @@ export default function App() {
 						}
 					}
 					if (includesCurrent) {
-						setMessages([]);
+					clearTranscript();
 					}
 					await refreshSessions();
 					if (workspace) void connect({ sessionFile: null });
@@ -3108,7 +3318,7 @@ export default function App() {
 				await piMoveSession(path, dir);
 				await refreshSessions();
 				if (wasCurrent) {
-					setMessages([]);
+					clearTranscript();
 					// Explicit workspace: the session header now points at the
 					// new project, but the (stale) cached session entry would
 					// steer connect back to the old directory.
@@ -3213,7 +3423,7 @@ export default function App() {
 				const state = await handleResponse({ type: "get_state" });
 				const sessionFile = (state.data as { sessionFile?: string | null } | undefined)
 					?.sessionFile;
-				setMessages([]);
+				clearTranscript();
 				setStreaming(false);
 				setTextStreaming(false);
 				setWorking(false);
@@ -3244,7 +3454,7 @@ export default function App() {
 				undefined,
 				chanRef.current,
 			);
-			setMessages([]);
+			clearTranscript();
 			setStreaming(false);
 			setTextStreaming(false);
 			setWorking(false);
@@ -3347,7 +3557,7 @@ export default function App() {
 		}
 		const resume = sessionPathRef.current;
 		await disconnect();
-		setMessages([]);
+		clearTranscript();
 		await connect({ sessionFile: resume });
 		toast(t.chat.reloaded);
 	}, [busy, disconnect, connect, toast, t]);
@@ -3753,6 +3963,7 @@ export default function App() {
 						t={t}
 						session={selectedSession}
 						messages={messages}
+						stream={stream}
 						streaming={streaming}
 						textStreaming={textStreaming}
 						working={working}
