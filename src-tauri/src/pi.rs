@@ -42,9 +42,9 @@ fn window_prefix(label: &str) -> String {
 }
 
 /// Serializes the tests that mutate process-global env vars (PI_SESSION_DIR,
-/// PI_AGENT_DIR, PI_BIN): cargo runs tests in parallel and env is
-/// process-global, so a concurrent test could observe another test's
-/// temporary values. Test-only: the release build has no use for it.
+/// PI_AGENT_DIR): cargo runs tests in parallel and env is process-global, so
+/// a concurrent test could observe another test's temporary values. Test-only:
+/// the release build has no use for it.
 #[cfg(test)]
 pub(crate) static ENV_GUARD: Mutex<()> = Mutex::new(());
 
@@ -84,8 +84,7 @@ pub(crate) struct PiProcess {
 pub struct PiBinaryInfo {
 	pub(crate) bin: String,
 	pub(crate) version: String,
-	/// Resolved (node, script) pair when pi is an npm-style `.cmd`/`.bat` shim
-	/// (Windows) or when `PI_BIN` points at a JS entrypoint. Spawning node
+	/// Resolved (node, cli.js) pair of the vendored runtime. Spawning node
 	/// directly keeps cmd.exe from re-interpreting `&`, `|`, `%VAR%`, … inside
 	/// our arguments (system prompts, session names, package sources).
 	#[serde(skip)]
@@ -159,261 +158,6 @@ fn default_session_dir() -> PathBuf {
 		.unwrap_or_else(|| PathBuf::from(".pi/agent/sessions"))
 }
 
-/// Resolve an npm/yarn-style Windows command shim (`.cmd`/`.bat`) to the node
-/// binary and JS entrypoint it would run, so pi can be spawned directly
-/// without cmd.exe mangling arguments that contain `&`, `|`, `%VAR%`, ….
-fn resolve_shim_target(shim: &Path) -> Option<(PathBuf, PathBuf)> {
-	let content = std::fs::read_to_string(shim).ok()?;
-	let dir = shim.parent()?.to_path_buf();
-	let mut node: Option<PathBuf> = None;
-	let mut script: Option<PathBuf> = None;
-	for line in content.lines() {
-		let mut rest = line;
-		while let Some(start) = rest.find('"') {
-			let after = &rest[start + 1..];
-			let Some(end) = after.find('"') else { break };
-			let mut quoted = &after[..end];
-			if quoted.contains("%_prog%") {
-				// Node binary resolved by the shim's own logic; see fallback below.
-			} else if quoted.starts_with("%dp0%") || quoted.starts_with("%~dp0") {
-				quoted = quoted
-					.trim_start_matches("%dp0%")
-					.trim_start_matches("%~dp0")
-					.trim_start_matches(['\\', '/']);
-				let candidate = dir.join(quoted);
-				if candidate
-					.file_name()
-					.is_some_and(|n| n == "node" || n == "node.exe")
-				{
-					node = Some(candidate);
-				} else {
-					script = Some(candidate);
-				}
-			}
-			rest = &after[end + 1..];
-		}
-	}
-	// The shim only uses a node.exe next to itself when it exists
-	// (`IF EXIST "%dp0%\node.exe"`); otherwise node resolves via PATH.
-	let mut node = node.filter(|n| n.exists());
-	if node.is_none() {
-		let local = dir.join("node.exe");
-		if local.exists() {
-			node = Some(local);
-		}
-	}
-	let node = node.unwrap_or_else(|| PathBuf::from("node"));
-	Some((node, script?))
-}
-
-/// Find `bin` in PATH (or return it as-is when it has a directory component).
-/// On Windows, bare names are also matched against the PATHEXT extensions
-/// (`.COM;.EXE;.BAT;.CMD`) so a `pi.cmd` shim is found the same way
-/// CreateProcess would find it — without this, the bare "pi" candidate in
-/// `probe_pi_uncached` would bypass shim resolution entirely.
-fn resolve_in_path(bin: &str) -> Option<PathBuf> {
-	if bin.contains('\\') || bin.contains('/') {
-		return Some(PathBuf::from(bin));
-	}
-	let path = std::env::var_os("PATH")?;
-	for dir in std::env::split_paths(&path) {
-		#[cfg(windows)]
-		{
-			// On Windows, an extensionless npm shim (`pi` shell script) next
-			// to `pi.cmd` shadows the real launcher: CreateProcess can't run
-			// a shell script, so a bare `Command::new("pi")` would hit the
-			// script first and fail. Prefer the PATHEXT extensions (.COM;
-			// .EXE;.BAT;.CMD) — same order as cmd.exe — and only fall back to
-			// the bare name when nothing else matches.
-			let candidate = dir.join(bin);
-			if candidate.extension().is_some() {
-				if candidate.is_file() {
-					return Some(candidate);
-				}
-			} else {
-				let pathext =
-					std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-				for ext in pathext.split(';') {
-					let ext = ext.trim();
-					if ext.is_empty() {
-						continue;
-					}
-					let with_ext = dir.join(format!("{bin}{ext}"));
-					if with_ext.is_file() {
-						return Some(with_ext);
-					}
-				}
-				if candidate.is_file() {
-					return Some(candidate);
-				}
-			}
-		}
-		#[cfg(not(windows))]
-		{
-			let candidate = dir.join(bin);
-			if candidate.is_file() {
-				return Some(candidate);
-			}
-		}
-	}
-	None
-}
-
-/// Hard deadline for one `--version` probe. First launches after an install
-/// run these while antivirus is still scanning node.exe and its module tree;
-/// a hung candidate (broken shim, AV sandboxing, dead network PATH entry)
-/// must fail the probe instead of stalling the caller forever.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Like `Command::output()`, but gives up after `PROBE_TIMEOUT`: the pipes
-/// are drained on background threads (a chatty child must not deadlock on a
-/// full pipe buffer while we poll), the exit status is polled via
-/// `try_wait`, and a child that misses the deadline is killed. Returns
-/// `None` when the child cannot be spawned or misses the deadline — both
-/// mean "candidate unusable".
-fn probe_output(cmd: &mut Command) -> Option<std::process::Output> {
-	let mut child = cmd
-		.stdin(Stdio::null())
-		.stdout(Stdio::piped())
-		.stderr(Stdio::piped())
-		.spawn()
-		.ok()?;
-	fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> thread::JoinHandle<Vec<u8>> {
-		thread::spawn(move || {
-			let mut buf = Vec::new();
-			if let Some(mut pipe) = pipe {
-				let _ = pipe.read_to_end(&mut buf);
-			}
-			buf
-		})
-	}
-	let stdout = drain(child.stdout.take());
-	let stderr = drain(child.stderr.take());
-	let deadline = Instant::now() + PROBE_TIMEOUT;
-	loop {
-		match child.try_wait() {
-			Ok(Some(status)) => {
-				return Some(std::process::Output {
-					status,
-					stdout: stdout.join().unwrap_or_default(),
-					stderr: stderr.join().unwrap_or_default(),
-				});
-			}
-			Ok(None) if Instant::now() >= deadline => {
-				let _ = child.kill();
-				let _ = child.wait();
-				return None;
-			}
-			Ok(None) => thread::sleep(Duration::from_millis(25)),
-			Err(_) => return None,
-		}
-	}
-}
-
-/// Probe one pi candidate and figure out how to launch it safely.
-fn probe_candidate(bin: &str) -> Option<PiBinaryInfo> {
-	let (mut cmd, direct) =
-		if bin.ends_with(".js") || bin.ends_with(".mjs") || bin.ends_with(".cjs") {
-			// `PI_BIN` may point straight at the JS entrypoint.
-			let node = find_node(None).unwrap_or_else(|| PathBuf::from("node"));
-			let node_s = node.to_string_lossy().into_owned();
-			let mut c = Command::new(&node);
-			c.arg(bin);
-			(c, Some((node_s, bin.to_string())))
-		} else if bin.ends_with(".cmd") || bin.ends_with(".bat") {
-			// Probe candidates are bare names; resolve the shim's full path so its
-			// directory (and the node_modules tree next to it) can be found.
-			let shim = resolve_in_path(bin)?;
-			let (node, script) = resolve_shim_target(&shim)?;
-			let mut c = Command::new(&node);
-			c.arg(&script);
-			(
-				c,
-				Some((
-					node.to_string_lossy().into_owned(),
-					script.to_string_lossy().into_owned(),
-				)),
-			)
-		} else {
-			// A bare name may still resolve to a `.cmd`/`.bat` shim on PATH
-			// (npm global installs ship only the shim, no `pi.exe`). Resolve it
-			// to node + script so pi is never launched through cmd.exe (which
-			// would reinterpret `&`, `|`, `%VAR%`, … inside our arguments).
-			match resolve_in_path(bin) {
-				Some(resolved)
-					if resolved
-						.file_name()
-						.and_then(|n| n.to_str())
-						.map(|n| n.to_ascii_lowercase())
-						.is_some_and(|n| n.ends_with(".cmd") || n.ends_with(".bat")) =>
-				{
-					match resolve_shim_target(&resolved) {
-						Some((node, script)) => {
-							let mut c = Command::new(&node);
-							c.arg(&script);
-							(
-								c,
-								Some((
-									node.to_string_lossy().into_owned(),
-									script.to_string_lossy().into_owned(),
-								)),
-							)
-						}
-						// Never fall back to Command::new(bin) here: on Windows a
-						// .cmd/.bat launched by bare name goes through cmd.exe, which
-						// would reinterpret `&`, `|`, `%VAR%`, … inside the arguments
-						// we forward (system prompts, session names, package sources).
-						// An unresolvable shim is treated as "not found" instead.
-						None => return None,
-					}
-				}
-				#[cfg(not(windows))]
-				Some(resolved) => {
-					// Unix: npm global installs expose `pi` as a symlink to cli.js with
-					// a `#!/usr/bin/env node` shebang. From Finder/LaunchServices the
-					// GUI inherits a minimal PATH (no node), so the shebang alone can't
-					// run. Detect the symlink-to-JS case and spawn `node script`
-					// directly.
-					match std::fs::canonicalize(&resolved) {
-						Ok(real)
-							if real
-								.extension()
-								.and_then(|e| e.to_str())
-								.is_some_and(|e| e == "js" || e == "mjs" || e == "cjs") =>
-						{
-							let Some(node) = find_node(Some(&resolved)) else {
-								// Found pi but no node to run it with; treat as not found
-								// so the next candidate / known-location probe can try.
-								return None;
-							};
-							let node_s = node.to_string_lossy().into_owned();
-							let script = real.to_string_lossy().into_owned();
-							let mut c = Command::new(&node);
-							c.arg(&script);
-							(c, Some((node_s, script)))
-						}
-						_ => (Command::new(bin), None),
-					}
-				}
-				_ => (Command::new(bin), None),
-			}
-		};
-	let out = probe_output(no_console_window(&mut cmd).arg("--version"))?;
-	if !out.status.success() {
-		return None;
-	}
-	let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
-	if version.is_empty() {
-		return None;
-	}
-	Some(PiBinaryInfo {
-		bin: bin.to_string(),
-		version,
-		direct,
-		builtin: false,
-	})
-}
-
 /// Cached pi probe result. Successful probes are cached for the app's
 /// lifetime (pi doesn't change underneath a running app — restart to pick up
 /// an upgrade). Failed probes are retried after a short backoff so a
@@ -449,8 +193,7 @@ pub(crate) fn probe_pi() -> Option<PiBinaryInfo> {
 /// Directories that may hold the vendored pi runtime (installed by
 /// `npm run vendor:pi` into `src-tauri/resources/pi-runtime` and mapped by
 /// tauri.conf.json into the bundle as `<resource_dir>/pi-runtime`). Most
-/// specific candidate first. `TAU_PI_RUNTIME` overrides everything, mirroring
-/// how `PI_BIN` overrides the PATH probe.
+/// specific candidate first. `TAU_PI_RUNTIME` overrides everything.
 pub(crate) fn vendored_runtime_dirs() -> Vec<PathBuf> {
 	let mut dirs: Vec<PathBuf> = Vec::new();
 	if let Some(env_dir) = std::env::var_os("TAU_PI_RUNTIME") {
@@ -462,6 +205,10 @@ pub(crate) fn vendored_runtime_dirs() -> Vec<PathBuf> {
 			// the second form covers builds that keep the `resources/` prefix.
 			dirs.push(parent.join("pi-runtime"));
 			dirs.push(parent.join("resources").join("pi-runtime"));
+			// macOS .app: exe is Contents/MacOS/tau, resources are Contents/Resources.
+			if let Some(contents) = parent.parent() {
+				dirs.push(contents.join("Resources").join("pi-runtime"));
+			}
 		}
 	}
 	// Dev builds run from target/debug — fall back to the source tree layout.
@@ -493,201 +240,45 @@ pub(crate) fn vendored_layout(dir: &Path) -> Option<(PathBuf, PathBuf)> {
 	cli.is_file().then_some((node, cli))
 }
 
-/// Probe the vendored runtime in `dir` by running `<node> <cli.js> --version`.
-/// The bundled node is always used — the whole point of the vendored layout is
-/// that the user may have neither pi nor node on PATH.
+/// pi version for the vendored runtime, read from the package.json next to
+/// cli.js's package root (cli.js = `<pkg>/dist/bundle/cli.js`). No process is
+/// spawned: a complete vendored layout is considered usable as-is.
+fn vendored_version(cli: &Path) -> Option<String> {
+	let pkg = cli.parent()?.parent()?.parent()?;
+	let raw = std::fs::read_to_string(pkg.join("package.json")).ok()?;
+	let json: Value = serde_json::from_str(&raw).ok()?;
+	let version = json.get("version")?.as_str()?.trim().to_string();
+	(!version.is_empty()).then_some(version)
+}
+
+/// Probe the vendored runtime in `dir`: a complete (node, cli.js) layout is
+/// usable, and the version comes from the package's package.json. No
+/// `--version` spawn — cold first launches paid seconds of antivirus scanning
+/// per probe candidate, and the vendored files are ours anyway.
 fn probe_vendored_dir(dir: &Path) -> Option<PiBinaryInfo> {
 	let (node, cli) = vendored_layout(dir)?;
-	let mut cmd = Command::new(&node);
-	cmd.arg(&cli);
-	let out = probe_output(no_console_window(&mut cmd).arg("--version"))?;
-	if !out.status.success() {
-		return None;
-	}
-	let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
-	if version.is_empty() {
-		return None;
-	}
 	let node_s = node.to_string_lossy().into_owned();
 	let cli_s = cli.to_string_lossy().into_owned();
 	Some(PiBinaryInfo {
 		bin: cli_s.clone(),
-		version,
+		version: vendored_version(&cli).unwrap_or_else(|| "unknown".to_string()),
 		direct: Some((node_s, cli_s)),
 		builtin: true,
 	})
 }
 
 fn probe_pi_uncached() -> Option<PiBinaryInfo> {
-	if let Ok(env_bin) = std::env::var("PI_BIN") {
-		if let Some(info) = probe_candidate(&env_bin) {
-			return Some(info);
-		}
-	}
-	// Vendored runtime bundled with the installer: preferred over PATH so the
-	// app works with no system-wide pi install at all. PI_BIN above stays an
-	// explicit developer override. Missing/incomplete vendored layouts simply
-	// fall through to the PATH candidates below.
-	for dir in vendored_runtime_dirs() {
-		if let Some(info) = probe_vendored_dir(&dir) {
-			return Some(info);
-		}
-	}
-	let mut candidates: Vec<&str> = vec!["pi"];
-	if cfg!(windows) {
-		candidates.extend(["pi.exe", "pi.cmd", "pi.bat"]);
-	}
-	if let Some(info) = candidates.iter().find_map(|bin| probe_candidate(bin)) {
-		return Some(info);
-	}
-	// PATH search came up empty (e.g. the GUI inherited a stale explorer
-	// environment that predates the pi install). Fall back to well-known
-	// install locations before giving up.
-	probe_known_locations()
+	// Only the vendored runtime bundled with the installer (`npm run
+	// vendor:pi`) is supported: the session host imports the pi SDK from this
+	// exact tree, so a system-wide pi install can no longer substitute.
+	vendored_runtime_dirs()
+		.iter()
+		.find_map(|dir| probe_vendored_dir(dir))
 }
 
-/// Look for pi in places it is typically installed even when PATH doesn't
-/// cover them: the npm global bin dir, and any PATH directory that holds
-/// node.exe (npm's prefix is usually the node install dir, and pi is a
-/// sibling of node there). On Unix this also covers the well-known npm-global
-/// / nvm / brew roots (a .app launched from Finder inherits only
-/// /usr/bin:/bin:/usr/sbin:/sbin, which none of them live in).
-fn probe_known_locations() -> Option<PiBinaryInfo> {
-	let mut dirs: Vec<PathBuf> = Vec::new();
-	#[cfg(windows)]
-	if let Some(appdata) = std::env::var_os("APPDATA") {
-		dirs.push(PathBuf::from(appdata).join("npm"));
-	}
-	if let Some(path) = std::env::var_os("PATH") {
-		for dir in std::env::split_paths(&path) {
-			if dir.join("node.exe").is_file() && !dirs.contains(&dir) {
-				dirs.push(dir);
-			}
-		}
-	}
-	#[cfg(not(windows))]
-	for dir in known_bin_dirs() {
-		if !dirs.contains(&dir) {
-			dirs.push(dir);
-		}
-	}
-	for dir in dirs {
-		for name in ["pi.cmd", "pi.bat", "pi.exe", "pi"] {
-			let candidate = dir.join(name);
-			if candidate.is_file() {
-				if let Some(info) = probe_candidate(&candidate.to_string_lossy()) {
-					return Some(info);
-				}
-			}
-		}
-	}
-	None
-}
-
-/// Well-known directories that hold npm-global binaries (and the node that
-/// runs them) when the GUI's inherited PATH is too minimal to include them.
-#[cfg(not(windows))]
-fn known_bin_dirs() -> Vec<PathBuf> {
-	let mut dirs: Vec<PathBuf> = Vec::new();
-	if let Some(home) = std::env::var_os("HOME") {
-		let home = PathBuf::from(home);
-		dirs.push(home.join(".npm-global").join("bin"));
-		dirs.push(home.join(".local").join("bin"));
-		dirs.push(home.join(".volta").join("bin"));
-		dirs.push(home.join(".asdf").join("shims"));
-		// nvm: ~/.nvm/versions/node/<v>/bin (all installed versions, newest last).
-		if let Ok(entries) = std::fs::read_dir(home.join(".nvm").join("versions").join("node")) {
-			let mut vers: Vec<PathBuf> = entries
-				.filter_map(|e| e.ok().map(|e| e.path().join("bin")))
-				.collect();
-			vers.sort();
-			dirs.extend(vers);
-		}
-		// Laravel Herd bundles its own nvm tree under Application Support.
-		let herd = home
-			.join("Library")
-			.join("Application Support")
-			.join("Herd")
-			.join("config")
-			.join("nvm")
-			.join("versions")
-			.join("node");
-		if let Ok(entries) = std::fs::read_dir(herd) {
-			let mut vers: Vec<PathBuf> = entries
-				.filter_map(|e| e.ok().map(|e| e.path().join("bin")))
-				.collect();
-			vers.sort();
-			dirs.extend(vers);
-		}
-	}
-	dirs.push(PathBuf::from("/opt/homebrew/bin"));
-	dirs.push(PathBuf::from("/usr/local/bin"));
-	dirs.push(PathBuf::from("/opt/local/bin"));
-	dirs
-}
-
-/// Locate a node binary able to run pi's JS entrypoint. Called when pi is a
-/// symlink-to-JS shim (npm global installs on Unix): the `#!/usr/bin/env
-/// node` shebang can't resolve node when the GUI inherited a minimal PATH, so
-/// we spawn `node script` directly. `near` is the pi shim path — npm puts
-/// node next to the shim in the same prefix bin dir.
-#[cfg(not(windows))]
-fn find_node(near: Option<&Path>) -> Option<PathBuf> {
-	if let Some(dir) = near.and_then(|s| s.parent()) {
-		let c = dir.join("node");
-		if c.is_file() {
-			return Some(c);
-		}
-	}
-	if let Some(path) = std::env::var_os("PATH") {
-		for dir in std::env::split_paths(&path) {
-			let c = dir.join("node");
-			if c.is_file() {
-				return Some(c);
-			}
-		}
-	}
-	known_bin_dirs()
-		.into_iter()
-		.find(|dir| dir.join("node").is_file())
-}
-
-/// Windows variant: locate a node.exe able to run pi's JS entrypoint. There
-/// is no shebang-resolution problem here, but npm global installs may put
-/// node.exe next to the shim in the same prefix dir, and the GUI can inherit
-/// a PATH where node only exists under a different spelling.
-#[cfg(windows)]
-fn find_node(near: Option<&Path>) -> Option<PathBuf> {
-	if let Some(dir) = near.and_then(|s| s.parent()) {
-		for name in ["node.exe", "node"] {
-			let c = dir.join(name);
-			if c.is_file() {
-				return Some(c);
-			}
-		}
-	}
-	if let Some(path) = std::env::var_os("PATH") {
-		for dir in std::env::split_paths(&path) {
-			for name in ["node.exe", "node"] {
-				let c = dir.join(name);
-				if c.is_file() {
-					return Some(c);
-				}
-			}
-		}
-	}
-	// npm's global prefix (APPDATA\npm) is not always on PATH.
-	if let Some(appdata) = std::env::var_os("APPDATA") {
-		let c = PathBuf::from(appdata).join("npm").join("node.exe");
-		if c.is_file() {
-			return Some(c);
-		}
-	}
-	None
-}
-
-/// Base `Command` for launching pi. Never goes through cmd.exe argument
-/// parsing: npm shims are resolved to node + script at probe time.
+/// Base `Command` for launching pi through the vendored runtime. Never goes
+/// through cmd.exe argument parsing: the probe already resolved node +
+/// cli.js.
 pub(crate) fn pi_command(info: &PiBinaryInfo) -> Command {
 	if let Some((node, script)) = &info.direct {
 		let mut c = Command::new(node);
@@ -722,6 +313,230 @@ pub(crate) fn no_console_window(cmd: &mut Command) -> &mut Command {
 /// (the UI degrades gracefully; the process survives).
 const MAX_EVENT_LINE: usize = 64 * 1024 * 1024;
 
+/// Env for the SDK session host (resources/agent-sidecar/session-host.mjs),
+/// assembled from the same launch options the old CLI flags carried. Pure so
+/// the three-state tools encoding, fork-over-session priority and the prompt
+/// size cap can be unit-tested without spawning anything.
+#[allow(clippy::too_many_arguments)]
+fn session_host_env(
+	pkg_index: &Path,
+	session_dir: &Path,
+	session_file: Option<&str>,
+	fork_of: Option<&str>,
+	session_name: Option<&str>,
+	system_prompt: Option<&str>,
+	append_system_prompt: Option<&str>,
+	tools: Option<&[String]>,
+	excluded_tools: Option<&[String]>,
+	models: Option<&str>,
+	extension: Option<&Path>,
+) -> Result<Vec<(String, String)>, String> {
+	let mut env: Vec<(String, String)> = vec![
+		(
+			"TAU_PI_PKG".to_string(),
+			pkg_index.to_string_lossy().into_owned(),
+		),
+		(
+			"TAU_SESSION_DIR".to_string(),
+			session_dir.to_string_lossy().into_owned(),
+		),
+	];
+	// Fork wins over open, exactly like the old --fork / --session pair.
+	if let Some(path) = fork_of {
+		env.push(("TAU_FORK_OF".to_string(), path.to_string()));
+	} else if let Some(path) = session_file {
+		env.push(("TAU_SESSION_FILE".to_string(), path.to_string()));
+	}
+	if let Some(name) = session_name {
+		if !name.trim().is_empty() {
+			env.push(("TAU_SESSION_NAME".to_string(), name.to_string()));
+		}
+	}
+	for (key, prompt, what) in [
+		("TAU_SYSTEM_PROMPT", system_prompt, "system prompt"),
+		(
+			"TAU_APPEND_SYSTEM_PROMPT",
+			append_system_prompt,
+			"append-system-prompt",
+		),
+	] {
+		if let Some(prompt) = prompt {
+			let prompt = prompt.trim();
+			if !prompt.is_empty() {
+				if prompt.len() > 30000 {
+					return Err(format!("{what} is too long (max 30000 chars)"));
+				}
+				env.push((key.to_string(), prompt.to_string()));
+			}
+		}
+	}
+	// Tool allowlist three-state: None = pi defaults, Some([]) = no tools,
+	// Some([...]) = allowlist (the host JSON.parses the value).
+	let tools_json = match tools {
+		None => "null".to_string(),
+		Some(tools) => serde_json::to_string(tools).map_err(|e| e.to_string())?,
+	};
+	env.push(("TAU_TOOLS".to_string(), tools_json));
+	// Tool exclude list (keeps everything else enabled, works alongside the
+	// allowlist above).
+	if let Some(tools) = excluded_tools {
+		if !tools.is_empty() {
+			env.push((
+				"TAU_EXCLUDED_TOOLS".to_string(),
+				serde_json::to_string(tools).map_err(|e| e.to_string())?,
+			));
+		}
+	}
+	// Scoped model patterns for Ctrl+P cycling (/scoped-models equivalent).
+	if let Some(models) = models {
+		let models = models.trim();
+		if !models.is_empty() {
+			env.push(("TAU_MODELS".to_string(), models.to_string()));
+		}
+	}
+	if let Some(ext) = extension {
+		env.push((
+			"TAU_EXTENSION".to_string(),
+			ext.to_string_lossy().into_owned(),
+		));
+	}
+	Ok(env)
+}
+
+/// Command launching the SDK session host: vendored node + session-host.mjs,
+/// all options passed via env. The wire protocol on stdin/stdout is identical
+/// to `pi --mode rpc`, so the reader/pump below needs no changes.
+#[allow(clippy::too_many_arguments)]
+fn session_host_command(
+	info: &PiBinaryInfo,
+	session_file: Option<&str>,
+	fork_of: Option<&str>,
+	session_name: Option<&str>,
+	system_prompt: Option<&str>,
+	append_system_prompt: Option<&str>,
+	tools: Option<&[String]>,
+	excluded_tools: Option<&[String]>,
+	models: Option<&str>,
+) -> Result<Command, String> {
+	let (node, _) = info
+		.direct
+		.as_ref()
+		.ok_or_else(|| "vendored pi runtime not found — run `npm run vendor:pi`".to_string())?;
+	let host = crate::sidecar::locate_sidecar_script("session-host.mjs")
+		.ok_or_else(|| "session-host.mjs not found in bundled agent-sidecar resources".to_string())?;
+	// bin = <pkg>/dist/bundle/cli.js — the SDK entry is dist/index.js.
+	let cli = Path::new(&info.bin);
+	let pkg_index = cli
+		.parent()
+		.and_then(|p| p.parent())
+		.map(|dist| dist.join("index.js"))
+		.filter(|p| p.is_file())
+		.ok_or_else(|| "pi SDK entry (dist/index.js) not found in the vendored runtime".to_string())?;
+	// Tau desktop tools extension: only when the vendored runtime is available
+	// (same condition the old --extension flag had).
+	let extension = crate::sidecar::tau_extension_paths().map(|(ext, _)| ext);
+	let env = session_host_env(
+		&pkg_index,
+		&default_session_dir(),
+		session_file,
+		fork_of,
+		session_name,
+		system_prompt,
+		append_system_prompt,
+		tools,
+		excluded_tools,
+		models,
+		extension.as_deref(),
+	)?;
+	let mut cmd = Command::new(node);
+	cmd.arg(&host);
+	for (key, value) in env {
+		cmd.env(key, value);
+	}
+	Ok(cmd)
+}
+
+/// Legacy `pi --mode rpc` CLI launch, kept as the `TAU_PI_RPC=cli` escape
+/// hatch in case the SDK session host misbehaves in the field.
+#[allow(clippy::too_many_arguments)]
+fn cli_legacy_command(
+	info: &PiBinaryInfo,
+	session_file: Option<&str>,
+	fork_of: Option<&str>,
+	session_name: Option<&str>,
+	system_prompt: Option<&str>,
+	append_system_prompt: Option<&str>,
+	tools: Option<&[String]>,
+	excluded_tools: Option<&[String]>,
+	models: Option<&str>,
+) -> Result<Command, String> {
+	let mut cmd = pi_command(info);
+	cmd.arg("--mode")
+		.arg("rpc")
+		.arg("--session-dir")
+		.arg(default_session_dir());
+	// Tau desktop tools: load the bundled extension (registered via the
+	// SDK's registerTool) into the RPC session when the vendored runtime
+	// is available. TAU_PI_PKG lets the extension resolve typebox from
+	// pi's own dependency tree.
+	if let Some((ext, pkg_index)) = crate::sidecar::tau_extension_paths() {
+		cmd.arg("--extension").arg(ext);
+		cmd.env("TAU_PI_PKG", pkg_index);
+	}
+	// Scoped model patterns for Ctrl+P cycling (/scoped-models equivalent).
+	if let Some(models) = models {
+		let models = models.trim();
+		if !models.is_empty() {
+			cmd.arg("--models").arg(models);
+		}
+	}
+	if let Some(path) = fork_of {
+		cmd.arg("--fork").arg(path);
+	} else if let Some(path) = session_file {
+		cmd.arg("--session").arg(path);
+	}
+	if let Some(name) = session_name {
+		if !name.trim().is_empty() {
+			cmd.arg("--name").arg(name);
+		}
+	}
+	if let Some(prompt) = system_prompt {
+		let prompt = prompt.trim();
+		if !prompt.is_empty() {
+			if prompt.len() > 30000 {
+				return Err("system prompt is too long (max 30000 chars)".into());
+			}
+			cmd.arg("--system-prompt").arg(prompt);
+		}
+	}
+	if let Some(prompt) = append_system_prompt {
+		let prompt = prompt.trim();
+		if !prompt.is_empty() {
+			if prompt.len() > 30000 {
+				return Err("append-system-prompt is too long (max 30000 chars)".into());
+			}
+			cmd.arg("--append-system-prompt").arg(prompt);
+		}
+	}
+	// Tool allowlist: Some([]) = disable all tools, Some([...]) = allowlist,
+	// None = keep pi defaults (all tools).
+	if let Some(tools) = tools {
+		if tools.is_empty() {
+			cmd.arg("--no-tools");
+		} else {
+			cmd.arg("--tools").arg(tools.join(","));
+		}
+	}
+	// Tool exclude list: Some([...]) = --exclude-tools (keeps everything
+	// else enabled, works alongside the allowlist above).
+	if let Some(tools) = excluded_tools {
+		if !tools.is_empty() {
+			cmd.arg("--exclude-tools").arg(tools.join(","));
+		}
+	}
+	Ok(cmd)
+}
+
 impl PiProcess {
 	// Many launch options (session/fork/name/prompts/tools/models) are passed
 	// through individually from the Tauri command payload.
@@ -747,70 +562,35 @@ impl PiProcess {
 	) -> Result<(), String> {
 		self.kill();
 
-		let mut cmd = pi_command(info);
-		cmd.arg("--mode")
-			.arg("rpc")
-			.arg("--session-dir")
-			.arg(default_session_dir());
-		// Tau desktop tools: load the bundled extension (registered via the
-		// SDK's registerTool) into the RPC session when the vendored runtime
-		// is available. TAU_PI_PKG lets the extension resolve typebox from
-		// pi's own dependency tree.
-		if let Some((ext, pkg_index)) = crate::sidecar::tau_extension_paths() {
-			cmd.arg("--extension").arg(ext);
-			cmd.env("TAU_PI_PKG", pkg_index);
-		}
-		// Scoped model patterns for Ctrl+P cycling (/scoped-models equivalent).
-		if let Some(models) = models {
-			let models = models.trim();
-			if !models.is_empty() {
-				cmd.arg("--models").arg(models);
-			}
-		}
-		if let Some(path) = fork_of {
-			cmd.arg("--fork").arg(path);
-		} else if let Some(path) = session_file {
-			cmd.arg("--session").arg(path);
-		}
-		if let Some(name) = session_name {
-			if !name.trim().is_empty() {
-				cmd.arg("--name").arg(name);
-			}
-		}
-		if let Some(prompt) = system_prompt {
-			let prompt = prompt.trim();
-			if !prompt.is_empty() {
-				if prompt.len() > 30000 {
-					return Err("system prompt is too long (max 30000 chars)".into());
-				}
-				cmd.arg("--system-prompt").arg(prompt);
-			}
-		}
-		if let Some(prompt) = append_system_prompt {
-			let prompt = prompt.trim();
-			if !prompt.is_empty() {
-				if prompt.len() > 30000 {
-					return Err("append-system-prompt is too long (max 30000 chars)".into());
-				}
-				cmd.arg("--append-system-prompt").arg(prompt);
-			}
-		}
-		// Tool allowlist: Some([]) = disable all tools, Some([...]) = allowlist,
-		// None = keep pi defaults (all tools).
-		if let Some(tools) = tools {
-			if tools.is_empty() {
-				cmd.arg("--no-tools");
-			} else {
-				cmd.arg("--tools").arg(tools.join(","));
-			}
-		}
-		// Tool exclude list: Some([...]) = --exclude-tools (keeps everything
-		// else enabled, works alongside the allowlist above).
-		if let Some(tools) = excluded_tools {
-			if !tools.is_empty() {
-				cmd.arg("--exclude-tools").arg(tools.join(","));
-			}
-		}
+		// Default: the SDK session host (session-host.mjs) — a drop-in
+		// replacement for `pi --mode rpc`, configured entirely through env.
+		// `TAU_PI_RPC=cli` is the escape hatch back to the legacy CLI launch.
+		let legacy = std::env::var("TAU_PI_RPC").as_deref() == Ok("cli");
+		let mut cmd = if legacy {
+			cli_legacy_command(
+				info,
+				session_file,
+				fork_of,
+				session_name,
+				system_prompt,
+				append_system_prompt,
+				tools,
+				excluded_tools,
+				models,
+			)?
+		} else {
+			session_host_command(
+				info,
+				session_file,
+				fork_of,
+				session_name,
+				system_prompt,
+				append_system_prompt,
+				tools,
+				excluded_tools,
+				models,
+			)?
+		};
 		cmd.current_dir(workspace)
 			.stdin(Stdio::piped())
 			.stdout(Stdio::piped())
@@ -1295,14 +1075,12 @@ fn collect_sessions(dir: &Path, out: &mut Vec<PiSessionInfo>) {
 
 #[tauri::command]
 async fn pi_binary(app: AppHandle) -> Result<PiBinaryInfo, String> {
-	// The first probe of a session can spawn several `--version` candidates,
-	// each possibly taking seconds on a cold first launch (antivirus scanning
-	// node.exe, stale PATH entries). Sync Tauri commands run on the main
-	// thread — probing there froze every window into "(Not Responding)" — so
-	// run it on the blocking pool instead.
+	// The probe is a pure filesystem check of the vendored runtime layout (no
+	// `--version` spawn), but keep it on the blocking pool so the command
+	// never touches the main thread.
 	let result = run_blocking(|| {
 		probe_pi().ok_or_else(|| {
-			"pi binary not found. The bundled runtime is missing — run `npm run vendor:pi` and rebuild, or install pi via npm (https://github.com/earendil-works/pi) or set PI_BIN to the pi executable or its cli.js entrypoint.".into()
+			"pi runtime not found. The bundled runtime is missing — run `npm run vendor:pi` and rebuild.".into()
 		})
 	})
 	.await;
@@ -2449,9 +2227,10 @@ async fn pi_export_chat(
 	}))
 }
 
-/// Export a session JSONL to a styled HTML file via `pi --export` (one-shot
-/// CLI run; the running RPC session is untouched). The save dialog stays on
-/// the UI thread; the pi CLI run moves to the blocking pool.
+/// Export a session JSONL to a styled HTML file via the SDK sidecar (the
+/// same `exportFromFile` code path as `pi --export`; the running RPC session
+/// is untouched). The save dialog stays on the UI thread; the export itself
+/// moves to the blocking pool.
 #[tauri::command]
 async fn pi_export_html(app: AppHandle, session_path: String) -> Result<serde_json::Value, String> {
 	use tauri_plugin_dialog::DialogExt;
@@ -2485,30 +2264,7 @@ async fn pi_export_html(app: AppHandle, session_path: String) -> Result<serde_js
 	};
 
 	run_blocking(move || {
-		let info = probe_pi().ok_or("pi binary not found")?;
-		let mut cmd = pi_command(&info);
-		cmd.arg("--export")
-			.arg(&path)
-			.arg(&target)
-			.arg("--offline")
-			.stdin(Stdio::null())
-			.stdout(Stdio::piped())
-			.stderr(Stdio::piped());
-		#[cfg(windows)]
-		{
-			use std::os::windows::process::CommandExt;
-			const CREATE_NO_WINDOW: u32 = 0x08000000;
-			cmd.creation_flags(CREATE_NO_WINDOW);
-		}
-		let out = cmd.output().map_err(|e| format!("failed to run pi: {e}"))?;
-		if !out.status.success() {
-			let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-			return Err(if stderr.is_empty() {
-				String::from_utf8_lossy(&out.stdout).trim().to_string()
-			} else {
-				stderr
-			});
-		}
+		crate::sidecar::export_html(&path, &target)?;
 		if !target.exists() {
 			return Err("pi did not produce an export file".into());
 		}
@@ -2707,7 +2463,7 @@ async fn pi_import_session(app: AppHandle) -> Result<Option<String>, String> {
 
 /// Share the current session as a private GitHub gist (the TUI's `/share`):
 /// requires the `gh` CLI to be installed and logged in. Exports the session
-/// to HTML via `pi --export`, uploads it with `gh gist create --private`,
+/// to HTML via the SDK sidecar, uploads it with `gh gist create --private`,
 /// and returns the gist URL.
 #[tauri::command]
 async fn pi_share_session(session_path: String) -> Result<String, String> {
@@ -2728,27 +2484,10 @@ async fn pi_share_session(session_path: String) -> Result<String, String> {
 			}
 			Ok(_) => {}
 		}
-		// 2. Export to a temp HTML file.
+		// 2. Export to a temp HTML file via the SDK sidecar.
 		let tmp = std::env::temp_dir().join(format!("tau-share-{}.html", unique_suffix()));
 		let _ = std::fs::remove_file(&tmp);
-		let info = probe_pi().ok_or("pi binary not found")?;
-		let mut export = pi_command(&info);
-		export.arg("--export").arg(&path).arg(&tmp).arg("--offline");
-		#[cfg(windows)]
-		{
-			use std::os::windows::process::CommandExt;
-			const CREATE_NO_WINDOW: u32 = 0x08000000;
-			export.creation_flags(CREATE_NO_WINDOW);
-		}
-		let out = export
-			.output()
-			.map_err(|e| format!("failed to run pi --export: {e}"))?;
-		if !out.status.success() {
-			return Err(format!(
-				"export failed: {}",
-				String::from_utf8_lossy(&out.stderr).trim()
-			));
-		}
+		crate::sidecar::export_html(&path, &tmp).map_err(|e| format!("export failed: {e}"))?;
 		// 3. Create the private gist and read its html_url.
 		let gist = no_console_window(
 			Command::new("gh")
@@ -3980,104 +3719,6 @@ mod tests {
 	}
 
 	#[test]
-	fn resolves_npm_command_shims() {
-		let dir = std::env::temp_dir().join(format!("pi-gui-shim-test-{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&dir);
-		std::fs::create_dir_all(&dir).unwrap();
-		std::fs::write(
-			dir.join("pi.cmd"),
-			"@ECHO off\r\n\
-			 GOTO start\r\n\
-			 :start\r\n\
-			 SETLOCAL\r\n\
-			 IF EXIST \"%dp0%\\node.exe\" (SET \"_prog=%dp0%\\node.exe\") ELSE (SET \"_prog=node\")\r\n\
-			 endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\pkg\\dist\\cli.js\" %*\r\n",
-		)
-		.unwrap();
-		let (node, script) = resolve_shim_target(&dir.join("pi.cmd")).unwrap();
-		assert_eq!(node, PathBuf::from("node"));
-		assert_eq!(
-			script,
-			dir.join("node_modules")
-				.join("pkg")
-				.join("dist")
-				.join("cli.js")
-		);
-		let _ = std::fs::remove_dir_all(&dir);
-	}
-
-	#[cfg(not(windows))]
-	#[test]
-	fn resolves_unix_js_symlink_shims() {
-		// Simulate an npm global install layout: `prefix/bin/pi` is a symlink to
-		// the package's dist/cli.js. probe_candidate must resolve it to
-		// node + script instead of relying on the `#!/usr/bin/env node` shebang,
-		// which cannot resolve node when the GUI inherits a minimal PATH.
-		let Some(node) = find_node(None) else {
-			eprintln!("node not found on this machine — skipping");
-			return;
-		};
-		let dir = std::env::temp_dir().join(format!("pi-gui-unix-shim-{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&dir);
-		let bin = dir.join("bin");
-		let dist = dir
-			.join("lib")
-			.join("node_modules")
-			.join("pkg")
-			.join("dist");
-		std::fs::create_dir_all(&bin).unwrap();
-		std::fs::create_dir_all(&dist).unwrap();
-		let script = dist.join("cli.js");
-		std::fs::write(&script, "console.log('1.2.3-test');\n").unwrap();
-		std::os::unix::fs::symlink(&script, bin.join("pi")).unwrap();
-		let info = probe_candidate(&bin.join("pi").to_string_lossy()).unwrap();
-		assert_eq!(info.version, "1.2.3-test");
-		let (node_bin, script_bin) = info.direct.as_ref().unwrap();
-		assert_eq!(Path::new(node_bin), node);
-		assert_eq!(Path::new(script_bin), script.canonicalize().unwrap());
-		let _ = std::fs::remove_dir_all(&dir);
-	}
-
-	/// Finder/LaunchServices launches a .app with a minimal PATH
-	/// (/usr/bin:/bin:/usr/sbin:/sbin) that contains neither pi nor node.
-	/// The probe must still find a pi that lives in one of the well-known
-	/// npm-global / nvm / brew roots, resolve its symlink-to-JS shim, and
-	/// pick a node able to run it. Skipped when no node is installed at all
-	/// (then pi could never run either way).
-	#[cfg(not(windows))]
-	#[test]
-	fn probe_finds_pi_with_minimal_path_via_known_locations() {
-		if find_node(None).is_none() {
-			eprintln!("no node found — skipping");
-			return;
-		}
-		let _g = ENV_GUARD.lock().unwrap();
-		let old_path = std::env::var_os("PATH");
-		let old_pi_bin = std::env::var_os("PI_BIN");
-		std::env::remove_var("PI_BIN");
-		// Minimal Finder-like PATH, plus a non-existent dir to prove the
-		// probe cannot be succeeding through PATH resolution.
-		std::env::set_var("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
-		let info = probe_pi_uncached();
-		match old_pi_bin {
-			Some(v) => std::env::set_var("PI_BIN", v),
-			None => std::env::remove_var("PI_BIN"),
-		}
-		match old_path {
-			Some(v) => std::env::set_var("PATH", v),
-			None => std::env::remove_var("PATH"),
-		}
-		let Some(info) = info else {
-			eprintln!("pi not installed in a known location on this machine — skipping");
-			return;
-		};
-		// Must launch node + cli.js directly: the shebang can't resolve node
-		// under the minimal PATH.
-		assert!(info.direct.is_some(), "expected node+script direct launch");
-		assert!(!info.version.is_empty());
-	}
-
-	#[test]
 	fn parses_iso_timestamps_with_leap_days() {
 		// 2024-02-29 (leap year) vs 2023-02-28: exactly one year apart.
 		let leap = parse_iso_ms("2024-02-29T00:00:00.000Z").unwrap();
@@ -4126,12 +3767,10 @@ mod tests {
 		// shared guard for the whole env-mutating section.
 		let _guard = ENV_GUARD.lock().unwrap();
 		let old_session_dir = std::env::var_os("PI_SESSION_DIR");
-		let old_pi_bin = std::env::var_os("PI_BIN");
 		let dir = std::env::temp_dir().join(format!("pi-gui-sess-test-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
 		std::fs::create_dir_all(&dir).unwrap();
 		std::env::set_var("PI_SESSION_DIR", &dir);
-		std::env::remove_var("PI_BIN");
 
 		let session = dir.join("abc.jsonl");
 		std::fs::write(
@@ -4192,43 +3831,6 @@ mod tests {
 			Some(v) => std::env::set_var("PI_SESSION_DIR", v),
 			None => std::env::remove_var("PI_SESSION_DIR"),
 		}
-		match old_pi_bin {
-			Some(v) => std::env::set_var("PI_BIN", v),
-			None => std::env::remove_var("PI_BIN"),
-		}
-	}
-
-	#[test]
-	fn resolve_in_path_prefers_pathext_over_extensionless() {
-		// npm installs BOTH an extensionless `pi` shell script and `pi.cmd`
-		// next to each other. CreateProcess cannot run a shell script, so the
-		// resolver must prefer the PATHEXT match — otherwise a bare
-		// `Command::new("pi")` hits the script and the probe fails (the
-		// original report behind this test).
-		let _guard = ENV_GUARD.lock().unwrap();
-		let old_path = std::env::var_os("PATH");
-		let dir = std::env::temp_dir().join(format!("pi-gui-path-test-{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&dir);
-		std::fs::create_dir_all(&dir).unwrap();
-		std::fs::write(dir.join("pi"), "#!/bin/sh\necho hi\n").unwrap();
-		std::fs::write(dir.join("pi.cmd"), "@echo off\r\necho hi\r\n").unwrap();
-		std::env::set_var("PATH", &dir);
-
-		let resolved = resolve_in_path("pi").expect("pi should resolve via PATHEXT");
-		assert!(resolved.starts_with(&dir));
-		assert_eq!(
-			resolved
-				.file_name()
-				.and_then(|n| n.to_str())
-				.map(|n| n.to_ascii_lowercase()),
-			Some("pi.cmd".to_string())
-		);
-
-		let _ = std::fs::remove_dir_all(&dir);
-		match old_path {
-			Some(v) => std::env::set_var("PATH", v),
-			None => std::env::remove_var("PATH"),
-		}
 	}
 
 	#[test]
@@ -4246,6 +3848,176 @@ mod tests {
 			.collect();
 		assert_eq!(lines, vec!["small-a".to_string(), "small-b".to_string()]);
 		let _ = std::fs::remove_file(&path);
+	}
+
+	/// Look up one key in the env vector the session host is spawned with.
+	fn env_get<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
+		env.iter()
+			.find(|(k, _)| k == key)
+			.map(|(_, v)| v.as_str())
+	}
+
+	#[allow(clippy::too_many_arguments)]
+	fn host_env(
+		session_file: Option<&str>,
+		fork_of: Option<&str>,
+		session_name: Option<&str>,
+		system_prompt: Option<&str>,
+		append_system_prompt: Option<&str>,
+		tools: Option<&[String]>,
+		excluded_tools: Option<&[String]>,
+		models: Option<&str>,
+	) -> Result<Vec<(String, String)>, String> {
+		session_host_env(
+			Path::new("/runtime/pkg/dist/index.js"),
+			Path::new("/sessions"),
+			session_file,
+			fork_of,
+			session_name,
+			system_prompt,
+			append_system_prompt,
+			tools,
+			excluded_tools,
+			models,
+			None,
+		)
+	}
+
+	#[test]
+	fn session_host_env_always_sets_pkg_and_session_dir() {
+		let env = host_env(None, None, None, None, None, None, None, None).unwrap();
+		assert_eq!(
+			env_get(&env, "TAU_PI_PKG"),
+			Some("/runtime/pkg/dist/index.js")
+		);
+		assert_eq!(env_get(&env, "TAU_SESSION_DIR"), Some("/sessions"));
+		// Nothing optional leaks in when unset.
+		for key in [
+			"TAU_SESSION_FILE",
+			"TAU_FORK_OF",
+			"TAU_SESSION_NAME",
+			"TAU_SYSTEM_PROMPT",
+			"TAU_APPEND_SYSTEM_PROMPT",
+			"TAU_EXCLUDED_TOOLS",
+			"TAU_MODELS",
+			"TAU_EXTENSION",
+		] {
+			assert!(env_get(&env, key).is_none(), "{key} must be unset");
+		}
+	}
+
+	#[test]
+	fn session_host_env_tools_three_states() {
+		// None = pi defaults ("null"); Some([]) = no tools; Some([...]) = allowlist.
+		let env = host_env(None, None, None, None, None, None, None, None).unwrap();
+		assert_eq!(env_get(&env, "TAU_TOOLS"), Some("null"));
+
+		let empty: &[String] = &[];
+		let env = host_env(None, None, None, None, None, Some(empty), None, None).unwrap();
+		assert_eq!(env_get(&env, "TAU_TOOLS"), Some("[]"));
+
+		let list = vec!["read".to_string(), "bash".to_string()];
+		let env = host_env(None, None, None, None, None, Some(&list), None, None).unwrap();
+		assert_eq!(env_get(&env, "TAU_TOOLS"), Some(r#"["read","bash"]"#));
+	}
+
+	#[test]
+	fn session_host_env_fork_wins_over_session_file() {
+		let env = host_env(
+			Some("/sessions/a.jsonl"),
+			Some("/sessions/b.jsonl"),
+			None,
+			None,
+			None,
+			None,
+			None,
+			None,
+		)
+		.unwrap();
+		assert_eq!(env_get(&env, "TAU_FORK_OF"), Some("/sessions/b.jsonl"));
+		assert!(env_get(&env, "TAU_SESSION_FILE").is_none());
+
+		let env = host_env(
+			Some("/sessions/a.jsonl"),
+			None,
+			None,
+			None,
+			None,
+			None,
+			None,
+			None,
+		)
+		.unwrap();
+		assert_eq!(
+			env_get(&env, "TAU_SESSION_FILE"),
+			Some("/sessions/a.jsonl")
+		);
+		assert!(env_get(&env, "TAU_FORK_OF").is_none());
+	}
+
+	#[test]
+	fn session_host_env_prompts_trimmed_and_capped() {
+		let ok = "x".repeat(30000);
+		let env = host_env(None, None, None, Some(&ok), None, None, None, None).unwrap();
+		assert_eq!(env_get(&env, "TAU_SYSTEM_PROMPT"), Some(ok.as_str()));
+
+		let too_long = "x".repeat(30001);
+		assert!(host_env(None, None, None, Some(&too_long), None, None, None, None).is_err());
+		assert!(host_env(None, None, None, None, Some(&too_long), None, None, None).is_err());
+
+		// Blank / whitespace-only prompts are dropped entirely.
+		let env = host_env(None, None, None, Some("   "), Some(""), None, None, None).unwrap();
+		assert!(env_get(&env, "TAU_SYSTEM_PROMPT").is_none());
+		assert!(env_get(&env, "TAU_APPEND_SYSTEM_PROMPT").is_none());
+	}
+
+	#[test]
+	fn session_host_env_optional_scalars() {
+		let excluded = vec!["write".to_string()];
+		let env = host_env(
+			None,
+			None,
+			Some("demo"),
+			None,
+			None,
+			None,
+			Some(&excluded),
+			Some(" deepseek/* , gpt-* "),
+		)
+		.unwrap();
+		assert_eq!(env_get(&env, "TAU_SESSION_NAME"), Some("demo"));
+		assert_eq!(env_get(&env, "TAU_EXCLUDED_TOOLS"), Some(r#"["write"]"#));
+		assert_eq!(env_get(&env, "TAU_MODELS"), Some("deepseek/* , gpt-*"));
+
+		// Empty exclude list and blank name/models stay unset.
+		let empty: &[String] = &[];
+		let env = host_env(None, None, Some("  "), None, None, None, Some(empty), Some("  "))
+			.unwrap();
+		assert!(env_get(&env, "TAU_SESSION_NAME").is_none());
+		assert!(env_get(&env, "TAU_EXCLUDED_TOOLS").is_none());
+		assert!(env_get(&env, "TAU_MODELS").is_none());
+	}
+
+	#[test]
+	fn session_host_env_sets_extension_when_present() {
+		let env = session_host_env(
+			Path::new("/runtime/pkg/dist/index.js"),
+			Path::new("/sessions"),
+			None,
+			None,
+			None,
+			None,
+			None,
+			None,
+			None,
+			None,
+			Some(Path::new("/res/agent-sidecar/tau-extension.mjs")),
+		)
+		.unwrap();
+		assert_eq!(
+			env_get(&env, "TAU_EXTENSION"),
+			Some("/res/agent-sidecar/tau-extension.mjs")
+		);
 	}
 }
 

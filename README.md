@@ -76,7 +76,7 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 
 - [Node.js](https://nodejs.org) ≥ 20
 - [Rust](https://www.rust-lang.org)（stable，建议 1.85+）
-- 开发模式需要 [Pi Coding Agent](https://github.com/earendil-works/pi)（`pi` 命令可用）；**打包版内置 pi 运行时，用户无需单独安装**（构建时由 `npm run vendor:pi` 拉取并打入安装包，Rust 探测链优先使用内置运行时，`PI_BIN` > 内置 > PATH 依次回退）
+- 开发与打包均使用**内置 pi 运行时**（`npm run vendor:pi` 拉取到 `src-tauri/resources/pi-runtime/`，含按宿主平台的 Node 与 pi 包）；会话层由 pi SDK 驱动（`session-host.mjs`），**不依赖系统安装的 pi CLI**，用户无需自行安装任何东西
 
 ### 运行
 
@@ -84,8 +84,8 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 # 安装前端依赖
 npm install
 
-# （打包构建时自动执行，也可手动运行）拉取内置 pi 运行时
-# 到 src-tauri/resources/pi-runtime/（node.exe + pi 包，约 100 MB，不入库）
+# （开发与打包都需要；打包构建时也会自动执行）拉取内置 pi 运行时
+# 到 src-tauri/resources/pi-runtime/（按宿主平台的 Node 运行时 + pi 包，约 100 MB，不入库）
 npm run vendor:pi
 
 # 开发模式（启动 Tauri 开发窗口）
@@ -127,26 +127,26 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）：push/PR 时自动运行 `t
 │  Rust 后端 (src-tauri)                    │
 │  ┌──────────────────────────────────┐    │
 │  │  Pi Session 管理 (pi.rs)          │    │
-│  │  · spawn pi --mode rpc            │    │
+│  │  · spawn session-host（每会话）  │    │
 │  │  · JSONL 读取/解析/搜索            │    │
 │  │  · 归档/删除/恢复/清除            │    │
 │  └──────────────────────────────────┘    │
 │  ┌──────────────────────────────────┐    │
 │  │  SDK Sidecar (sidecar.rs)        │    │
 │  │  · 内置 node 直跑 pi SDK         │    │
-│  │  · 桌面工具扩展（--extension）   │    │
+│  │  · 会话解析/HTML 导出/包管理     │    │
 │  └──────────────────────────────────┘    │
 └───────────┬──────────────────────────────┘
             │ stdin/stdout JSON-RPC
 ┌───────────▼──────────────────────────────┐
-│  Pi Coding Agent (pi --mode rpc)         │
-│  · 内置运行时（打包版自带，无需安装 pi）  │
-│  · 或系统安装的 pi（PI_BIN > 内置 > PATH）│
+│  session-host.mjs（SDK 会话宿主）         │
+│  · AgentSessionRuntime / AgentSession     │
+│  · 内置 node 运行，纯 SDK，无 CLI 依赖    │
 │  会话 JSONL: ~/.pi/agent/sessions/*.jsonl │
 └──────────────────────────────────────────┘
 ```
 
-前端通过 Tauri 的 `invoke()` 调用 Rust 命令，Rust 负责 spawn Pi RPC 进程并通过 stdin/stdout 转发 JSON-RPC 消息，同时直接读取会话 JSONL 文件实现历史回放、搜索和归档。pi 二进制的解析优先级为：`PI_BIN` 环境变量（开发覆盖）→ 内置运行时（`npm run vendor:pi` 打入安装包的 node.exe + pi 包）→ 系统 PATH → 常见安装位置回退，全部调用经由 `probe_pi()` 单一收口。
+前端通过 Tauri 的 `invoke()` 调用 Rust 命令，Rust 负责 spawn 会话宿主进程并通过 stdin/stdout 转发 JSON-RPC 消息，同时直接读取会话 JSONL 文件实现历史回放、搜索和归档。会话宿主是 `resources/agent-sidecar/session-host.mjs`：由内置 Node 运行，基于 pi SDK（`AgentSessionRuntime` / `AgentSession`）实现与 `pi --mode rpc` 完全一致的 JSON-RPC 协议，**完全不依赖 pi CLI**。运行时只使用 vendored `pi-runtime/`（可用 `TAU_PI_RUNTIME` 覆盖），系统 PATH 上的 pi 不再被探测；过渡期内可设 `TAU_PI_RPC=cli` 回退到旧 CLI 路径。
 
 ### Pi RPC 命令
 
@@ -163,9 +163,10 @@ Tau 通过以下 JSON-RPC 命令与 Pi 通信：
 
 内置运行时不仅支撑 RPC 会话，还打开了 pi SDK 的编程通道：
 
-- **SDK Sidecar**（`sidecar.rs` + `resources/agent-sidecar/sidecar.mjs`）— 由内置 node 直接 `import` vendored pi 包，Rust 通过 stdio JSONL 协议调用 SDK 能力（`parseSessionEntries` 结构化解析、`getAgentDir` 等），前端设置页「关于」可查看 Sidecar 状态。
-- **桌面工具扩展**（`tau-extension.mjs`）— 通过 `--extension` 注入 RPC 会话，用 SDK 的 `registerTool` 注册 Tau 专属工具（首个为 `tau_open_in_editor`：在 VS Code/记事本中打开文件），让 agent 获得终端 CLI 不具备的桌面能力。
-- RPC 主路径保持不变；SDK 调用统一收口在 sidecar 模块，pi 版本升级时只需适配一处。
+- **SDK 会话宿主**（`session-host.mjs`）— 会话主链路：每个聊天 channel 一个宿主进程，`import` vendored pi 包的 SDK 实现 RPC 协议服务端（移植自 pi 的 `rpc-mode.js`）。**pi 升级时需对照新版 `rpc-mode.js` diff 同步本文件**。
+- **SDK Sidecar**（`sidecar.rs` + `resources/agent-sidecar/sidecar.mjs`）— 由内置 node 直接 `import` vendored pi 包，Rust 通过 stdio JSONL 协议调用 SDK 能力（`parseSessionEntries` 结构化解析、HTML 导出、扩展包管理等），前端设置页「关于」可查看 Sidecar 状态。
+- **桌面工具扩展**（`tau-extension.mjs`）— 由会话宿主经 `additionalExtensionPaths` 加载，用 SDK 的 `registerTool` 注册 Tau 专属工具（首个为 `tau_open_in_editor`：在 VS Code/记事本中打开文件），让 agent 获得终端 CLI 不具备的桌面能力。
+- SDK 调用统一收口在 agent-sidecar 模块，pi 版本升级时只需适配一处；升级检查单：`vendor-pi.mjs`  bump 版本 → 对照新包 `rpc-mode.js` diff `session-host.mjs` → 跑 `scripts/spike/` 下三个验证脚本。
 
 ---
 
@@ -177,7 +178,7 @@ Tau 通过以下 JSON-RPC 命令与 Pi 通信：
 | 前端 | React 19 + TypeScript + Vite |
 | Markdown | react-markdown + rehype-highlight |
 | 后端 | Rust（pi.rs 管理进程、JSONL、搜索、归档） |
-| Agent | Pi Coding Agent（`pi --mode rpc`；打包版内置运行时，开发时用系统 pi） |
+| Agent | Pi Coding Agent SDK（`session-host.mjs` 驱动 `AgentSession`；内置运行时，无需安装 pi） |
 | 状态 | localStorage + 会话 JSONL 直接读取 |
 
 ## 🎨 界面设计

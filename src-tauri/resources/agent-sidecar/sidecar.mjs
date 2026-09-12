@@ -25,6 +25,25 @@ if (!pkgIndex) {
 
 const pi = await import(pathToFileURL(pkgIndex));
 
+// The HTML exporter is not re-exported from the package index — deep-import
+// it relative to the SDK entry (…/dist/index.js → …/dist/core/export-html/).
+let exportHtmlMod = null;
+async function exportHtmlModule() {
+	if (!exportHtmlMod) {
+		exportHtmlMod = await import(new URL("core/export-html/index.js", pathToFileURL(pkgIndex)));
+	}
+	return exportHtmlMod;
+}
+
+function packageManager(cwd) {
+	const agentDir = pi.getAgentDir();
+	return new pi.DefaultPackageManager({
+		cwd,
+		agentDir,
+		settingsManager: pi.SettingsManager.create(cwd, agentDir),
+	});
+}
+
 function countByType(entries) {
 	const counts = {};
 	for (const entry of entries) {
@@ -54,6 +73,38 @@ async function handle(method, params) {
 				entryCount: entries.length,
 				counts: countByType(entries),
 			};
+		}
+		case "session.export_html": {
+			const path = String(params?.path ?? "");
+			const outPath = String(params?.outPath ?? "");
+			if (!path) throw new Error("params.path is required");
+			const mod = await exportHtmlModule();
+			let produced;
+			if (typeof mod.exportFromFile === "function") {
+				produced = await mod.exportFromFile(path, outPath || undefined);
+			} else {
+				// SDK builds without exportFromFile: same work by hand, like
+				// the TUI's /export (SessionManager + exportSessionToHtml).
+				const sm = pi.SessionManager.open(path);
+				produced = await mod.exportSessionToHtml(sm, undefined, outPath || undefined);
+			}
+			return { outPath: produced };
+		}
+		case "package.list": {
+			const cwd = String(params?.cwd ?? "") || process.cwd();
+			return packageManager(cwd).listConfiguredPackages();
+		}
+		case "package.install":
+		case "package.remove": {
+			const cwd = String(params?.cwd ?? "") || process.cwd();
+			const source = String(params?.source ?? "");
+			if (!source) throw new Error("params.source is required");
+			const options = { local: params?.local === true };
+			if (method === "package.install") {
+				await packageManager(cwd).installAndPersist(source, options);
+				return { installed: source };
+			}
+			return { removed: await packageManager(cwd).removeAndPersist(source, options) };
 		}
 		default:
 			throw new Error(`unknown method: ${method}`);

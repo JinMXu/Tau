@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -25,6 +25,10 @@ use crate::pi::{no_console_window, vendored_layout, vendored_runtime_dirs};
 /// case: the very first spawn of the vendored node.exe while antivirus scans
 /// it and the full SDK bundle (observed >15s cold on Windows Defender).
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Package install/remove can download npm or git dependencies — far past the
+/// 30s round-trip budget that covers local-only calls.
+const PACKAGE_CALL_TIMEOUT: Duration = Duration::from_secs(600);
 
 struct Conn {
 	child: Child,
@@ -49,8 +53,14 @@ fn sidecar_dirs() -> Vec<PathBuf> {
 	let mut dirs: Vec<PathBuf> = Vec::new();
 	if let Ok(exe) = std::env::current_exe() {
 		if let Some(parent) = exe.parent() {
+			// Windows/Linux installs place resources next to the executable;
+			// the second form covers builds that keep the `resources/` prefix.
 			dirs.push(parent.join("agent-sidecar"));
 			dirs.push(parent.join("resources").join("agent-sidecar"));
+			// macOS .app: exe is Contents/MacOS/tau, resources are Contents/Resources.
+			if let Some(contents) = parent.parent() {
+				dirs.push(contents.join("Resources").join("agent-sidecar"));
+			}
 		}
 	}
 	dirs.push(
@@ -61,7 +71,7 @@ fn sidecar_dirs() -> Vec<PathBuf> {
 	dirs
 }
 
-fn locate_sidecar_script(name: &str) -> Option<PathBuf> {
+pub(crate) fn locate_sidecar_script(name: &str) -> Option<PathBuf> {
 	sidecar_dirs().into_iter().find_map(|dir| {
 		let candidate = dir.join(name);
 		candidate.is_file().then_some(candidate)
@@ -161,6 +171,10 @@ fn spawn_conn() -> Result<Conn, String> {
 /// One JSONL round-trip. Respawns the sidecar transparently on first use or
 /// after a crash.
 fn call(method: &str, params: Value) -> Result<Value, String> {
+	call_with_timeout(method, params, CALL_TIMEOUT)
+}
+
+fn call_with_timeout(method: &str, params: Value, timeout: Duration) -> Result<Value, String> {
 	let mut guard = lock(&CONN);
 	let needs_spawn = match guard.as_mut() {
 		Some(conn) => {
@@ -197,7 +211,7 @@ fn call(method: &str, params: Value) -> Result<Value, String> {
 	// Drop the connection lock while waiting so concurrent callers can queue
 	// their own requests instead of serializing behind this one.
 	drop(guard);
-	match rx.recv_timeout(CALL_TIMEOUT) {
+	match rx.recv_timeout(timeout) {
 		Ok(reply) => reply,
 		Err(_) => {
 			// Timeout: clean up only our own pending entry — the reader may
@@ -208,6 +222,60 @@ fn call(method: &str, params: Value) -> Result<Value, String> {
 			Err("sidecar call timed out".to_string())
 		}
 	}
+}
+
+/// Export a session JSONL to a styled HTML file via the SDK's
+/// `exportFromFile` — the same code path as `pi --export`, without spawning
+/// a one-shot CLI. Returns the sidecar's `{ outPath }` result.
+pub(crate) fn export_html(path: &Path, out_path: &Path) -> Result<Value, String> {
+	call(
+		"session.export_html",
+		serde_json::json!({
+			"path": path.to_string_lossy(),
+			"outPath": out_path.to_string_lossy(),
+		}),
+	)
+}
+
+/// Configured packages (`DefaultPackageManager.listConfiguredPackages`) as a
+/// JSON array of `{ source, scope, filtered, installedPath? }`.
+pub(crate) fn package_list(cwd: &Path) -> Result<Value, String> {
+	call(
+		"package.list",
+		serde_json::json!({ "cwd": cwd.to_string_lossy() }),
+	)
+}
+
+/// `installAndPersist(source, { local })` — `local: false` writes user
+/// (global) settings, matching `pi install` without `--local`.
+pub(crate) fn package_install(cwd: &Path, source: &str, local: bool) -> Result<Value, String> {
+	call_with_timeout(
+		"package.install",
+		serde_json::json!({
+			"cwd": cwd.to_string_lossy(),
+			"source": source,
+			"local": local,
+		}),
+		PACKAGE_CALL_TIMEOUT,
+	)
+}
+
+/// `removeAndPersist(source, { local })` — returns whether a matching
+/// package was actually removed (the CLI exits non-zero when it wasn't).
+pub(crate) fn package_remove(cwd: &Path, source: &str, local: bool) -> Result<bool, String> {
+	let result = call_with_timeout(
+		"package.remove",
+		serde_json::json!({
+			"cwd": cwd.to_string_lossy(),
+			"source": source,
+			"local": local,
+		}),
+		PACKAGE_CALL_TIMEOUT,
+	)?;
+	Ok(result
+		.get("removed")
+		.and_then(|v| v.as_bool())
+		.unwrap_or(false))
 }
 
 /// Background warmup: spawn the sidecar and keep pinging until it answers.

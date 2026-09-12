@@ -2,7 +2,7 @@ use std::{
 	fs,
 	io::{BufRead, BufReader, BufWriter, Read, Write},
 	path::{Path, PathBuf},
-	process::{Command, Stdio},
+	process::Command,
 };
 
 use serde::{Deserialize, Serialize};
@@ -81,13 +81,15 @@ pub fn pi_providers() -> Result<Vec<PiProviderInfo>, String> {
 }
 
 /// Locate pi-ai's provider catalog (`dist/providers/data/.manifest.json`)
-/// next to the resolved pi package. Falls back to the hoisted layout used by
-/// global npm installs. Returns None for standalone (compiled) pi binaries,
-/// which embed the catalog and don't ship it on disk.
+/// inside the vendored pi package: nested under pi-coding-agent's own
+/// node_modules first (the layout `npm run vendor:pi` produces), then the
+/// hoisted layout at the runtime root. Returns None when no vendored runtime
+/// is installed.
 fn pi_ai_providers_data_dir() -> Option<PathBuf> {
-	let info = crate::pi::probe_pi()?;
-	let script = info.direct.as_ref().map(|(_, script)| script)?;
-	let pkg = Path::new(script).parent()?.parent()?;
+	let dirs = crate::pi::vendored_runtime_dirs();
+	let (_, cli) = dirs.iter().find_map(|dir| crate::pi::vendored_layout(dir))?;
+	// cli = <pkg>/dist/bundle/cli.js — the package root is three levels up.
+	let pkg = cli.parent()?.parent()?.parent()?;
 	let data = |base: &Path| {
 		base.join("node_modules")
 			.join("@earendil-works")
@@ -97,8 +99,8 @@ fn pi_ai_providers_data_dir() -> Option<PathBuf> {
 			.join("data")
 	};
 	let mut candidates = vec![data(pkg)];
-	// Hoisted: <prefix>/node_modules/@earendil-works/pi-ai/...
-	if let Some(prefix) = pkg.parent().and_then(Path::parent) {
+	// Hoisted: <runtime>/node_modules/@earendil-works/pi-ai/...
+	if let Some(prefix) = pkg.parent().and_then(Path::parent).and_then(Path::parent) {
 		candidates.push(data(prefix));
 	}
 	candidates
@@ -864,7 +866,7 @@ pub async fn git_create_branch(project: String, branch: String) -> Result<GitBra
 }
 
 // ---------------------------------------------------------------------------
-// Pi packages (extensions / skills / prompts / themes) via the pi CLI
+// Pi packages (extensions / skills / prompts / themes) via the SDK sidecar
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize)]
@@ -883,50 +885,6 @@ pub struct PiSkillEntry {
 	name: String,
 	description: Option<String>,
 	location: String,
-}
-
-fn run_pi_cli(args: &[&str]) -> Result<String, String> {
-	let info = pi::probe_pi().ok_or("pi binary not found. Install pi or set PI_BIN.")?;
-	let mut cmd = pi::pi_command(&info);
-	cmd.args(args)
-		.stdin(Stdio::null())
-		.stdout(Stdio::piped())
-		.stderr(Stdio::piped());
-	#[cfg(windows)]
-	{
-		use std::os::windows::process::CommandExt;
-		const CREATE_NO_WINDOW: u32 = 0x08000000;
-		cmd.creation_flags(CREATE_NO_WINDOW);
-	}
-	let out = cmd.output().map_err(|e| format!("failed to run pi: {e}"))?;
-	let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-	if !out.status.success() {
-		let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-		return Err(if stderr.is_empty() {
-			stdout.trim().to_string()
-		} else {
-			stderr
-		});
-	}
-	Ok(stdout)
-}
-
-fn strip_ansi(s: &str) -> String {
-	let mut out = String::with_capacity(s.len());
-	let mut chars = s.chars().peekable();
-	while let Some(c) = chars.next() {
-		if c == '\u{1b}' {
-			// consume until the end of the escape sequence (letter)
-			for c2 in chars.by_ref() {
-				if c2.is_ascii_alphabetic() || c2 == '~' {
-					break;
-				}
-			}
-		} else {
-			out.push(c);
-		}
-	}
-	out
 }
 
 fn package_name_from_source(source: &str) -> Option<String> {
@@ -954,51 +912,44 @@ fn package_name_from_source(source: &str) -> Option<String> {
 	}
 }
 
-fn parse_pi_list_output(output: &str) -> Vec<PiPackageEntry> {
-	let mut entries: Vec<PiPackageEntry> = Vec::new();
-	let mut scope = "user";
-	for raw_line in output.lines() {
-		let line = strip_ansi(raw_line);
-		let trimmed = line.trim();
-		if trimmed.is_empty() {
-			continue;
-		}
-		if trimmed == "No packages installed." {
-			break;
-		}
-		if trimmed.ends_with(':') {
-			if trimmed.starts_with("Project") {
-				scope = "project";
-			} else if trimmed.starts_with("User") {
-				scope = "user";
-			}
-			continue;
-		}
-		// package sources are indented by two spaces; install paths by four.
-		let indent = line.chars().take_while(|c| *c == ' ').count();
-		if indent >= 4 {
-			if let Some(last) = entries.last_mut() {
-				last.installed_path = Some(trimmed.to_string());
-			}
-			continue;
-		}
-		let source = trimmed.to_string();
-		if source.is_empty() || source.starts_with('(') {
-			continue;
-		}
-		let package_name = package_name_from_source(&source);
-		entries.push(PiPackageEntry {
-			source,
-			package_name,
-			scope: scope.to_string(),
-			installed_path: None,
-		});
+/// Map one `ConfiguredPackage` from the sidecar's `package.list` onto the
+/// entry shape the frontend already consumes. The CLI printed filtered
+/// packages as `<source> (filtered)` and the old text parser kept that suffix
+/// in `source` — preserve it so the UI renders exactly what it used to.
+fn configured_package_entry(v: &serde_json::Value) -> PiPackageEntry {
+	let raw_source = v.get("source").and_then(|s| s.as_str()).unwrap_or_default();
+	let filtered = v
+		.get("filtered")
+		.and_then(|f| f.as_bool())
+		.unwrap_or(false);
+	let source = if filtered {
+		format!("{raw_source} (filtered)")
+	} else {
+		raw_source.to_string()
+	};
+	PiPackageEntry {
+		package_name: package_name_from_source(&source),
+		source,
+		scope: v
+			.get("scope")
+			.and_then(|s| s.as_str())
+			.unwrap_or("user")
+			.to_string(),
+		installed_path: v
+			.get("installedPath")
+			.and_then(|s| s.as_str())
+			.map(str::to_string),
 	}
-	entries
+}
+
+/// The pi CLI resolved package scope against its working directory, which a
+/// GUI-spawned child simply inherited; keep that by passing our own cwd.
+fn package_cwd() -> Result<PathBuf, String> {
+	std::env::current_dir().map_err(|e| format!("failed to resolve cwd: {e}"))
 }
 
 /// Runs a blocking closure on the dedicated blocking thread pool so the UI
-/// thread is never frozen while the pi CLI subprocess is running.
+/// thread is never frozen while the sidecar round-trip is in flight.
 async fn run_blocking<T, F>(f: F) -> Result<T, String>
 where
 	T: Send + 'static,
@@ -1011,8 +962,15 @@ where
 
 #[tauri::command]
 pub async fn pi_packages() -> Result<Vec<PiPackageEntry>, String> {
-	let output = run_blocking(|| run_pi_cli(&["list"])).await?;
-	Ok(parse_pi_list_output(&output))
+	let result = run_blocking(|| {
+		let cwd = package_cwd()?;
+		crate::sidecar::package_list(&cwd)
+	})
+	.await?;
+	let list = result
+		.as_array()
+		.ok_or_else(|| "unexpected sidecar package.list result".to_string())?;
+	Ok(list.iter().map(configured_package_entry).collect())
 }
 
 #[tauri::command]
@@ -1022,7 +980,8 @@ pub async fn pi_package_install(source: String) -> Result<(), String> {
 		return Err("package source must not be empty".into());
 	}
 	run_blocking(move || {
-		run_pi_cli(&["install", &source])?;
+		let cwd = package_cwd()?;
+		crate::sidecar::package_install(&cwd, &source, false)?;
 		Ok(())
 	})
 	.await
@@ -1035,7 +994,12 @@ pub async fn pi_package_remove(source: String) -> Result<(), String> {
 		return Err("package source must not be empty".into());
 	}
 	run_blocking(move || {
-		run_pi_cli(&["remove", &source])?;
+		let cwd = package_cwd()?;
+		// The CLI errored ("No matching package found") when removeAndPersist
+		// returned false; keep that contract for the frontend.
+		if !crate::sidecar::package_remove(&cwd, &source, false)? {
+			return Err(format!("No matching package found for {source}"));
+		}
 		Ok(())
 	})
 	.await
@@ -1273,8 +1237,8 @@ mod tests {
 		assert_eq!(by_id.get("ollama"), Some(&false));
 		// Stored credential is present even without a catalog entry.
 		assert_eq!(by_id.get("anthropic"), Some(&true));
-		// The built-in catalog is found when pi is installed on the host and
-		// its providers are marked known.
+		// The built-in catalog is found when the vendored runtime is installed
+		// and its providers are marked known.
 		let known = providers.iter().filter(|p| p.known).count();
 		assert!(known == 0 || known >= 30, "unexpected known count: {known}");
 
@@ -1411,27 +1375,34 @@ mod tests {
 	}
 
 	#[test]
-	fn parses_pi_list_output() {
-		let output = "User packages:\n  npm:@foo/bar (filtered)\n    C:\\Users\\x\\appdata\\npm\\foo\\bar\\1.0.0\\node_modules\\@foo\\bar\n  npm:plain\n    /home/user/.pi/agent/npm/plain\n\nProject packages:\n  npm:proj-pkg\n";
-		let entries = parse_pi_list_output(output);
+	fn maps_configured_packages_to_entries() {
+		let entries: Vec<PiPackageEntry> = [
+			serde_json::json!({
+				"source": "npm:@foo/bar",
+				"scope": "user",
+				"filtered": true,
+				"installedPath": "/home/user/.pi/agent/npm/@foo/bar",
+			}),
+			serde_json::json!({
+				"source": "npm:plain",
+				"scope": "user",
+				"filtered": false,
+			}),
+			serde_json::json!({
+				"source": "npm:proj-pkg",
+				"scope": "project",
+				"filtered": false,
+			}),
+		]
+		.iter()
+		.map(configured_package_entry)
+		.collect();
 		assert_eq!(entries.len(), 3);
 		assert_eq!(entries[0].source, "npm:@foo/bar (filtered)");
 		assert_eq!(entries[0].package_name.as_deref(), Some("@foo/bar"));
 		assert!(entries[0].installed_path.is_some());
 		assert_eq!(entries[1].package_name.as_deref(), Some("plain"));
 		assert_eq!(entries[2].scope, "project");
-	}
-
-	#[test]
-	fn handles_empty_list() {
-		let entries = parse_pi_list_output("No packages installed.\n");
-		assert!(entries.is_empty());
-	}
-
-	#[test]
-	fn strips_ansi_codes() {
-		let s = "\u{1b}[2mUser packages:\u{1b}[22m";
-		assert_eq!(strip_ansi(s), "User packages:");
 	}
 
 	#[test]
