@@ -3199,6 +3199,16 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 	outline: none;
 }
 
+/* Checkboxes/radios keep their native size and look: width:100% above would
+ * stretch them, and WebKit then misplaces the adjoining label text. */
+.extension-dialog input[type="checkbox"],
+.extension-dialog input[type="radio"] {
+	width: auto;
+	padding: 0;
+	border: none;
+	background: none;
+}
+
 .extension-dialog input:focus {
 	border-color: var(--app-muted);
 }
