@@ -52,6 +52,129 @@ function countByType(entries) {
 	return counts;
 }
 
+// --- OAuth login flows -----------------------------------------------------
+//
+// modelRuntime.login() is long-running (device polling / loopback server), so
+// it never fits one JSONL round-trip. oauth.begin starts it in the background
+// and returns a flowId; the host drives the flow with oauth.status polling
+// plus oauth.prompt_response / oauth.cancel.
+
+let modelRuntimePromise = null;
+function modelRuntime() {
+	if (!modelRuntimePromise) modelRuntimePromise = pi.ModelRuntime.create();
+	return modelRuntimePromise;
+}
+
+const oauthFlows = new Map();
+let nextFlowId = 1;
+
+function oauthFlow(params) {
+	const flow = oauthFlows.get(String(params?.flowId ?? ""));
+	if (!flow) throw new Error(`unknown oauth flow: ${params?.flowId}`);
+	return flow;
+}
+
+async function handleOAuth(method, params) {
+	switch (method) {
+		case "oauth.begin": {
+			const providerId = String(params?.providerId ?? "");
+			if (!providerId) throw new Error("params.providerId is required");
+			const flowId = String(nextFlowId++);
+			const flow = {
+				controller: new AbortController(),
+				phase: "running",
+				event: null,
+				prompt: null,
+				promptResolve: null,
+				promptReject: null,
+				error: null,
+			};
+			oauthFlows.set(flowId, flow);
+			modelRuntime()
+				.then((runtime) =>
+					runtime.login(providerId, "oauth", {
+						signal: flow.controller.signal,
+						notify: (event) => {
+							flow.event = event ?? null;
+						},
+						prompt: (p) =>
+							new Promise((resolve, reject) => {
+								flow.phase = "awaiting_prompt";
+								flow.prompt = {
+									message: p.message,
+									kind: p.type,
+									options: p.options ?? null,
+									placeholder: p.placeholder ?? null,
+								};
+								flow.promptResolve = resolve;
+								flow.promptReject = reject;
+								p.signal?.addEventListener(
+									"abort",
+									() => {
+										flow.prompt = null;
+										flow.promptResolve = null;
+										flow.promptReject = null;
+										if (flow.phase === "awaiting_prompt") flow.phase = "running";
+										reject(new Error("prompt cancelled"));
+									},
+									{ once: true },
+								);
+							}),
+					}),
+				)
+				.then(() => {
+					if (flow.phase !== "cancelled") flow.phase = "done";
+				})
+				.catch((err) => {
+					if (flow.phase !== "cancelled") {
+						flow.phase = "error";
+						flow.error = err?.message ?? String(err);
+					}
+				});
+			return { flowId };
+		}
+		case "oauth.status": {
+			const flow = oauthFlow(params);
+			const status = {
+				phase: flow.phase,
+				event: flow.event,
+				prompt: flow.prompt,
+				error: flow.error,
+			};
+			// Terminal flows are single-read: hand the final state to the
+			// poller once, then drop the entry so finished flows can't pile up.
+			if (flow.phase === "done" || flow.phase === "error" || flow.phase === "cancelled") {
+				oauthFlows.delete(String(params?.flowId ?? ""));
+			}
+			return status;
+		}
+		case "oauth.prompt_response": {
+			const flow = oauthFlow(params);
+			if (!flow.promptResolve) throw new Error("flow has no pending prompt");
+			const resolve = flow.promptResolve;
+			flow.prompt = null;
+			flow.promptResolve = null;
+			flow.promptReject = null;
+			flow.phase = "running";
+			resolve(String(params?.value ?? ""));
+			return {};
+		}
+		case "oauth.cancel": {
+			const flow = oauthFlow(params);
+			flow.promptReject?.(new Error("Login cancelled"));
+			flow.prompt = null;
+			flow.promptResolve = null;
+			flow.promptReject = null;
+			flow.controller.abort();
+			flow.phase = "cancelled";
+			flow.error = "Login cancelled";
+			return {};
+		}
+		default:
+			throw new Error(`unknown method: ${method}`);
+	}
+}
+
 async function handle(method, params) {
 	switch (method) {
 		case "ping":
@@ -106,6 +229,11 @@ async function handle(method, params) {
 			}
 			return { removed: await packageManager(cwd).removeAndPersist(source, options) };
 		}
+		case "oauth.begin":
+		case "oauth.status":
+		case "oauth.prompt_response":
+		case "oauth.cancel":
+			return handleOAuth(method, params);
 		default:
 			throw new Error(`unknown method: ${method}`);
 	}

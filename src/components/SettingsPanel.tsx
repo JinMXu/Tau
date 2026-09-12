@@ -13,6 +13,9 @@ import {
 	piPackageInstall,
 	piPackageRemove,
 	piPackages,
+	piProviderModelOverrideRemove,
+	piProviderModelRemove,
+	piProviderModels,
 	piProviders,
 	piRemoveCustomProvider,
 	sidecarPing,
@@ -20,6 +23,7 @@ import {
 	type CustomProviderEntry,
 	type McpServerEntry,
 	type PiPackageEntry,
+	type PiProviderModel,
 	type PiSkillEntry,
 } from "../pi";
 import { formatDateTime, projectNameFromPath } from "../format";
@@ -52,6 +56,8 @@ import { ALL_AGENT_TOOLS } from "../settings";
 import { PACKAGES_CATALOG, formatDownloads } from "../packages-catalog";
 import { UsageStats } from "./UsageStats";
 import { CustomProviderDialog } from "./CustomProviderDialog";
+import { ProviderModelDialog } from "./ProviderModelDialog";
+import { OAuthDialog } from "./OAuthDialog";
 import { McpServerDialog } from "./McpServerDialog";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ScopeSelect } from "./ScopeSelect";
@@ -126,6 +132,18 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 /** Shown when pi's catalog can't be located (standalone pi binaries). */
 const FALLBACK_PROVIDER_IDS = Object.keys(PROVIDER_LABELS);
+
+/** OAuth-capable ids, for grouping when `pi_providers` is unavailable and the
+ * fallback list is in effect (mirrors the backend's OAUTH_PROVIDERS). */
+const FALLBACK_OAUTH_IDS = new Set([
+	"anthropic",
+	"github-copilot",
+	"kimi-coding",
+	"openai-codex",
+	"openrouter",
+	"radius",
+	"xai",
+]);
 
 function providerLabel(id: string): string {
 	return (
@@ -237,32 +255,225 @@ function FilterSelect({
 	);
 }
 
+/**
+ * Inline model list of one provider (built-in rows read-only + override
+ * edit/reset, custom rows editable), expanded by the row's "Models" button.
+ * The list state lives here so a providers refresh doesn't collapse the
+ * panel.
+ */
+function ProviderModels({
+	t,
+	provider,
+	providerLabel,
+	onSaved,
+	onError,
+	onChanged,
+}: {
+	t: MessageCatalog;
+	provider: string;
+	providerLabel: string;
+	onSaved: (msg: string) => void;
+	onError: (msg: string) => void;
+	/** models.json changed: host reconnects the session so pi re-reads it. */
+	onChanged: () => void;
+}) {
+	const [models, setModels] = useState<PiProviderModel[] | null>(null);
+	const [loadError, setLoadError] = useState<string | null>(null);
+	const [dialog, setDialog] = useState<{
+		mode: "add-custom" | "edit-custom" | "edit-override";
+		initial?: PiProviderModel;
+	} | null>(null);
+	/** Two-step delete/reset: first click arms, second click executes. */
+	const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+	const [confirmReset, setConfirmReset] = useState<string | null>(null);
+
+	const load = useCallback(() => {
+		piProviderModels(provider)
+			.then((list) => {
+				setLoadError(null);
+				setModels(list);
+			})
+			.catch((e) => setLoadError(String(e)));
+	}, [provider]);
+	useEffect(() => {
+		load();
+	}, [load]);
+
+	// Disarm a stale two-step confirmation automatically.
+	useEffect(() => {
+		if (!confirmDelete && !confirmReset) return;
+		const timer = window.setTimeout(() => {
+			setConfirmDelete(null);
+			setConfirmReset(null);
+		}, 3000);
+		return () => window.clearTimeout(timer);
+	}, [confirmDelete, confirmReset]);
+
+	const removeModel = async (m: PiProviderModel) => {
+		if (confirmDelete !== m.id) {
+			setConfirmDelete(m.id);
+			return;
+		}
+		setConfirmDelete(null);
+		try {
+			await piProviderModelRemove(provider, m.id);
+			load();
+			onChanged();
+			onSaved(t.settings.modelDeleted);
+		} catch (e) {
+			onError(String(e));
+		}
+	};
+
+	const resetOverride = async (m: PiProviderModel) => {
+		if (confirmReset !== m.id) {
+			setConfirmReset(m.id);
+			return;
+		}
+		setConfirmReset(null);
+		try {
+			await piProviderModelOverrideRemove(provider, m.id);
+			load();
+			onChanged();
+			onSaved(t.settings.modelReset);
+		} catch (e) {
+			onError(String(e));
+		}
+	};
+
+	const renderRow = (m: PiProviderModel) => (
+		<div className="pm-row" key={m.id}>
+			<span className="pm-id mono" title={m.id}>
+				{m.id}
+			</span>
+			{m.name !== m.id && (
+				<span className="pm-name" title={m.name}>
+					{m.name}
+				</span>
+			)}
+			{m.contextWindow > 0 && <span className="pm-meta">{m.contextWindow}</span>}
+			{m.reasoning && <span className="pm-pill">{t.settings.cpReasoning}</span>}
+			{m.image && <span className="pm-pill">{t.settings.cpImage}</span>}
+			{m.overridden && <span className="pm-pill modified">{t.settings.modelModified}</span>}
+			<span className="pm-actions">
+				<button
+					className="btn secondary small"
+					onClick={() =>
+						setDialog({ mode: m.custom ? "edit-custom" : "edit-override", initial: m })
+					}
+				>
+					{t.settings.editModel}
+				</button>
+				{m.custom ? (
+					<button
+						className={`btn small ${confirmDelete === m.id ? "danger" : "secondary"}`}
+						onClick={() => void removeModel(m)}
+					>
+						{confirmDelete === m.id ? t.settings.deleteProviderConfirm : t.settings.deleteProvider}
+					</button>
+				) : (
+					m.overridden && (
+						<button
+							className={`btn small ${confirmReset === m.id ? "danger" : "secondary"}`}
+							onClick={() => void resetOverride(m)}
+						>
+							{confirmReset === m.id ? t.settings.resetModelConfirm : t.settings.resetModel}
+						</button>
+					)
+				)}
+			</span>
+		</div>
+	);
+
+	if (loadError) return <div className="provider-models error-banner">{loadError}</div>;
+	if (models === null) {
+		return <div className="provider-models settings-hint">{t.settings.loading}</div>;
+	}
+
+	const builtin = models.filter((m) => !m.custom);
+	const custom = models.filter((m) => m.custom);
+
+	return (
+		<div className="provider-models">
+			{builtin.length > 0 && (
+				<>
+					<p className="settings-hint">{t.settings.builtinModelsHint}</p>
+					{builtin.map(renderRow)}
+				</>
+			)}
+			{custom.length > 0 && (
+				<>
+					<p className="settings-hint">{t.settings.customModelsHint}</p>
+					{custom.map(renderRow)}
+				</>
+			)}
+			<div className="pm-footer">
+				<button className="btn secondary small" onClick={() => setDialog({ mode: "add-custom" })}>
+					<PlusIcon size={12} /> {t.settings.cpAddModel}
+				</button>
+			</div>
+			{dialog && (
+				<ProviderModelDialog
+					t={t}
+					provider={provider}
+					providerLabel={providerLabel}
+					mode={dialog.mode}
+					initial={dialog.initial}
+					onClose={() => setDialog(null)}
+					onSaved={(msg) => {
+						load();
+						onChanged();
+						onSaved(msg);
+					}}
+					onError={onError}
+				/>
+			)}
+		</div>
+	);
+}
+
 function ProviderRow({
 	provider,
 	label,
 	status,
+	oauth,
 	onSaved,
 	onError,
 	onAuthChanged,
+	onOAuthLogin,
+	onModelsChanged,
 	t,
 }: {
 	provider: string;
 	label: string;
 	status: AuthProviderStatus | undefined;
+	/** True when pi-ai ships an OAuth login flow for this provider. */
+	oauth: boolean;
 	onSaved: (msg: string) => void;
 	onError: (msg: string) => void;
 	onAuthChanged: () => void;
+	/** Opens the in-app OAuth login dialog. */
+	onOAuthLogin: () => void;
+	/** models.json changed through the models panel. */
+	onModelsChanged: () => void;
 	t: MessageCatalog;
 }) {
 	const [editing, setEditing] = useState(false);
 	const [key, setKey] = useState("");
 	const [busy, setBusy] = useState(false);
-	const [oauthHelp, setOauthHelp] = useState(false);
+	/** Expanded inline panel; models / oauth-help are mutually exclusive and
+	 * both close when the Key editor opens. */
+	const [panel, setPanel] = useState<"models" | "help" | null>(null);
 	const [copiedCmd, setCopiedCmd] = useState(false);
 	const configured = Boolean(status?.hasKey);
 	const isOAuth = status?.kind === "oauth";
 	const copyTimerRef = useRef<number>(0);
 	useEffect(() => () => window.clearTimeout(copyTimerRef.current), []);
+
+	const togglePanel = (p: "models" | "help") => {
+		setEditing(false);
+		setPanel((cur) => (cur === p ? null : p));
+	};
 
 	const copyLoginCmd = async () => {
 		try {
@@ -348,21 +559,39 @@ function ProviderRow({
 				</div>
 			) : (
 				<div className="provider-actions">
-					<button className="btn secondary small" onClick={() => setEditing(true)}>
+					<button className="btn secondary small" onClick={() => togglePanel("models")}>
+						{t.settings.providerModels}
+					</button>
+					<button
+						className="btn secondary small"
+						onClick={() => {
+							setPanel(null);
+							setEditing(true);
+						}}
+					>
 						{configured ? t.settings.apiKey : t.settings.saveKey}
 					</button>
+					{oauth && !isOAuth && (
+						<button
+							className="btn secondary small"
+							title={t.settings.oauthLoginHint}
+							onClick={onOAuthLogin}
+						>
+							{t.settings.oauthLogin}
+						</button>
+					)}
 					{isOAuth && (
 						<button
 							className="btn secondary small"
 							title={t.settings.oauthLoginHint}
-							onClick={() => setOauthHelp((v) => !v)}
+							onClick={() => togglePanel("help")}
 						>
 							{t.settings.oauthLogin}
 						</button>
 					)}
 				</div>
 			)}
-			{oauthHelp && (
+			{panel === "help" && (
 				<div className="oauth-help">
 					<p>{t.settings.oauthHelpBody.replace("{provider}", provider)}</p>
 					<div className="oauth-help-cmd mono">
@@ -379,6 +608,16 @@ function ProviderRow({
 						</button>
 					</div>
 				</div>
+			)}
+			{panel === "models" && (
+				<ProviderModels
+					t={t}
+					provider={provider}
+					providerLabel={label}
+					onSaved={onSaved}
+					onError={onError}
+					onChanged={onModelsChanged}
+				/>
 			)}
 		</li>
 	);
@@ -547,16 +786,30 @@ export function SettingsPanel({
 	// Falls back to the bundled list when pi isn't installed or its catalog
 	// isn't on disk.
 	const [providerIds, setProviderIds] = useState<string[] | null>(null);
+	/** id → OAuth-capable, from `pi_providers` (fallback set when offline). */
+	const [oauthFlags, setOauthFlags] = useState<Record<string, boolean>>({});
 
 	const refreshProviders = useCallback(() => {
 		piProviders()
 			.then((list) => {
-				const ids = list.some((p) => p.known)
-					? list.map((p) => p.id)
-					: [...new Set([...FALLBACK_PROVIDER_IDS, ...list.map((p) => p.id)])];
-				setProviderIds(ids);
+				const flags: Record<string, boolean> = {};
+				for (const p of list) flags[p.id] = p.oauth;
+				if (list.some((p) => p.known)) {
+					setProviderIds(list.map((p) => p.id));
+				} else {
+					for (const id of FALLBACK_PROVIDER_IDS) {
+						if (!(id in flags)) flags[id] = FALLBACK_OAUTH_IDS.has(id);
+					}
+					setProviderIds([...new Set([...FALLBACK_PROVIDER_IDS, ...list.map((p) => p.id)])]);
+				}
+				setOauthFlags(flags);
 			})
-			.catch(() => setProviderIds(FALLBACK_PROVIDER_IDS));
+			.catch(() => {
+				setProviderIds(FALLBACK_PROVIDER_IDS);
+				setOauthFlags(
+					Object.fromEntries(FALLBACK_PROVIDER_IDS.map((id) => [id, FALLBACK_OAUTH_IDS.has(id)])),
+				);
+			});
 	}, []);
 	useEffect(() => {
 		refreshProviders();
@@ -651,6 +904,45 @@ export function SettingsPanel({
 		}
 	};
 	const customIds = new Set(customProviders.map((c) => c.id));
+
+	// ---- built-in providers: OAuth / API Key grouping + per-row panels ----
+	/** Provider id currently logging in via the OAuth dialog. */
+	const [oauthLoginProvider, setOauthLoginProvider] = useState<string | null>(null);
+
+	// Model edits write models.json too, so the running session needs the
+	// same reconnect the custom-provider flow triggers. The model list
+	// itself reloads locally inside the row panel, so skipping the
+	// provider-list refresh here keeps the expanded panel from re-mounting.
+	const onModelsChanged = useCallback(() => {
+		onCustomProvidersChanged?.();
+	}, [onCustomProvidersChanged]);
+
+	const builtinIds = providers.filter((id) => !customIds.has(id));
+	// Configured providers first, then alphabetical by display name.
+	const byConfigThenName = (a: string, b: string) => {
+		const ac = auth.find((x) => x.provider === a)?.hasKey ? 0 : 1;
+		const bc = auth.find((x) => x.provider === b)?.hasKey ? 0 : 1;
+		if (ac !== bc) return ac - bc;
+		return providerLabel(a).localeCompare(providerLabel(b));
+	};
+	const oauthProviderIds = builtinIds.filter((id) => oauthFlags[id]).sort(byConfigThenName);
+	const apiKeyProviderIds = builtinIds.filter((id) => !oauthFlags[id]).sort(byConfigThenName);
+
+	const renderProviderRow = (id: string) => (
+		<ProviderRow
+			key={id}
+			provider={id}
+			label={providerLabel(id)}
+			status={auth.find((a) => a.provider === id)}
+			oauth={Boolean(oauthFlags[id])}
+			onSaved={notify}
+			onError={notifyError}
+			onAuthChanged={refreshAuth}
+			onOAuthLogin={() => setOauthLoginProvider(id)}
+			onModelsChanged={onModelsChanged}
+			t={t}
+		/>
+	);
 
 	// ---- MCP servers (pi-mcp-adapter config layers) ----
 	const [mcpServers, setMcpServers] = useState<McpServerEntry[]>([]);
@@ -1304,23 +1596,18 @@ export function SettingsPanel({
 								</ul>
 							)}
 
-							<h4 className="settings-sub">{t.settings.builtinProviders}</h4>
-							<ul className="provider-list">
-								{providers
-									.filter((id) => !customIds.has(id))
-									.map((id) => (
-										<ProviderRow
-											key={id}
-											provider={id}
-											label={providerLabel(id)}
-											status={auth.find((a) => a.provider === id)}
-											onSaved={notify}
-											onError={notifyError}
-											onAuthChanged={refreshAuth}
-											t={t}
-										/>
-									))}
-							</ul>
+							{oauthProviderIds.length > 0 && (
+								<>
+									<h4 className="settings-sub">{t.settings.oauthProviders}</h4>
+									<ul className="provider-list">{oauthProviderIds.map(renderProviderRow)}</ul>
+								</>
+							)}
+							{apiKeyProviderIds.length > 0 && (
+								<>
+									<h4 className="settings-sub">{t.settings.apiKeyProviders}</h4>
+									<ul className="provider-list">{apiKeyProviderIds.map(renderProviderRow)}</ul>
+								</>
+							)}
 
 							<CustomProviderDialog
 								open={cpDialogOpen}
@@ -1333,6 +1620,23 @@ export function SettingsPanel({
 								onError={notifyError}
 								onChanged={onProvidersChanged}
 							/>
+							{oauthLoginProvider && (
+								<OAuthDialog
+									t={t}
+									provider={oauthLoginProvider}
+									providerLabel={providerLabel(oauthLoginProvider)}
+									onDone={() => {
+										refreshAuth();
+										notify(
+											t.settings.oauthSuccess.replace(
+												"{provider}",
+												providerLabel(oauthLoginProvider),
+											),
+										);
+									}}
+									onClose={() => setOauthLoginProvider(null)}
+								/>
+							)}
 						</section>
 					)}
 

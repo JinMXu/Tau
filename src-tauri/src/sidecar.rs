@@ -278,6 +278,51 @@ pub(crate) fn package_remove(cwd: &Path, source: &str, local: bool) -> Result<bo
 		.unwrap_or(false))
 }
 
+/// Snapshot of a sidecar OAuth login flow. `event` is the latest
+/// `AuthEvent` (device_code/auth_url/progress/info), `prompt` the pending
+/// `AuthPrompt` projection (`{ message, kind, options, placeholder }`) while
+/// `phase == "awaiting_prompt"`. Both stay `None` until the flow emits them.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OAuthFlowStatus {
+	pub phase: String,
+	pub event: Option<Value>,
+	pub prompt: Option<Value>,
+	pub error: Option<String>,
+}
+
+/// Start `modelRuntime.login(provider_id, "oauth", …)` in the sidecar and
+/// return its flowId. The flow itself runs in the background — the real wait
+/// is driven by the frontend polling `oauth_status`.
+pub(crate) fn oauth_begin_call(provider_id: &str) -> Result<String, String> {
+	let result = call(
+		"oauth.begin",
+		serde_json::json!({ "providerId": provider_id }),
+	)?;
+	result
+		.get("flowId")
+		.and_then(|v| v.as_str())
+		.map(str::to_string)
+		.ok_or_else(|| "sidecar oauth.begin returned no flowId".to_string())
+}
+
+pub(crate) fn oauth_status_call(flow_id: &str) -> Result<OAuthFlowStatus, String> {
+	let result = call("oauth.status", serde_json::json!({ "flowId": flow_id }))?;
+	serde_json::from_value(result).map_err(|e| format!("invalid oauth.status result: {e}"))
+}
+
+pub(crate) fn oauth_prompt_response_call(flow_id: &str, value: &str) -> Result<(), String> {
+	call(
+		"oauth.prompt_response",
+		serde_json::json!({ "flowId": flow_id, "value": value }),
+	)?;
+	Ok(())
+}
+
+pub(crate) fn oauth_cancel_call(flow_id: &str) -> Result<(), String> {
+	call("oauth.cancel", serde_json::json!({ "flowId": flow_id }))?;
+	Ok(())
+}
+
 /// Background warmup: spawn the sidecar and keep pinging until it answers.
 /// On first launch after an install, antivirus scans the whole vendored
 /// node_modules tree when node first reads it, which can hold the SDK
@@ -347,6 +392,41 @@ pub async fn sidecar_session_info(path: String) -> Result<Value, String> {
 	.map_err(|e| e.to_string())?
 }
 
+/// Begin an OAuth login flow for a provider (`kimi-coding`, `openai-codex`,
+/// …). Returns the flowId used by the other `oauth_*` commands.
+#[tauri::command]
+pub async fn oauth_begin(provider_id: String) -> Result<String, String> {
+	tauri::async_runtime::spawn_blocking(move || oauth_begin_call(&provider_id))
+		.await
+		.map_err(|e| e.to_string())?
+}
+
+/// Poll one flow. Terminal phases (`done`/`error`/`cancelled`) are consumed:
+/// the sidecar forgets the flow after this read.
+#[tauri::command]
+pub async fn oauth_status(flow_id: String) -> Result<OAuthFlowStatus, String> {
+	tauri::async_runtime::spawn_blocking(move || oauth_status_call(&flow_id))
+		.await
+		.map_err(|e| e.to_string())?
+}
+
+/// Answer the flow's pending prompt (text input or selected option id).
+#[tauri::command]
+pub async fn oauth_prompt_response(flow_id: String, value: String) -> Result<(), String> {
+	tauri::async_runtime::spawn_blocking(move || oauth_prompt_response_call(&flow_id, &value))
+		.await
+		.map_err(|e| e.to_string())?
+}
+
+/// Abort the flow: rejects any pending prompt and signals the login's
+/// AbortController. No credential is written.
+#[tauri::command]
+pub async fn oauth_cancel(flow_id: String) -> Result<(), String> {
+	tauri::async_runtime::spawn_blocking(move || oauth_cancel_call(&flow_id))
+		.await
+		.map_err(|e| e.to_string())?
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -373,5 +453,73 @@ mod tests {
 		assert!(value["pi"].is_string(), "pi version missing: {value}");
 		assert!(value["node"].is_string(), "node version missing: {value}");
 		assert!(value["agentDir"].is_string());
+	}
+
+	#[test]
+	fn oauth_flow_status_deserializes_sidecar_shape() {
+		// The exact JSON sidecar.mjs emits for oauth.status, mid-flow.
+		let status: OAuthFlowStatus = serde_json::from_value(serde_json::json!({
+			"phase": "awaiting_prompt",
+			"event": {
+				"type": "device_code",
+				"userCode": "ABCD-1234",
+				"verificationUri": "https://example.com/device",
+			},
+			"prompt": {
+				"message": "Sign in how?",
+				"kind": "select",
+				"options": [{ "id": "browser", "label": "Browser" }],
+				"placeholder": null,
+			},
+			"error": null,
+		}))
+		.expect("oauth.status result must deserialize");
+		assert_eq!(status.phase, "awaiting_prompt");
+		assert_eq!(status.event.unwrap()["type"], "device_code");
+		assert_eq!(status.prompt.unwrap()["kind"], "select");
+		assert!(status.error.is_none());
+	}
+
+	#[test]
+	fn oauth_unknown_flow_errors() {
+		if runtime_triple().is_err() {
+			eprintln!("vendored runtime missing — skipping sidecar e2e");
+			return;
+		}
+		let err = oauth_status_call("no-such-flow").expect_err("unknown flow must error");
+		assert!(err.contains("unknown oauth flow"), "unexpected error: {err}");
+		let err = oauth_cancel_call("no-such-flow").expect_err("unknown flow must error");
+		assert!(err.contains("unknown oauth flow"), "unexpected error: {err}");
+	}
+
+	#[test]
+	fn oauth_begin_unknown_provider_fails_fast() {
+		// No network involved: login() rejects unknown provider ids locally,
+		// so the flow lands in the error phase on its own.
+		if runtime_triple().is_err() {
+			eprintln!("vendored runtime missing — skipping sidecar e2e");
+			return;
+		}
+		let flow_id = oauth_begin_call("no-such-provider").expect("begin must return a flowId");
+		let mut phase = String::new();
+		let mut error = None;
+		for _ in 0..50 {
+			match oauth_status_call(&flow_id) {
+				Ok(status) => {
+					phase = status.phase.clone();
+					error = status.error;
+					if phase != "running" && phase != "awaiting_prompt" {
+						break;
+					}
+				}
+				Err(e) => panic!("status polling failed: {e}"),
+			}
+			std::thread::sleep(Duration::from_millis(200));
+		}
+		assert_eq!(phase, "error");
+		assert!(error.is_some(), "error phase must carry a message");
+		// Terminal statuses are single-read: the sidecar forgot the flow.
+		let err = oauth_status_call(&flow_id).expect_err("consumed flow must be gone");
+		assert!(err.contains("unknown oauth flow"), "unexpected error: {err}");
 	}
 }

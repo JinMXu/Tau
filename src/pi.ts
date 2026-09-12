@@ -68,6 +68,8 @@ export interface AuthProviderStatus {
 export interface PiProviderInfo {
 	id: string;
 	known: boolean;
+	/** True when pi-ai ships an OAuth login flow for this provider. */
+	oauth: boolean;
 }
 
 export interface GitBranchState {
@@ -329,6 +331,114 @@ export async function authStatus(): Promise<AuthProviderStatus[]> {
 
 export async function piProviders(): Promise<PiProviderInfo[]> {
 	return invoke("pi_providers");
+}
+
+/** One model of a provider: catalog entry overlaid with models.json data. */
+export interface PiProviderModel {
+	id: string;
+	name: string;
+	reasoning: boolean;
+	/** True when the model's `input` list contains "image". */
+	image: boolean;
+	contextWindow: number;
+	maxTokens: number;
+	/** From the models.json `models` array (user-defined), not the catalog. */
+	custom: boolean;
+	/** A `modelOverrides` patch exists for this model id. */
+	overridden: boolean;
+}
+
+/** models.json model payload (`ModelsJsonModel`); only set fields are written. */
+export interface PiProviderModelUpsert {
+	id: string;
+	name?: string;
+	reasoning?: boolean;
+	input?: string[];
+	contextWindow?: number;
+	maxTokens?: number;
+}
+
+/** models.json `modelOverrides` patch; an empty patch removes the override. */
+export interface PiProviderModelPatch {
+	name?: string;
+	reasoning?: boolean;
+	input?: string[];
+	contextWindow?: number;
+	maxTokens?: number;
+}
+
+export async function piProviderModels(provider: string): Promise<PiProviderModel[]> {
+	return invoke("pi_provider_models", { provider });
+}
+
+export async function piProviderModelUpsert(
+	provider: string,
+	model: PiProviderModelUpsert,
+): Promise<void> {
+	return invoke("pi_provider_model_upsert", { provider, model });
+}
+
+export async function piProviderModelRemove(provider: string, modelId: string): Promise<void> {
+	return invoke("pi_provider_model_remove", { provider, modelId });
+}
+
+export async function piProviderModelOverrideUpsert(
+	provider: string,
+	modelId: string,
+	patch: PiProviderModelPatch,
+): Promise<void> {
+	return invoke("pi_provider_model_override_upsert", { provider, modelId, patch });
+}
+
+export async function piProviderModelOverrideRemove(
+	provider: string,
+	modelId: string,
+): Promise<void> {
+	return invoke("pi_provider_model_override_remove", { provider, modelId });
+}
+
+/** One notification emitted by a running OAuth flow (sidecar oauth.status). */
+export interface OAuthFlowEvent {
+	type: "auth_url" | "device_code" | "progress" | "info";
+	url?: string | null;
+	userCode?: string | null;
+	verificationUri?: string | null;
+	message?: string | null;
+	links?: { label?: string | null; url: string }[] | null;
+}
+
+/** An interactive prompt the OAuth flow is waiting on. */
+export interface OAuthFlowPrompt {
+	message: string;
+	kind: "text" | "secret" | "select" | "manual_code";
+	options?: { id: string; label?: string | null }[] | null;
+	placeholder?: string | null;
+}
+
+export interface OAuthFlowStatus {
+	phase: "running" | "awaiting_prompt" | "done" | "error" | "cancelled";
+	event: OAuthFlowEvent | null;
+	prompt: OAuthFlowPrompt | null;
+	error: string | null;
+}
+
+export async function oauthBegin(providerId: string): Promise<string> {
+	// Contract returns a bare flowId string; tolerate the sidecar's { flowId }
+	// object shape too.
+	const r = await invoke<string | { flowId: string }>("oauth_begin", { providerId });
+	return typeof r === "string" ? r : r.flowId;
+}
+
+export async function oauthStatus(flowId: string): Promise<OAuthFlowStatus> {
+	return invoke("oauth_status", { flowId });
+}
+
+export async function oauthPromptResponse(flowId: string, value: string): Promise<void> {
+	return invoke("oauth_prompt_response", { flowId, value });
+}
+
+export async function oauthCancel(flowId: string): Promise<void> {
+	return invoke("oauth_cancel", { flowId });
 }
 
 /** A custom provider entry from models.json (`providers` map). */

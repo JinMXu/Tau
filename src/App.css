@@ -1730,9 +1730,9 @@ html[data-platform="macos"] .collapsed-actions-bar {
 	color: var(--dsh-fg-tertiary);
 	opacity: 0;
 	transition:
-	opacity 150ms ease,
-	transform var(--dsh-dur) var(--dsh-ease),
-	color 150ms ease;
+		opacity 150ms ease,
+		transform var(--dsh-dur) var(--dsh-ease),
+		color 150ms ease;
 }
 
 .tool-head:hover .tool-chevron {
@@ -4484,7 +4484,9 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 	background: transparent;
 	border: none;
 	cursor: pointer;
-	transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
 }
 
 .message-action:hover {
@@ -7807,4 +7809,192 @@ html[data-theme="dark"] {
 .markdown-body .thematic-break {
 	margin: 1rem 0;
 	border-top-color: var(--markdown-table-border);
+}
+
+/* ===========================================================================
+   Provider models panel + OAuth login dialog
+   =========================================================================== */
+
+/* Expanded inline panels (models / oauth-help) wrap onto their own line. */
+.provider-row {
+	flex-wrap: wrap;
+}
+
+.provider-models,
+.oauth-help {
+	flex-basis: 100%;
+}
+
+.provider-models {
+	margin-top: 8px;
+	background: var(--input-bg);
+	border: 1px solid var(--menu-border);
+	border-radius: var(--r-sm);
+	padding: 8px 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	font-size: var(--fs-xs);
+	color: var(--text-2);
+}
+
+.provider-models .settings-hint {
+	margin: 2px 0;
+}
+
+.pm-row {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	min-height: 24px;
+}
+
+.pm-id {
+	color: var(--text-1);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pm-name {
+	color: var(--text-3);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pm-meta {
+	color: var(--text-3);
+}
+
+.pm-pill {
+	flex-shrink: 0;
+	padding: 0 6px;
+	border-radius: 999px;
+	background: var(--card-bg);
+	border: 1px solid var(--card-border);
+	color: var(--app-muted);
+}
+
+.pm-pill.modified {
+	color: var(--warn);
+	border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+	background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+
+.pm-actions {
+	margin-left: auto;
+	display: inline-flex;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+.pm-footer {
+	margin-top: 4px;
+}
+
+.pm-footer .btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+/* ---- provider model dialog ---- */
+.provider-model-dialog {
+	width: min(560px, calc(100vw - 40px));
+}
+
+.pm-form-meta {
+	margin-bottom: var(--sp-3);
+}
+
+/* ---- OAuth login dialog ---- */
+.oauth-dialog {
+	width: min(520px, calc(100vw - 40px));
+}
+
+.oauth-flow {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-3);
+}
+
+.oauth-device {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.oauth-code-row {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+}
+
+.oauth-code {
+	font-family: var(--font-mono);
+	font-size: 20px;
+	letter-spacing: 2px;
+	padding: 6px 12px;
+	background: var(--input-bg);
+	border: 1px solid var(--card-border);
+	border-radius: var(--r-md);
+	user-select: all;
+}
+
+.oauth-url-row {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.oauth-url {
+	font-size: var(--fs-xs);
+	color: var(--link);
+	word-break: break-all;
+}
+
+.oauth-url-actions {
+	display: flex;
+	gap: 6px;
+}
+
+.oauth-prompt {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-2);
+}
+
+.oauth-prompt-message {
+	margin: 0;
+	font-size: var(--fs-sm);
+}
+
+.oauth-prompt-options {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.oauth-prompt-input {
+	display: flex;
+	gap: 6px;
+}
+
+.oauth-prompt-input input {
+	flex: 1;
+	min-width: 0;
+}
+
+.oauth-status-line {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 0;
+	font-size: var(--fs-xs);
+	color: var(--text-3);
+}
+
+.oauth-status-line .spin {
+	flex-shrink: 0;
 }

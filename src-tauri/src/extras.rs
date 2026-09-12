@@ -30,7 +30,23 @@ pub struct PiProviderInfo {
 	/// True when the provider ships with pi's built-in model catalog; false
 	/// for custom providers (models.json) or extension-registered ones.
 	known: bool,
+	/// True when pi-ai ships an OAuth login flow for this provider.
+	oauth: bool,
 }
+
+/// Providers pi-ai ships an OAuth flow for. Source of truth: the
+/// `dist/auth/oauth/` directory inside the vendored pi-ai package (one module
+/// per provider) — cross-check this list against that directory whenever the
+/// vendored pi runtime is upgraded.
+const OAUTH_PROVIDERS: &[&str] = &[
+	"anthropic",
+	"github-copilot",
+	"kimi-coding",
+	"openai-codex",
+	"openrouter",
+	"radius",
+	"xai",
+];
 
 fn pi_agent_dir() -> PathBuf {
 	pi::agent_dir()
@@ -76,7 +92,11 @@ pub fn pi_providers() -> Result<Vec<PiProviderInfo>, String> {
 
 	Ok(merged
 		.into_iter()
-		.map(|(id, known)| PiProviderInfo { id, known })
+		.map(|(id, known)| PiProviderInfo {
+			oauth: OAUTH_PROVIDERS.contains(&id.as_str()),
+			id,
+			known,
+		})
 		.collect())
 }
 
@@ -294,8 +314,8 @@ pub fn pi_custom_providers() -> Result<Vec<CustomProviderEntry>, String> {
 	Ok(out)
 }
 
-/// Validates a custom provider entry before it lands in models.json.
-fn validate_custom_provider(id: &str, config: &serde_json::Value) -> Result<(), String> {
+/// Provider id rules shared by every models.json write path.
+fn validate_provider_id(id: &str) -> Result<(), String> {
 	if id.is_empty() {
 		return Err("provider id must not be empty".into());
 	}
@@ -308,19 +328,59 @@ fn validate_custom_provider(id: &str, config: &serde_json::Value) -> Result<(), 
 				.into(),
 		);
 	}
-	// A custom entry whose id matches the built-in catalog would merge into
-	// (and partially replace) that built-in provider instead of adding a new
-	// one — almost never what the user wants from an "add provider" form.
-	if let Some(dir) = pi_ai_providers_data_dir() {
-		if read_catalog_provider_ids(&dir).iter().any(|b| b == id) {
-			return Err(format!(
-				"'{id}' is a built-in provider; choose a different id"
-			));
+	Ok(())
+}
+
+/// Every model entry in a `models` array needs a non-empty id.
+fn validate_model_ids(models: &serde_json::Value) -> Result<(), String> {
+	let arr = models
+		.as_array()
+		.ok_or("provider 'models' must be an array")?;
+	for model in arr {
+		let mid = model.get("id").and_then(|v| v.as_str()).unwrap_or("");
+		if mid.trim().is_empty() {
+			return Err("every model requires a non-empty id".into());
 		}
 	}
+	Ok(())
+}
+
+/// Validates a custom provider entry before it lands in models.json. Built-in
+/// catalog ids are allowed: the entry then acts as a partial overlay (extra
+/// models, metadata overrides, credentials) merged onto the built-in
+/// provider, so any single meaningful key is enough. Custom ids describe a
+/// whole provider and still need a baseUrl plus at least one model.
+fn validate_custom_provider(id: &str, config: &serde_json::Value) -> Result<(), String> {
+	validate_provider_id(id)?;
 	let obj = config
 		.as_object()
 		.ok_or("provider config must be an object")?;
+	let builtin = pi_ai_providers_data_dir()
+		.map(|dir| read_catalog_provider_ids(&dir).iter().any(|b| b == id))
+		.unwrap_or(false);
+	if builtin {
+		const OVERLAY_KEYS: &[&str] = &[
+			"models",
+			"baseUrl",
+			"headers",
+			"compat",
+			"modelOverrides",
+			"apiKey",
+			"oauth",
+			"authHeader",
+		];
+		if !OVERLAY_KEYS.iter().any(|k| obj.contains_key(*k)) {
+			return Err(
+				"provider config requires at least one of: models, baseUrl, headers, compat, \
+				 modelOverrides, apiKey, oauth, authHeader"
+					.into(),
+			);
+		}
+		if let Some(models) = obj.get("models") {
+			validate_model_ids(models)?;
+		}
+		return Ok(());
+	}
 	let base_url_ok = obj
 		.get("baseUrl")
 		.and_then(|v| v.as_str())
@@ -330,16 +390,9 @@ fn validate_custom_provider(id: &str, config: &serde_json::Value) -> Result<(), 
 	}
 	let models = obj
 		.get("models")
-		.and_then(|m| m.as_array())
-		.filter(|a| !a.is_empty())
+		.filter(|m| m.as_array().is_some_and(|a| !a.is_empty()))
 		.ok_or("provider config requires at least one model")?;
-	for model in models {
-		let mid = model.get("id").and_then(|v| v.as_str()).unwrap_or("");
-		if mid.trim().is_empty() {
-			return Err("every model requires a non-empty id".into());
-		}
-	}
-	Ok(())
+	validate_model_ids(models)
 }
 
 #[tauri::command]
@@ -368,6 +421,313 @@ pub fn pi_remove_custom_provider(id: String) -> Result<(), String> {
 	let mut doc = read_models_doc()?;
 	if let Some(map) = doc.get_mut("providers").and_then(|p| p.as_object_mut()) {
 		map.remove(&id);
+	}
+	write_models_doc(&doc)
+}
+
+// ---------------------------------------------------------------------------
+// Provider model listing / per-model editing (catalog + models.json overlay)
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModelEntry {
+	id: String,
+	name: String,
+	reasoning: bool,
+	/// True when the model's `input` list contains "image".
+	image: bool,
+	context_window: u64,
+	max_tokens: u64,
+	/// From the models.json `models` array (user-defined), not the catalog.
+	custom: bool,
+	/// A `modelOverrides` patch exists for this model id.
+	overridden: bool,
+}
+
+/// Display fields extracted from a catalog / models.json model object.
+/// Returns None when the entry has no usable id.
+fn model_entry(v: &serde_json::Value, custom: bool) -> Option<ProviderModelEntry> {
+	let id = v.get("id").and_then(|x| x.as_str()).filter(|s| !s.is_empty())?;
+	Some(ProviderModelEntry {
+		id: id.to_string(),
+		name: v
+			.get("name")
+			.and_then(|x| x.as_str())
+			.unwrap_or(id)
+			.to_string(),
+		reasoning: v
+			.get("reasoning")
+			.and_then(|x| x.as_bool())
+			.unwrap_or(false),
+		image: v
+			.get("input")
+			.and_then(|x| x.as_array())
+			.is_some_and(|a| a.iter().any(|i| i.as_str() == Some("image"))),
+		context_window: v
+			.get("contextWindow")
+			.and_then(|x| x.as_u64())
+			.unwrap_or(0),
+		max_tokens: v
+			.get("maxTokens")
+			.and_then(|x| x.as_u64())
+			.unwrap_or(0),
+		custom,
+		overridden: false,
+	})
+}
+
+/// Flattens a catalog provider file (`{ "<api>": { "<modelId>": Model } }`)
+/// into entries. Unknown group/model shapes are skipped.
+fn catalog_model_entries(value: &serde_json::Value) -> Vec<ProviderModelEntry> {
+	let mut out = Vec::new();
+	let Some(root) = value.as_object() else {
+		return out;
+	};
+	for group in root.values() {
+		let Some(models) = group.as_object() else {
+			continue;
+		};
+		for model in models.values() {
+			if let Some(entry) = model_entry(model, false) {
+				out.push(entry);
+			}
+		}
+	}
+	out
+}
+
+/// Overlays one models.json provider entry onto the catalog-derived list:
+/// `models` upserts by id (replacing the display values and flipping the
+/// custom flag), then `modelOverrides` patches name/reasoning/context limits
+/// in place. Overrides referencing unknown model ids are ignored — there is
+/// nothing to display them on.
+fn apply_models_json(entries: &mut Vec<ProviderModelEntry>, entry: Option<&serde_json::Value>) {
+	let Some(obj) = entry.and_then(|e| e.as_object()) else {
+		return;
+	};
+	if let Some(models) = obj.get("models").and_then(|m| m.as_array()) {
+		for model in models {
+			let Some(custom) = model_entry(model, true) else {
+				continue;
+			};
+			match entries.iter_mut().find(|e| e.id == custom.id) {
+				Some(slot) => *slot = custom,
+				None => entries.push(custom),
+			}
+		}
+	}
+	if let Some(overrides) = obj.get("modelOverrides").and_then(|o| o.as_object()) {
+		for (id, patch) in overrides {
+			let Some(slot) = entries.iter_mut().find(|e| &e.id == id) else {
+				continue;
+			};
+			slot.overridden = true;
+			let Some(p) = patch.as_object() else {
+				continue;
+			};
+			if let Some(name) = p.get("name").and_then(|v| v.as_str()) {
+				slot.name = name.to_string();
+			}
+			if let Some(r) = p.get("reasoning").and_then(|v| v.as_bool()) {
+				slot.reasoning = r;
+			}
+			if let Some(cw) = p.get("contextWindow").and_then(|v| v.as_u64()) {
+				slot.context_window = cw;
+			}
+			if let Some(mt) = p.get("maxTokens").and_then(|v| v.as_u64()) {
+				slot.max_tokens = mt;
+			}
+		}
+	}
+}
+
+/// Effective model list for one provider: built-in catalog entries (when a
+/// vendored runtime ships them) overlaid with the provider's models.json
+/// `models` / `modelOverrides`. Custom providers simply get their models.json
+/// entries back.
+#[tauri::command]
+pub fn pi_provider_models(provider: String) -> Result<Vec<ProviderModelEntry>, String> {
+	let provider = provider.trim().to_string();
+	validate_provider_id(&provider)?;
+	let mut entries = Vec::new();
+	if let Some(dir) = pi_ai_providers_data_dir() {
+		let path = dir.join(format!("{provider}.json"));
+		if let Ok(raw) = fs::read_to_string(&path) {
+			if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+				entries = catalog_model_entries(&v);
+			}
+		}
+	}
+	let doc = read_models_doc()?;
+	let entry = doc
+		.get("providers")
+		.and_then(|p| p.as_object())
+		.and_then(|m| m.get(&provider));
+	apply_models_json(&mut entries, entry);
+	Ok(entries)
+}
+
+/// Upserts one model into `providers[provider].models` by id. Only the
+/// `models` array is touched; every other key of the provider entry
+/// (apiKey/baseUrl/compat/headers/...) passes through untouched.
+#[tauri::command]
+pub fn pi_provider_model_upsert(
+	provider: String,
+	model: serde_json::Value,
+) -> Result<(), String> {
+	let provider = provider.trim().to_string();
+	validate_provider_id(&provider)?;
+	{
+		let obj = model.as_object().ok_or("model must be an object")?;
+		let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
+		if id.trim().is_empty() {
+			return Err("model id must not be empty".into());
+		}
+		for key in ["contextWindow", "maxTokens"] {
+			if let Some(v) = obj.get(key) {
+				if v.as_u64().map_or(true, |n| n == 0) {
+					return Err(format!("model {key} must be a positive integer"));
+				}
+			}
+		}
+	}
+	let _guard = MODELS_MUTEX
+		.lock()
+		.map_err(|e| format!("models lock poisoned: {e}"))?;
+	let mut doc = read_models_doc()?;
+	let providers = doc
+		.entry("providers".to_string())
+		.or_insert_with(|| serde_json::json!({}));
+	let map = providers
+		.as_object_mut()
+		.ok_or("models.json 'providers' must be an object")?;
+	let model_id = model
+		.get("id")
+		.and_then(|v| v.as_str())
+		.unwrap_or("")
+		.to_string();
+	let entry = map
+		.entry(provider)
+		.or_insert_with(|| serde_json::json!({}));
+	let entry_obj = entry
+		.as_object_mut()
+		.ok_or("provider entry must be an object")?;
+	let models = entry_obj
+		.entry("models".to_string())
+		.or_insert_with(|| serde_json::json!([]));
+	let arr = models
+		.as_array_mut()
+		.ok_or("provider 'models' must be an array")?;
+	match arr
+		.iter_mut()
+		.find(|m| m.get("id").and_then(|v| v.as_str()) == Some(model_id.as_str()))
+	{
+		Some(slot) => *slot = model,
+		None => arr.push(model),
+	}
+	write_models_doc(&doc)
+}
+
+/// Removes one model from `providers[provider].models`. A provider entry left
+/// as an empty object is dropped from `providers` entirely.
+#[tauri::command]
+pub fn pi_provider_model_remove(provider: String, model_id: String) -> Result<(), String> {
+	let _guard = MODELS_MUTEX
+		.lock()
+		.map_err(|e| format!("models lock poisoned: {e}"))?;
+	let mut doc = read_models_doc()?;
+	if let Some(map) = doc.get_mut("providers").and_then(|p| p.as_object_mut()) {
+		let mut drop_entry = false;
+		if let Some(entry) = map.get_mut(&provider).and_then(|e| e.as_object_mut()) {
+			if let Some(models) = entry.get_mut("models").and_then(|m| m.as_array_mut()) {
+				models.retain(|m| m.get("id").and_then(|v| v.as_str()) != Some(model_id.as_str()));
+				if models.is_empty() {
+					entry.remove("models");
+				}
+			}
+			drop_entry = entry.is_empty();
+		}
+		if drop_entry {
+			map.remove(&provider);
+		}
+	}
+	write_models_doc(&doc)
+}
+
+/// Writes `providers[provider].modelOverrides[modelId] = patch`. An empty
+/// patch object is the same as removing the override.
+#[tauri::command]
+pub fn pi_provider_model_override_upsert(
+	provider: String,
+	model_id: String,
+	patch: serde_json::Value,
+) -> Result<(), String> {
+	let provider = provider.trim().to_string();
+	validate_provider_id(&provider)?;
+	let model_id = model_id.trim().to_string();
+	if model_id.is_empty() {
+		return Err("model id must not be empty".into());
+	}
+	if patch.as_object().ok_or("override patch must be an object")?.is_empty() {
+		return pi_provider_model_override_remove(provider, model_id);
+	}
+	let _guard = MODELS_MUTEX
+		.lock()
+		.map_err(|e| format!("models lock poisoned: {e}"))?;
+	let mut doc = read_models_doc()?;
+	let providers = doc
+		.entry("providers".to_string())
+		.or_insert_with(|| serde_json::json!({}));
+	let map = providers
+		.as_object_mut()
+		.ok_or("models.json 'providers' must be an object")?;
+	let entry = map
+		.entry(provider)
+		.or_insert_with(|| serde_json::json!({}));
+	let entry_obj = entry
+		.as_object_mut()
+		.ok_or("provider entry must be an object")?;
+	let overrides = entry_obj
+		.entry("modelOverrides".to_string())
+		.or_insert_with(|| serde_json::json!({}));
+	let obj = overrides
+		.as_object_mut()
+		.ok_or("provider 'modelOverrides' must be an object")?;
+	obj.insert(model_id, patch);
+	write_models_doc(&doc)
+}
+
+/// Deletes `providers[provider].modelOverrides[modelId]`; an emptied
+/// `modelOverrides` map and an emptied provider entry are cleaned up too.
+#[tauri::command]
+pub fn pi_provider_model_override_remove(
+	provider: String,
+	model_id: String,
+) -> Result<(), String> {
+	let _guard = MODELS_MUTEX
+		.lock()
+		.map_err(|e| format!("models lock poisoned: {e}"))?;
+	let mut doc = read_models_doc()?;
+	if let Some(map) = doc.get_mut("providers").and_then(|p| p.as_object_mut()) {
+		let mut drop_entry = false;
+		if let Some(entry) = map.get_mut(&provider).and_then(|e| e.as_object_mut()) {
+			let mut drop_key = false;
+			if let Some(overrides) = entry
+				.get_mut("modelOverrides")
+				.and_then(|o| o.as_object_mut())
+			{
+				overrides.remove(&model_id);
+				drop_key = overrides.is_empty();
+			}
+			if drop_key {
+				entry.remove("modelOverrides");
+			}
+			drop_entry = entry.is_empty();
+		}
+		if drop_entry {
+			map.remove(&provider);
+		}
 	}
 	write_models_doc(&doc)
 }
@@ -1649,5 +2009,236 @@ mod tests {
 			serde_json::json!({"args": []}),
 		)
 		.is_err());
+	}
+
+	#[test]
+	fn catalog_model_entries_flatten_api_groups() {
+		let sample = serde_json::json!({
+			"openai-completions": {
+				"m-text": {
+					"id": "m-text", "name": "Text Model", "reasoning": false,
+					"input": ["text"], "contextWindow": 128000, "maxTokens": 4096
+				}
+			},
+			"openai-responses": {
+				"m-vision": {
+					"id": "m-vision", "name": "Vision Model", "reasoning": true,
+					"input": ["text", "image"], "contextWindow": 200000, "maxTokens": 8192
+				}
+			}
+		});
+		let entries = catalog_model_entries(&sample);
+		assert_eq!(entries.len(), 2);
+		let text = entries.iter().find(|e| e.id == "m-text").unwrap();
+		assert_eq!(text.name, "Text Model");
+		assert!(!text.reasoning && !text.image);
+		assert_eq!(text.context_window, 128000);
+		assert_eq!(text.max_tokens, 4096);
+		assert!(!text.custom && !text.overridden);
+		let vision = entries.iter().find(|e| e.id == "m-vision").unwrap();
+		assert!(vision.reasoning && vision.image);
+		assert_eq!(vision.context_window, 200000);
+		assert_eq!(vision.max_tokens, 8192);
+		// Entries without an id are skipped, non-object groups are tolerated.
+		let weird = serde_json::json!({"api": {"no-id": {"name": "x"}}, "junk": 42});
+		assert!(catalog_model_entries(&weird).is_empty());
+	}
+
+	#[test]
+	fn provider_models_merge_custom_and_overrides() {
+		let catalog = serde_json::json!({
+			"some-api": {
+				"catalog-m": {
+					"id": "catalog-m", "name": "Catalog Model", "reasoning": false,
+					"input": ["text"], "contextWindow": 128000, "maxTokens": 4096
+				}
+			}
+		});
+		let mut entries = catalog_model_entries(&catalog);
+		let overlay = serde_json::json!({
+			"apiKey": "sk-ignored-by-merge",
+			"models": [
+				{"id": "catalog-m", "name": "Renamed", "contextWindow": 64000, "maxTokens": 2048},
+				{"id": "user-m", "input": ["text", "image"], "contextWindow": 32000, "maxTokens": 1000}
+			],
+			"modelOverrides": {
+				"catalog-m": {"reasoning": true, "contextWindow": 999},
+				"ghost": {"name": "no such model"}
+			}
+		});
+		apply_models_json(&mut entries, Some(&overlay));
+		assert_eq!(entries.len(), 2);
+		// Same-id custom model replaces the display values and is marked
+		// custom; the override then patches on top of that.
+		let cm = entries.iter().find(|e| e.id == "catalog-m").unwrap();
+		assert!(cm.custom && cm.overridden);
+		assert_eq!(cm.name, "Renamed");
+		assert!(cm.reasoning);
+		assert_eq!(cm.context_window, 999);
+		assert_eq!(cm.max_tokens, 2048);
+		// New id appended from models.json.
+		let um = entries.iter().find(|e| e.id == "user-m").unwrap();
+		assert!(um.custom && !um.overridden);
+		assert!(um.image);
+		assert_eq!(um.name, "user-m");
+		// Override for an unknown id is ignored.
+		assert!(!entries.iter().any(|e| e.id == "ghost"));
+	}
+
+	#[test]
+	fn provider_model_edit_roundtrip() {
+		let agent = AgentDirGuard::new("model-edit");
+		// Unknown entry fields that must survive every edit untouched.
+		std::fs::write(
+			agent.dir.join("models.json"),
+			r#"{"providers":{"anthropic":{"apiKey":"sk-x","baseUrl":"https://proxy","compat":{"a":1}}}}"#,
+		)
+		.unwrap();
+
+		// Validation: bad provider id, missing model id, non-positive limits.
+		assert!(pi_provider_model_upsert(
+			"Bad Id".into(),
+			serde_json::json!({"id": "m"}),
+		)
+		.is_err());
+		assert!(pi_provider_model_upsert(
+			"anthropic".into(),
+			serde_json::json!({"name": "no id"}),
+		)
+		.is_err());
+		assert!(pi_provider_model_upsert(
+			"anthropic".into(),
+			serde_json::json!({"id": "m", "contextWindow": 0}),
+		)
+		.is_err());
+
+		// Upsert creates the models array; the other entry keys survive.
+		pi_provider_model_upsert(
+			"anthropic".into(),
+			serde_json::json!({"id": "my-model", "contextWindow": 100000, "maxTokens": 4000}),
+		)
+		.unwrap();
+		let doc = read_models_doc().unwrap();
+		let entry = &doc["providers"]["anthropic"];
+		assert_eq!(entry["apiKey"], "sk-x");
+		assert_eq!(entry["baseUrl"], "https://proxy");
+		assert_eq!(entry["compat"], serde_json::json!({"a": 1}));
+		assert_eq!(entry["models"][0]["id"], "my-model");
+
+		// Same id replaces in place, array stays length 1.
+		pi_provider_model_upsert(
+			"anthropic".into(),
+			serde_json::json!({"id": "my-model", "contextWindow": 200000, "maxTokens": 8000}),
+		)
+		.unwrap();
+		let doc = read_models_doc().unwrap();
+		let models = doc["providers"]["anthropic"]["models"].as_array().unwrap();
+		assert_eq!(models.len(), 1);
+		assert_eq!(models[0]["contextWindow"], 200000);
+
+		// Override upsert adds modelOverrides without touching models.
+		pi_provider_model_override_upsert(
+			"anthropic".into(),
+			"my-model".into(),
+			serde_json::json!({"reasoning": true}),
+		)
+		.unwrap();
+		let doc = read_models_doc().unwrap();
+		let entry = &doc["providers"]["anthropic"];
+		assert_eq!(entry["modelOverrides"]["my-model"]["reasoning"], true);
+		assert_eq!(entry["models"].as_array().unwrap().len(), 1);
+
+		// Empty patch object is a remove; the emptied modelOverrides key goes too.
+		pi_provider_model_override_upsert(
+			"anthropic".into(),
+			"my-model".into(),
+			serde_json::json!({}),
+		)
+		.unwrap();
+		let doc = read_models_doc().unwrap();
+		assert!(doc["providers"]["anthropic"].get("modelOverrides").is_none());
+		assert_eq!(doc["providers"]["anthropic"]["apiKey"], "sk-x");
+
+		// Removing the last model drops the models key; the entry stays
+		// because apiKey/baseUrl/compat remain.
+		pi_provider_model_remove("anthropic".into(), "my-model".into()).unwrap();
+		let doc = read_models_doc().unwrap();
+		let entry = &doc["providers"]["anthropic"];
+		assert!(entry.get("models").is_none());
+		assert_eq!(entry["apiKey"], "sk-x");
+
+		// An entry holding only that model is removed entirely.
+		pi_provider_model_upsert("fresh".into(), serde_json::json!({"id": "m1"})).unwrap();
+		pi_provider_model_remove("fresh".into(), "m1".into()).unwrap();
+		let doc = read_models_doc().unwrap();
+		assert!(doc["providers"].get("fresh").is_none());
+
+		// Same cleanup for an override-only entry.
+		pi_provider_model_override_upsert(
+			"solo".into(),
+			"m".into(),
+			serde_json::json!({"name": "X"}),
+		)
+		.unwrap();
+		pi_provider_model_override_remove("solo".into(), "m".into()).unwrap();
+		let doc = read_models_doc().unwrap();
+		assert!(doc["providers"].get("solo").is_none());
+		// The untouched provider from the start is still intact.
+		assert_eq!(doc["providers"]["anthropic"]["apiKey"], "sk-x");
+	}
+
+	#[test]
+	fn provider_models_from_models_json_only() {
+		let agent = AgentDirGuard::new("models-list");
+		std::fs::write(
+			agent.dir.join("models.json"),
+			r#"{"providers":{"zzz-no-catalog":{"baseUrl":"http://x","models":[{"id":"only-m","input":["text","image"],"contextWindow":64000,"maxTokens":2048}]}}}"#,
+		)
+		.unwrap();
+		// Custom provider: only its models.json entries come back, all custom.
+		let models = pi_provider_models("zzz-no-catalog".into()).unwrap();
+		assert_eq!(models.len(), 1);
+		assert_eq!(models[0].id, "only-m");
+		assert!(models[0].custom && models[0].image);
+		assert_eq!(models[0].context_window, 64000);
+		// Unknown provider yields an empty list, not an error.
+		assert!(pi_provider_models("no-such-provider".into()).unwrap().is_empty());
+		assert!(pi_provider_models("Bad Id".into()).is_err());
+	}
+
+	#[test]
+	fn custom_provider_validation_builtin_overlay() {
+		let agent = AgentDirGuard::new("validate-overlay");
+		let _ = &agent;
+
+		// Empty entry and custom id without baseUrl are rejected either way.
+		assert!(pi_upsert_custom_provider("whatever".into(), serde_json::json!({})).is_err());
+		assert!(pi_upsert_custom_provider(
+			"my-custom".into(),
+			serde_json::json!({"models": [{"id": "m"}]}),
+		)
+		.is_err());
+
+		// Built-in ids now pass as partial overlays (only checkable when the
+		// vendored runtime with its catalog is installed).
+		if pi_ai_providers_data_dir().is_some() {
+			pi_upsert_custom_provider(
+				"anthropic".into(),
+				serde_json::json!({"models": [{"id": "claude-x"}]}),
+			)
+			.unwrap();
+			pi_upsert_custom_provider(
+				"anthropic".into(),
+				serde_json::json!({"modelOverrides": {"claude-x": {"reasoning": true}}}),
+			)
+			.unwrap();
+			// Still rejected: empty entry, models with missing ids.
+			assert!(pi_upsert_custom_provider("anthropic".into(), serde_json::json!({})).is_err());
+			assert!(pi_upsert_custom_provider(
+				"anthropic".into(),
+				serde_json::json!({"models": [{"name": "no id"}]}),
+			)
+			.is_err());
+		}
 	}
 }
