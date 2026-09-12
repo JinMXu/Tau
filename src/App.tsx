@@ -40,7 +40,6 @@ import {
 	type AuthProviderStatus,
 	type GitBranchState,
 	type PiArchivedSession,
-	type PiBinaryInfo,
 	type PiCommand,
 	type PiEvent,
 	type PiParsedMessage,
@@ -108,7 +107,6 @@ export default function App() {
 	const tRef = useRef(t);
 	tRef.current = t;
 
-	const [binary, setBinary] = useState<PiBinaryInfo | null>(null);
 	const [binError, setBinError] = useState<string | null>(null);
 	const [workspace, setWorkspace] = useState<string | null>(() =>
 		localStorage.getItem(STORAGE_KEYS.workspace),
@@ -1602,7 +1600,7 @@ export default function App() {
 				}),
 			);
 			try {
-				setBinary(await binaryInfo());
+				await binaryInfo();
 				setBinError(null);
 			} catch (e) {
 				setBinError(String(e));
@@ -1625,20 +1623,16 @@ export default function App() {
 		};
 	}, [handleEvent, refreshSessions, pushStderr, toast, syncWorkingPaths]);
 
-	// The startup probe above runs while a fresh install's antivirus scan can
-	// still make `node --version` take tens of seconds — every probe candidate
-	// times out and binaryInfo() reports "pi binary not found" even though pi
-	// is installed. Keep retrying while the error is shown (the backend cache
+	// Keep retrying while the runtime-missing banner is shown (the backend
 	// re-probes after its own backoff) so the banner clears itself once the
-	// scan settles instead of sticking until an app restart.
+	// vendored runtime becomes available instead of sticking until a restart.
 	useEffect(() => {
 		if (binError === null) {
 			return;
 		}
 		const id = setInterval(() => {
 			binaryInfo()
-				.then((info) => {
-					setBinary(info);
+				.then(() => {
 					setBinError(null);
 				})
 				.catch(() => {
@@ -3910,7 +3904,6 @@ export default function App() {
 						t={t}
 						settings={settings}
 						onChange={setSettings}
-						binary={binary}
 						sessionDir={sessionDirRef.current}
 						archived={archived}
 						onRestore={handleRestore}

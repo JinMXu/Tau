@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PiArchivedSession, PiBinaryInfo } from "../pi";
+import type { PiArchivedSession } from "../pi";
 import {
 	authRemove,
 	authSetKey,
@@ -388,7 +388,6 @@ export function SettingsPanel({
 	t,
 	settings,
 	onChange,
-	binary,
 	sessionDir,
 	archived,
 	onRestore,
@@ -413,7 +412,6 @@ export function SettingsPanel({
 	t: MessageCatalog;
 	settings: AppSettings;
 	onChange: (s: AppSettings) => void;
-	binary: PiBinaryInfo | null;
 	sessionDir: string;
 	archived: PiArchivedSession[];
 	onRestore: (path: string) => void;
@@ -1665,13 +1663,6 @@ export function SettingsPanel({
 					{page === "about" && (
 						<section className="settings-section">
 							<h3>{t.settings.about}</h3>
-							<Row label={t.settings.piBinary}>
-								<span className="settings-value">
-									{binary
-										? `${binary.version}${binary.builtin ? ` · ${t.settings.piBuiltin}` : ""} · ${binary.bin}`
-										: t.settings.binError}
-								</span>
-							</Row>
 							<Row label={t.settings.sdkSidecar}>
 								<SidecarStatus t={t} />
 							</Row>
