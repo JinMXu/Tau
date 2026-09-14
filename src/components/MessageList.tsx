@@ -463,7 +463,7 @@ const MessageRow = memo(function MessageRow({
 				/>
 			)}
 			{last && typeof m.error === "string" && <div className="msg-error">error: {m.error}</div>}
-			{!m.streaming && (m.role === "user" || canFork) && (
+			{last && !m.streaming && (m.role === "user" || canFork) && (
 				<MessageActions
 					text={messageText(m)}
 					canRecall={m.role === "user" && canRecall}
@@ -764,15 +764,16 @@ export const MessageList = memo(function MessageList({
 
 	// The most recent user message id — the only one that can be recalled
 	// (percho: recallMessage applies to the trailing user turn; older ones
-	// stay in place). Frozen mid-stream so the live group doesn't keep
-	// changing the target behind the user's hand.
+	// stay in place). Frozen for the whole run (not just text streaming —
+	// `streaming` is false during mid-turn tool execution) so the action
+	// buttons never surface while the agent is still working.
 	const lastUserMessageId = useMemo(() => {
-		if (streaming) return null;
+		if (working || streaming) return null;
 		for (let i = all.length - 1; i >= 0; i--) {
 			if (all[i].role === "user") return all[i].id;
 		}
 		return null;
-	}, [all, streaming]);
+	}, [all, streaming, working]);
 
 	// Submit-gap live chip: shown ONLY while the current turn has produced
 	// no content at all (the last message is still the user's own) — the
@@ -788,9 +789,11 @@ export const MessageList = memo(function MessageList({
 	// The last assistant message carrying text — the ONLY one that gets
 	// actions (percho showActions = turn-final text id): intermediate
 	// narration between tool bursts renders bare; the turn's final answer
-	// carries Copy + Fork.
+	// carries Copy + Fork. Gated on the whole run (`working`), not just
+	// text streaming: `streaming` is false while tools execute mid-turn,
+	// which let the buttons flash on mid-run narration.
 	const turnFinalAssistantId = useMemo(() => {
-		if (streaming) return null;
+		if (working || streaming) return null;
 		for (let i = all.length - 1; i >= 0; i--) {
 			const m = all[i];
 			if (m.role === "assistant" && m.blocks.some((b) => b.kind === "text" && b.text.trim())) {
@@ -798,7 +801,7 @@ export const MessageList = memo(function MessageList({
 			}
 		}
 		return null;
-	}, [all, streaming]);
+	}, [all, streaming, working]);
 
 	return (
 		<div ref={scrollRef} className="messages">

@@ -150,4 +150,73 @@ describe("MessageList message actions", () => {
 			root.unmount();
 		});
 	});
+
+	it("hides all actions mid-run while tools execute (working, not streaming)", async () => {
+		const toolMsg: ChatMessage = {
+			id: 2,
+			role: "assistant",
+			blocks: [
+				{ kind: "text", text: "先改数据库表结构" },
+				{ kind: "tool", name: "bash", args: "{}" },
+			],
+			streaming: false,
+		};
+		const el = document.createElement("div");
+		document.body.appendChild(el);
+		const root = createRoot(el);
+		await act(async () => {
+			root.render(
+				<MessageList
+					messages={[userMsg, toolMsg]}
+					stream={null}
+					streaming={false}
+					working={true}
+					t={t}
+					onCopyMessage={() => {}}
+					onRecallMessage={() => {}}
+					onForkMessage={() => {}}
+				/>,
+			);
+		});
+		expect(el.querySelectorAll(".message-action").length).toBe(0);
+		await act(async () => {
+			root.unmount();
+		});
+	});
+
+	it("renders actions only on the split message's last text row", async () => {
+		const splitMsg: ChatMessage = {
+			id: 2,
+			role: "assistant",
+			blocks: [
+				{ kind: "text", text: "第一段叙述" },
+				{ kind: "tool", name: "bash", args: "{}" },
+				{ kind: "text", text: "最终回答" },
+			],
+			streaming: false,
+			entryId: "entry-1",
+		};
+		const el = document.createElement("div");
+		document.body.appendChild(el);
+		const root = createRoot(el);
+		await act(async () => {
+			root.render(
+				<MessageList
+					messages={[userMsg, splitMsg]}
+					stream={null}
+					streaming={false}
+					working={false}
+					t={t}
+					onForkMessage={() => {}}
+				/>,
+			);
+		});
+		// The split message renders two text rows, but only the last one
+		// carries Copy + Fork.
+		expect(el.querySelectorAll('button[aria-label="Fork"]').length).toBe(1);
+		expect(el.querySelectorAll('button[aria-label="Copy"]').length).toBe(2); // 用户 + 最终段
+		await act(async () => {
+			root.unmount();
+		});
+	});
 });
