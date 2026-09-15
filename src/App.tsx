@@ -774,6 +774,10 @@ export default function App() {
 			// the originating command (bash_execution_update carries the id).
 			const id = opts?.id ?? `gui-${nextId++}`;
 			const timeoutMs = RESPONSE_TIMEOUTS[String(command.type)] ?? 60000;
+			// Always target a channel explicitly: the backend's no-chan fallback
+			// only works when the window has exactly one live channel, and fails
+			// with "pi is not running" the moment a second session channel exists.
+			const chan = opts?.chan ?? chanRef.current;
 			const event = await new Promise<PiEvent>((resolve, reject) => {
 				const timer = setTimeout(() => {
 					if (pendingRef.current.delete(id)) reject(new Error("timeout waiting for pi response"));
@@ -782,7 +786,7 @@ export default function App() {
 					clearTimeout(timer);
 					resolve(e);
 				}) as (v: unknown) => void);
-				send(command, id).catch((e) => {
+				send(command, id, chan).catch((e) => {
 					clearTimeout(timer);
 					pendingRef.current.delete(id);
 					reject(e);
