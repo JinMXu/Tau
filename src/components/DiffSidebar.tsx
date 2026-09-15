@@ -1,5 +1,8 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import type { MessageCatalog } from "../i18n";
+import { STORAGE_KEYS } from "../app-constants";
+import { usePersistedState } from "../hooks/use-persisted-state";
 import { BranchIcon, ChevronDownIcon, XIcon } from "../icons";
 import type { NumDiffLine, TurnChanges } from "./chat-rows";
 
@@ -10,6 +13,10 @@ import type { NumDiffLine, TurnChanges } from "./chat-rows";
  */
 
 const COLLAPSE_LINES = 120;
+
+const DEFAULT_WIDTH = 420;
+const MIN_WIDTH = 300;
+const MAX_WIDTH = 760;
 
 /** Single diff line: double gutter line numbers + sign column. */
 function DiffLineView({ line, index }: { line: NumDiffLine; index: number }) {
@@ -130,9 +137,67 @@ export function DiffSidebar({
 	useEffect(() => {
 		if (open) setOpenCount((n) => n + 1);
 	}, [open]);
+
+	// Resizable width (drag the left edge), persisted across restarts.
+	const [width, setWidth] = usePersistedState<number>(STORAGE_KEYS.diffWidth, DEFAULT_WIDTH, {
+		serialize: String,
+		deserialize: (raw) => {
+			const w = Number(raw);
+			return w >= MIN_WIDTH && w <= MAX_WIDTH ? w : DEFAULT_WIDTH;
+		},
+	});
+	const [resizing, setResizing] = useState(false);
+	const resizeRef = useRef<{ startX: number; startW: number } | null>(null);
+	const startResize = useCallback(
+		(e: ReactPointerEvent) => {
+			e.preventDefault();
+			resizeRef.current = { startX: e.clientX, startW: width };
+			setResizing(true);
+			// rAF-throttled like the left sidebar resizer: pointermove can fire
+			// far faster than a frame.
+			let raf = 0;
+			let pendingW = 0;
+			const onMove = (ev: PointerEvent) => {
+				if (!resizeRef.current) return;
+				// The handle sits on the LEFT edge: dragging left widens the panel.
+				pendingW = Math.min(
+					MAX_WIDTH,
+					Math.max(MIN_WIDTH, resizeRef.current.startW + resizeRef.current.startX - ev.clientX),
+				);
+				if (raf) return;
+				raf = requestAnimationFrame(() => {
+					raf = 0;
+					setWidth(pendingW);
+				});
+			};
+			const onUp = () => {
+				if (raf) cancelAnimationFrame(raf);
+				resizeRef.current = null;
+				setResizing(false);
+				window.removeEventListener("pointermove", onMove);
+				window.removeEventListener("pointerup", onUp);
+			};
+			window.addEventListener("pointermove", onMove);
+			window.addEventListener("pointerup", onUp);
+		},
+		[width],
+	);
+
 	return (
-		<aside className={`diff-sidebar${open ? " open" : ""}`} aria-hidden={!open}>
-			<div className="diff-sidebar-in" key={openCount}>
+		<aside
+			className={`diff-sidebar${open ? " open" : ""}${resizing ? " resizing" : ""}`}
+			aria-hidden={!open}
+			style={{ width: open ? width : 0 }}
+		>
+			{open && (
+				<div
+					className="diff-resizer"
+					onPointerDown={startResize}
+					role="separator"
+					aria-orientation="vertical"
+				/>
+			)}
+			<div className="diff-sidebar-in" key={openCount} style={{ width }}>
 				<div className="diff-side-head">
 					<span className="diff-side-title">{t.diff.title}</span>
 					{hasContent ? (

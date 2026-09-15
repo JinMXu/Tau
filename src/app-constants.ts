@@ -9,6 +9,7 @@
 export const STORAGE_KEYS = {
 	expanded: "pi-gui.sidebar.expanded.v1",
 	width: "pi-gui.sidebar.width.v1",
+	diffWidth: "pi-gui.diff.width.v1",
 	collapsed: "pi-gui.sidebar.collapsed.v1",
 	model: "pi-gui.model.v1",
 	thinking: "pi-gui.thinking.v1",
