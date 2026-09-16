@@ -38,6 +38,19 @@ const invoked: { cmd: string; args: unknown }[] = [];
 				return Promise.resolve(null);
 			case "pi_binary":
 				return Promise.resolve({ bin: "pi-mock", version: "0.0.0-mock", builtin: true });
+			case "plugin:app|version":
+				return Promise.resolve("0.1.0-mock");
+			case "update_check":
+				return Promise.resolve({
+					checkedAtMs: Date.now(),
+					current: "0.1.0-mock",
+					latest: "v0.1.0-mock",
+					available: false,
+					url: "https://github.com/JinMXu/Tau/releases",
+					notes: "",
+					publishedAt: null,
+					fromCache: false,
+				});
 			case "pi_list_sessions":
 				return Promise.resolve([]);
 			case "pi_list_archived_sessions":

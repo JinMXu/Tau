@@ -59,6 +59,7 @@ export function TitleBar({
 	t,
 	onNewWindow,
 	onOpenSettings,
+	onCheckUpdates,
 	onToggleSidebar,
 	onSessionInfo,
 	onTree,
@@ -66,6 +67,7 @@ export function TitleBar({
 	t: MessageCatalog;
 	onNewWindow: () => void;
 	onOpenSettings: () => void;
+	onCheckUpdates: () => void;
 	onToggleSidebar: () => void;
 	onSessionInfo: () => void;
 	onTree: () => void;
@@ -119,6 +121,7 @@ export function TitleBar({
 					action: onNewWindow,
 				},
 				{ kind: "sep" },
+				{ kind: "item", label: t.menu.checkUpdates, action: onCheckUpdates },
 				{ kind: "item", label: t.menu.about, action: onOpenSettings },
 			],
 		},

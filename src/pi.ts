@@ -261,6 +261,36 @@ export async function exportDiagnostics(): Promise<{
 	return invoke("export_diagnostics");
 }
 
+/**
+ * One update check result: the latest GitHub release vs the running app.
+ * `available` is true only when the release tag is strictly newer than the
+ * running version (pre-releases sort below their release).
+ */
+export interface UpdateInfo {
+	/** Unix ms when the result was produced by an actual network check. */
+	checkedAtMs: number;
+	/** Running app version (from the Rust package info). */
+	current: string;
+	/** Latest release tag, e.g. "v0.2.0". */
+	latest: string;
+	available: boolean;
+	/** Release page URL; empty when the API payload lacked it. */
+	url: string;
+	/** Release notes (markdown), possibly empty. */
+	notes: string;
+	publishedAt: string | null;
+	/** True when served from the on-disk cache instead of a live request. */
+	fromCache: boolean;
+}
+
+/**
+ * Ask the backend for the latest release. `force` (manual checks from
+ * Settings) bypasses the 12h cache; automatic checks reuse it.
+ */
+export async function checkForUpdates(force = false): Promise<UpdateInfo> {
+	return invoke("update_check", { force });
+}
+
 /** Stop one session channel; omit `chan` to stop every channel of the window. */
 export async function stop(chan?: string | null): Promise<void> {
 	await invoke("pi_stop", { chan: chan ?? null });

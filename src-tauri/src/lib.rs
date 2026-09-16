@@ -3,6 +3,7 @@ mod pi;
 mod pi_session;
 mod runtime_log;
 mod sidecar;
+mod update;
 mod window_state;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -58,6 +59,7 @@ fn build_menu_items<R: tauri::Runtime>(
 		session_info_label,
 		tree_label,
 		toggle_sidebar_label,
+		check_updates_label,
 	) = if zh {
 		(
 			"应用",
@@ -75,6 +77,7 @@ fn build_menu_items<R: tauri::Runtime>(
 			"会话详情",
 			"会话树",
 			"切换侧边栏",
+			"检查更新…",
 		)
 	} else {
 		(
@@ -93,6 +96,7 @@ fn build_menu_items<R: tauri::Runtime>(
 			"Session details",
 			"Session tree",
 			"Toggle Sidebar",
+			"Check for Updates…",
 		)
 	};
 	let edit_menu = Submenu::with_items(
@@ -134,6 +138,13 @@ fn build_menu_items<R: tauri::Runtime>(
 		true,
 		Some("CmdOrCtrl+Shift+N"),
 	)?;
+	let check_updates_item = MenuItem::with_id(
+		app,
+		"check-updates",
+		check_updates_label,
+		true,
+		None::<&str>,
+	)?;
 	let about_item = MenuItem::with_id(app, "about", about_label, true, None::<&str>)?;
 	let app_menu = Submenu::with_items(
 		app,
@@ -141,6 +152,8 @@ fn build_menu_items<R: tauri::Runtime>(
 		true,
 		&[
 			&new_window_item,
+			&PredefinedMenuItem::separator(app)?,
+			&check_updates_item,
 			&PredefinedMenuItem::separator(app)?,
 			&about_item,
 		],
@@ -349,7 +362,7 @@ pub fn run() {
 				// Everything else is renderer-side state (settings panel,
 				// dialogs, sidebar toggle), so forward the command to the
 				// focused window.
-				"about" | "session-info" | "tree" | "toggle-sidebar" => {
+				"about" | "check-updates" | "session-info" | "tree" | "toggle-sidebar" => {
 					let windows = app.webview_windows();
 					if let Some(win) = windows.values().find(|w| w.is_focused().unwrap_or(false)) {
 						let _ = win.emit("menu://command", id);
@@ -374,6 +387,9 @@ pub fn run() {
 			// node_modules tree (minutes), which must not surface as a
 			// timed-out ping when the user opens Settings.
 			sidecar::start_warmup(app.handle().clone());
+			// Delayed background update check (GitHub Releases, cache-throttled):
+			// emits `update://available` when a newer release exists.
+			update::spawn_startup_check(app.handle().clone());
 			runtime_log::log_info(app.handle(), "app started");
 			let _ = build_menu(app.handle(), "zh");
 			// Heartbeat: a hard-killed process leaves no exit trace; the last

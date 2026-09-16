@@ -8,6 +8,7 @@ import {
 	authSetKey,
 	authStatus,
 	binaryInfo,
+	checkForUpdates,
 	compactSessionImages,
 	deleteSession as deleteSessionCmd,
 	exportChat,
@@ -45,6 +46,7 @@ import {
 	type PiParsedMessage,
 	type PiSessionInfo,
 	type SubagentRun,
+	type UpdateInfo,
 } from "./pi";
 import { getMessages } from "./i18n";
 import { stripAnsi } from "./lib/ansi";
@@ -65,7 +67,7 @@ import { ConfirmDialog, type ConfirmState } from "./components/ConfirmDialog";
 import { RenameDialog, type RenameState } from "./components/RenameDialog";
 import { TitleBar } from "./components/TitleBar";
 import { SearchOverlay } from "./components/SearchOverlay";
-import { SettingsPanel } from "./components/SettingsPanel";
+import { SettingsPanel, type SettingsPage } from "./components/SettingsPanel";
 import { ArchivedPreview } from "./components/ArchivedPreview";
 import { chatMessageToMarkdown, parsedMessagesToMarkdown } from "./components/message-utils";
 import { ExtensionDialog, type ExtensionRequest } from "./components/ExtensionDialog";
@@ -161,6 +163,14 @@ export default function App() {
 	const [aborting, setAborting] = useState(false);
 	const [searchOpen, setSearchOpen] = useState(false);
 	const [settingsOpen, setSettingsOpen] = useState(false);
+	/** Settings page to open next; menu commands jump straight to About. The
+	 * panel is conditionally mounted, so it reads this once per open. */
+	const [settingsPage, setSettingsPage] = useState<SettingsPage | null>(null);
+	// Software update state is owned here (not in the panel) so the background
+	// startup check's result and the check-in-flight flag survive closing and
+	// reopening Settings.
+	const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
+	const [checkingUpdates, setCheckingUpdates] = useState(false);
 	const [sidebarCollapsed, setSidebarCollapsed] = usePersistedState<boolean>(
 		STORAGE_KEYS.collapsed,
 		false,
@@ -3511,13 +3521,55 @@ export default function App() {
 
 	const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
 
+	// Central opener: `page` picks the initial settings page (menu commands
+	// jump to About); null means the panel's default (General).
+	const openSettings = useCallback((page: SettingsPage | null = null) => {
+		setSettingsPage(page);
+		setSettingsOpen(true);
+	}, []);
+
+	// Manual update check (Settings → About and the "Check for Updates…" menu
+	// item). Always forces a live GitHub query; the result lives in App state
+	// so the About page can still render it after a close/reopen.
+	const handleCheckUpdates = useCallback(async () => {
+		setCheckingUpdates(true);
+		try {
+			const info = await checkForUpdates(true);
+			setUpdateInfo(info);
+			if (info.available) {
+				toast(`${tRef.current.settings.updateAvailableToast} ${info.latest}`);
+			}
+		} catch (e) {
+			toast(`${tRef.current.settings.updateCheckFailed}: ${String(e)}`);
+		} finally {
+			setCheckingUpdates(false);
+		}
+	}, [toast]);
+
+	// Background startup check result (Rust emits `update://available` at most
+	// once per launch once the cache window elapsed). Surface it softly: a
+	// toast plus persistent state for the About page.
+	useEffect(() => {
+		const unlisten = listen<UpdateInfo>("update://available", (e) => {
+			setUpdateInfo(e.payload);
+			toast(`${tRef.current.settings.updateAvailableToast} ${e.payload.latest}`);
+		});
+		return () => {
+			void unlisten.then((f) => f());
+		};
+	}, [toast]);
+
 	// Native system menu commands (macOS menu bar) forwarded from Rust. "New
 	// Window" is handled in Rust; everything else is renderer-side state.
 	useEffect(() => {
 		const unlisten = listen<string>("menu://command", (e) => {
 			switch (e.payload) {
 				case "about":
-					setSettingsOpen(true);
+					openSettings("about");
+					break;
+				case "check-updates":
+					openSettings("about");
+					void handleCheckUpdates();
 					break;
 				case "session-info":
 					void openSessionInfo();
@@ -3533,14 +3585,14 @@ export default function App() {
 		return () => {
 			void unlisten.then((f) => f());
 		};
-	}, [openSessionInfo, openTree, toggleSidebar]);
+	}, [handleCheckUpdates, openSettings, openSessionInfo, openTree, toggleSidebar]);
 
 	// Deep links: "#settings" / "#search" open the matching surface on mount.
 	useEffect(() => {
 		const hash = window.location.hash;
-		if (hash === "#settings") setSettingsOpen(true);
+		if (hash === "#settings") openSettings();
 		if (hash === "#search") setSearchOpen(true);
-	}, []);
+	}, [openSettings]);
 
 	// Auto-connect / auto-resume: whenever the app is idle and a workspace is
 	// known, (re)connect to the current/last session (or a fresh one).
@@ -3771,7 +3823,7 @@ export default function App() {
 			onNewTask={newTask}
 			onNewTaskInProject={newTaskInProject}
 			onOpenWorkspace={pickWorkspace}
-			onOpenSettings={() => setSettingsOpen(true)}
+			onOpenSettings={() => openSettings()}
 			onOpenSearch={() => setSearchOpen(true)}
 			onMoveSession={handleMoveSession}
 			onRevealProject={handleRevealProject}
@@ -3789,7 +3841,11 @@ export default function App() {
 				<TitleBar
 					t={t}
 					onNewWindow={() => void newWindow()}
-					onOpenSettings={() => setSettingsOpen(true)}
+					onOpenSettings={() => openSettings("about")}
+					onCheckUpdates={() => {
+						openSettings("about");
+						void handleCheckUpdates();
+					}}
 					onToggleSidebar={toggleSidebar}
 					onSessionInfo={() => void openSessionInfo()}
 					onTree={() => void openTree()}
@@ -3900,7 +3956,7 @@ export default function App() {
 						onForkMessage={() => void handleForkMessage()}
 						onRetryMessage={retryLastUserMessage}
 						onCompactSession={() => void compact()}
-						openSettings={() => setSettingsOpen(true)}
+						openSettings={() => openSettings()}
 					/>
 				</div>
 				{settingsOpen && (
@@ -3909,6 +3965,10 @@ export default function App() {
 						settings={settings}
 						onChange={setSettings}
 						sessionDir={sessionDirRef.current}
+						initialPage={settingsPage}
+						updateInfo={updateInfo}
+						checkingUpdates={checkingUpdates}
+						onCheckUpdates={() => void handleCheckUpdates()}
 						archived={archived}
 						onRestore={handleRestore}
 						onPurge={handlePurge}

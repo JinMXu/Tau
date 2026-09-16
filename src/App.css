@@ -2753,6 +2753,53 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 	font-family: var(--font-mono);
 }
 
+/* Settings → About → software update status. */
+.update-control {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-2);
+	flex-wrap: wrap;
+	justify-content: flex-end;
+}
+
+.update-status {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--sp-2);
+	font-size: var(--fs-sm);
+	color: var(--app-muted);
+}
+
+.update-status.available {
+	color: var(--link);
+	font-weight: 500;
+}
+
+/* Collapsible release notes shown when an update is available. */
+.update-notes {
+	font-size: var(--fs-sm);
+	color: var(--app-muted);
+}
+
+.update-notes summary {
+	cursor: pointer;
+	color: var(--link);
+	user-select: none;
+}
+
+.update-notes pre {
+	margin: var(--sp-2) 0 0;
+	padding: var(--sp-2) var(--sp-3);
+	background: var(--code-bg);
+	border: 1px solid var(--card-border);
+	border-radius: var(--r-md);
+	white-space: pre-wrap;
+	word-break: break-word;
+	font-family: inherit;
+	max-height: 220px;
+	overflow: auto;
+}
+
 .link-btn {
 	font-size: var(--fs-sm);
 	color: var(--link);

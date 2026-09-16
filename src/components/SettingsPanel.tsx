@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PiArchivedSession } from "../pi";
+import { getVersion } from "@tauri-apps/api/app";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import type { PiArchivedSession, UpdateInfo } from "../pi";
 import {
 	authRemove,
 	authSetKey,
@@ -72,6 +74,8 @@ type SettingsPage =
 	| "archived"
 	| "usage"
 	| "about";
+
+export type { SettingsPage };
 
 const colorScales: { id: ColorScale; label: string; swatch: string[] }[] = [
 	{ id: "mist", label: "Mist", swatch: ["#e9eef1", "#c9d6de", "#8fa4ae"] },
@@ -647,6 +651,10 @@ export function SettingsPanel({
 	onSetDefaultTrust,
 	projects,
 	onCustomProvidersChanged,
+	initialPage,
+	updateInfo,
+	checkingUpdates,
+	onCheckUpdates,
 }: {
 	t: MessageCatalog;
 	settings: AppSettings;
@@ -675,6 +683,14 @@ export function SettingsPanel({
 	 * changed). The host uses it to reconnect the running session so pi
 	 * re-reads the model catalog. */
 	onCustomProvidersChanged?: () => void;
+	/** Page to open on mount (menu commands jump straight to About). The
+	 * panel is conditionally rendered, so this is read once per open. */
+	initialPage?: SettingsPage | null;
+	/** Latest known update state, owned by the host so the startup check's
+	 * result survives opening/closing the panel. */
+	updateInfo?: UpdateInfo | null;
+	checkingUpdates?: boolean;
+	onCheckUpdates?: () => void;
 }) {
 	const themeOptions: { id: Theme; label: string }[] = [
 		{ id: "light", label: t.settings.themeLight },
@@ -687,7 +703,7 @@ export function SettingsPanel({
 		{ id: "relaxed", label: t.settings.densityRelaxed },
 	];
 
-	const [page, setPage] = useState<SettingsPage>("general");
+	const [page, setPage] = useState<SettingsPage>(initialPage ?? "general");
 	const [packageQuery, setPackageQuery] = useState("");
 	// Archived page: search / sort / project filter / per-project "..." menu.
 	const [archivedQuery, setArchivedQuery] = useState("");
@@ -853,6 +869,17 @@ export function SettingsPanel({
 			setExportingDiag(false);
 		}
 	}, [notify, notifyError, t]);
+
+	// ---- update check (About page) ----
+	// The running version comes from Tauri directly (works before the first
+	// check completes); the host owns the check state so results from the
+	// background startup check aren't lost when the panel is closed.
+	const [appVersion, setAppVersion] = useState<string | null>(null);
+	useEffect(() => {
+		getVersion()
+			.then(setAppVersion)
+			.catch(() => setAppVersion(null));
+	}, []);
 
 	// ---- custom providers (models.json CRUD) ----
 	const [customProviders, setCustomProviders] = useState<CustomProviderEntry[]>([]);
@@ -1967,6 +1994,42 @@ export function SettingsPanel({
 					{page === "about" && (
 						<section className="settings-section">
 							<h3>{t.settings.about}</h3>
+							<Row label={t.settings.currentVersion}>
+								<span className="settings-value">{appVersion ?? updateInfo?.current ?? "—"}</span>
+							</Row>
+							<Row label={t.settings.updates} hint={t.settings.updatesHint}>
+								<div className="update-control">
+									<button
+										className="btn secondary"
+										disabled={checkingUpdates || !onCheckUpdates}
+										onClick={() => onCheckUpdates?.()}
+									>
+										{checkingUpdates ? t.settings.checkingUpdates : t.settings.checkUpdates}
+									</button>
+									{updateInfo &&
+										(updateInfo.available ? (
+											<span className="update-status available">
+												{t.settings.updateAvailable}: {updateInfo.latest}
+												{updateInfo.url && (
+													<button
+														className="link-btn"
+														onClick={() => void openUrl(updateInfo.url).catch(() => {})}
+													>
+														{t.settings.downloadUpdate}
+													</button>
+												)}
+											</span>
+										) : (
+											<span className="update-status">{t.settings.upToDate}</span>
+										))}
+								</div>
+							</Row>
+							{updateInfo?.available && updateInfo.notes && (
+								<details className="update-notes">
+									<summary>{t.settings.releaseNotes}</summary>
+									<pre>{updateInfo.notes}</pre>
+								</details>
+							)}
 							<Row label={t.settings.sdkSidecar}>
 								<SidecarStatus t={t} />
 							</Row>

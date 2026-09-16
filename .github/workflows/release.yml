@@ -1,0 +1,83 @@
+# Release pipeline: pushing a `v*` tag builds the installers for every
+# supported platform and publishes them as a GitHub Release. Publishing the
+# release is what makes the in-app update check (Settings → About, backed by
+# `update.rs` + `/releases/latest`) see the new version.
+#
+# Requirements enforced here:
+# - The tag must match the version in `src-tauri/tauri.conf.json` (the app's
+#   baked-in version); forgetting the bump fails the build fast instead of
+#   shipping an installer that forever reports "update available".
+#
+# Native per-runner builds (no cross-compilation): each runner's arch matches
+# the vendored Node runtime downloaded by `npm run vendor:pi`, so the bundled
+# pi runtime always matches the installer's architecture.
+#
+# macOS artifacts are unsigned (no Apple Developer ID configured): users need
+# to right-click → Open on first launch, or clear the Gatekeeper quarantine.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            platform: windows-latest
+          - label: macOS arm64
+            platform: macos-latest
+          - label: macOS x64
+            platform: macos-13
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches app version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          APP_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$TAG" != "$APP_VERSION" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match app version ${APP_VERSION} — bump the version in src-tauri/tauri.conf.json (and package.json/Cargo.toml) before tagging."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Tau ${{ github.ref_name }}"
+          releaseBody: "下载对应平台的安装包覆盖安装即可。应用内「设置 → 关于 → 检查更新」也会提示此新版本。"
+          releaseDraft: false
+          prerelease: false
