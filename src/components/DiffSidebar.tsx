@@ -153,6 +153,9 @@ export function DiffSidebar({
 			e.preventDefault();
 			resizeRef.current = { startX: e.clientX, startW: width };
 			setResizing(true);
+			// Narrow windows render the panel as an overlay; cap it so a pull
+			// can never swallow the whole chat column.
+			const maxW = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, window.innerWidth - 320));
 			// rAF-throttled like the left sidebar resizer: pointermove can fire
 			// far faster than a frame.
 			let raf = 0;
@@ -161,7 +164,7 @@ export function DiffSidebar({
 				if (!resizeRef.current) return;
 				// The handle sits on the LEFT edge: dragging left widens the panel.
 				pendingW = Math.min(
-					MAX_WIDTH,
+					maxW,
 					Math.max(MIN_WIDTH, resizeRef.current.startW + resizeRef.current.startX - ev.clientX),
 				);
 				if (raf) return;
@@ -180,7 +183,7 @@ export function DiffSidebar({
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onUp);
 		},
-		[width],
+		[width, setWidth],
 	);
 
 	return (
