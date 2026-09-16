@@ -84,7 +84,6 @@ import { RESPONSE_TIMEOUTS, STORAGE_KEYS } from "./app-constants";
 import { keepStreamedText } from "./session-merge";
 import { flagCodec, stringSetCodec, usePersistedState } from "./hooks/use-persisted-state";
 import { useToasts } from "./hooks/use-toasts";
-import { useStderrBuffer } from "./hooks/use-stderr-buffer";
 import { useSessionNav } from "./hooks/use-session-nav";
 
 let nextId = 1;
@@ -158,7 +157,6 @@ export default function App() {
 		STORAGE_KEYS.sendMode,
 		() => (settings.sendDuringRunMode === "queue" ? "followUp" : "steer"),
 	);
-	const { stderr, pushStderr } = useStderrBuffer();
 	const [error, setError] = useState<string | null>(null);
 	const [aborting, setAborting] = useState(false);
 	const [searchOpen, setSearchOpen] = useState(false);
@@ -1551,7 +1549,9 @@ export default function App() {
 				}),
 				listen<{ chan?: string; line?: string }>("pi://stderr", (e) => {
 					const line = e.payload?.line;
-					if (typeof line === "string") pushStderr(line);
+					// No UI surface for stderr anymore; keep the diagnostics reachable
+					// via devtools instead of a banner over the composer.
+					if (typeof line === "string") console.warn("[pi stderr]", line);
 				}),
 				listen<{ chan?: string }>("pi://exit", (e) => {
 					const c = e.payload?.chan ?? null;
@@ -1625,7 +1625,7 @@ export default function App() {
 		return () => {
 			unlisteners.forEach((p) => p.then((fn) => fn()));
 		};
-	}, [handleEvent, refreshSessions, pushStderr, toast, syncWorkingPaths]);
+	}, [handleEvent, refreshSessions, toast, syncWorkingPaths]);
 
 	// Keep retrying while the runtime-missing banner is shown (the backend
 	// re-probes after its own backoff) so the banner clears itself once the
@@ -4035,13 +4035,6 @@ export default function App() {
 					</div>
 				))}
 			</div>
-
-			{stderr.length > 0 && (
-				<details className="stderr">
-					<summary>{t.app.piStderr.replace("{n}", String(stderr.length))}</summary>
-					<pre>{stderr.slice(-30).join("\n")}</pre>
-				</details>
-			)}
 		</div>
 	);
 }
