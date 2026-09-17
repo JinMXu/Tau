@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Block, ChatMessage } from "../chat-types";
+import type { AutoRetryState, Block, ChatMessage } from "../chat-types";
 import type { SubagentRun } from "../pi";
 import type { MessageCatalog } from "../i18n";
 import { BranchIcon, CheckIcon, CopyIcon, SparkleIcon, UndoIcon } from "../icons";
@@ -478,18 +478,68 @@ const MessageRow = memo(function MessageRow({
 	);
 });
 
-/** Live chip shown in the submit gap: the agent is working but the new
- * turn's first assistant block has not arrived yet. Same visual as
- * MetaGroup's live header, so the hand-off is seamless. */
-const GapLiveChip = memo(function GapLiveChip({ t }: { t: MessageCatalog }) {
+/** Live chip shown whenever the run is live but nothing is producing output
+ * right now — the submit gap (first-token wait) and mid-run LLM waits / long
+ * tool executions that used to read as dead air. Same visual as MetaGroup's
+ * live header, so the hand-off is seamless. */
+const GapLiveChip = memo(function GapLiveChip({ label }: { label: string }) {
 	return (
 		<div className="meta-group live" aria-hidden="true">
 			<div className="meta-head" style={{ cursor: "default" }}>
 				<ThinkingOrb state="working" size={20} paused={false} />
-				<span className="meta-label">{t.chat.metaThinking}</span>
+				<span className="meta-label">{label}</span>
 				<span className="meta-preview">
 					<PreviewTicker items={[]} reserveSpace />
 				</span>
+			</div>
+		</div>
+	);
+});
+
+/** Live chip for pi's auto-retry backoff window: the LLM request failed with
+ * a retryable error (timeout / overloaded / unresponsive provider), the run
+ * ended with agent_end(willRetry) and reopens after an exponential backoff.
+ * `working` stays true through the window (no idle teardown, no copy/fork
+ * buttons); this chip keeps the wait legible — orb + attempt + countdown +
+ * error preview — instead of dead air that reads as the conversation having
+ * ended, only for output to "resume by itself" seconds later. */
+const AutoRetryChip = memo(function AutoRetryChip({
+	state,
+	t,
+}: {
+	state: AutoRetryState;
+	t: MessageCatalog;
+}) {
+	const [remainingMs, setRemainingMs] = useState(
+		() => Math.max(0, state.delayMs - (Date.now() - state.startedAt)),
+	);
+	useEffect(() => {
+		const tick = () =>
+			setRemainingMs(Math.max(0, state.delayMs - (Date.now() - state.startedAt)));
+		tick();
+		const id = window.setInterval(tick, 500);
+		return () => window.clearInterval(id);
+	}, [state.delayMs, state.startedAt]);
+	return (
+		<div className="meta-group live auto-retry" role="status" aria-live="polite">
+			<div className="meta-head" style={{ cursor: "default" }}>
+				<ThinkingOrb state="working" size={20} paused={false} />
+				<span className="meta-label">{t.chat.autoRetryWaiting}</span>
+				{state.maxAttempts > 0 && (
+					<span className="auto-retry-count">
+						{state.attempt}/{state.maxAttempts}
+					</span>
+				)}
+				{remainingMs > 0 && (
+					<span className="auto-retry-clock" aria-hidden="true">
+						{formatClockDuration(remainingMs)}
+					</span>
+				)}
+				{state.errorMessage && (
+					<span className="meta-preview auto-retry-error" title={state.errorMessage}>
+						{state.errorMessage}
+					</span>
+				)}
 			</div>
 		</div>
 	);
@@ -500,6 +550,7 @@ export const MessageList = memo(function MessageList({
 	stream,
 	streaming,
 	working,
+	autoRetry,
 	textStreaming,
 	autoScroll,
 	t,
@@ -521,6 +572,8 @@ export const MessageList = memo(function MessageList({
 	streaming: boolean;
 	/** Whether the agent is mid-run (drives live group / live turn flags). */
 	working: boolean;
+	/** pi auto-retry backoff window (null when the run is not retrying). */
+	autoRetry?: AutoRetryState | null;
 	/** Whether assistant TEXT is streaming right now (percho streaming.text):
 	 * ends the live group immediately when the final answer starts. */
 	textStreaming?: boolean;
@@ -775,17 +828,22 @@ export const MessageList = memo(function MessageList({
 		return null;
 	}, [all, streaming, working]);
 
-	// Submit-gap live chip: shown ONLY while the current turn has produced
-	// no content at all (the last message is still the user's own) — the
-	// first-token wait. Once any assistant/tool content arrives it never
-	// comes back for the rest of the turn: mid-turn pauses (between tool
-	// results and the next message) have their own live signals, and a
-	// permanent chip there read as noise.
+	// Live wait chip: shown while the run is live but NOTHING is producing
+	// output right now — the first-token wait (the last message is still the
+	// user's own) and mid-run pauses (LLM request in flight after tool
+	// results, long tool executions) that otherwise read as dead air: the
+	// transcript looks finished, then output "resumes by itself". Once any
+	// entry runs again — or the final answer text streams, which ends the
+	// live shell via `endImmediately` — it disappears. The auto-retry chip
+	// takes precedence during retry backoff windows.
 	const gapLive =
 		shownWorking &&
-		all.length > 0 &&
-		all[all.length - 1].role === "user" &&
+		!autoRetry &&
 		!rows.some((r) => r.kind === "group" && r.entries.some((e) => e.running));
+	// First-token wait (nothing but the user's own message so far) reads as
+	// "Thinking"; any other contentless window reads as "Working".
+	const gapLabel =
+		all.length > 0 && all[all.length - 1].role === "user" ? t.chat.metaThinking : t.chat.metaWorking;
 	// The last assistant message carrying text — the ONLY one that gets
 	// actions (percho showActions = turn-final text id): intermediate
 	// narration between tool bursts renders bare; the turn's final answer
@@ -807,7 +865,8 @@ export const MessageList = memo(function MessageList({
 		<div ref={scrollRef} className="messages">
 			{rows.map((row, i) => {
 				if (row.kind === "turn") {
-					const gapChip = gapLive && i === rows.length - 1 ? <GapLiveChip t={t} /> : null;
+					const gapChip =
+						gapLive && i === rows.length - 1 ? <GapLiveChip label={gapLabel} /> : null;
 					return (
 						<Fragment key={row.key}>
 							{gapChip}
@@ -864,9 +923,12 @@ export const MessageList = memo(function MessageList({
 					/>
 				);
 			})}
+			{/* Auto-retry backoff: the retry chip replaces the gap chip so the
+			 * wait stays legible instead of reading as the conversation's end. */}
+			{autoRetry && <AutoRetryChip state={autoRetry} t={t} />}
 			{/* Fallback: same chip when the list ends without a turn row. */}
-			{gapLive && (rows.length === 0 || rows[rows.length - 1].kind !== "turn") && (
-				<GapLiveChip t={t} />
+			{!autoRetry && gapLive && (rows.length === 0 || rows[rows.length - 1].kind !== "turn") && (
+				<GapLiveChip label={gapLabel} />
 			)}
 		</div>
 	);

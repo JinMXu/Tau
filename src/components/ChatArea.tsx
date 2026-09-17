@@ -1,6 +1,7 @@
 import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
 import type {
 	Attachment,
+	AutoRetryState,
 	ChatMessage,
 	QueuedChatMessage,
 	SendBehavior,
@@ -124,6 +125,7 @@ export const ChatArea = memo(function ChatArea({
 	streaming,
 	textStreaming,
 	working,
+	autoRetry,
 	subagentRuns,
 	connected,
 	busy,
@@ -204,6 +206,8 @@ export const ChatArea = memo(function ChatArea({
 	/** Assistant TEXT streaming (see App) — ends the live group instantly. */
 	textStreaming?: boolean;
 	working: boolean;
+	/** pi auto-retry backoff window (null when the run is not retrying). */
+	autoRetry?: AutoRetryState | null;
 	subagentRuns: SubagentRun[];
 	connected: boolean;
 	busy: boolean;
@@ -732,6 +736,7 @@ export const ChatArea = memo(function ChatArea({
 							streaming={streaming}
 							textStreaming={textStreaming}
 							working={working}
+							autoRetry={autoRetry}
 							t={t}
 							searchQuery={searchOpen ? searchQuery : undefined}
 							searchActiveMessageId={activeMessageId}

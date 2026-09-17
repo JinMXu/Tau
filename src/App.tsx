@@ -53,6 +53,7 @@ import { stripAnsi } from "./lib/ansi";
 import { loadSettings, resolveTheme, saveSettings, type AppSettings } from "./settings";
 import type {
 	Attachment,
+	AutoRetryState,
 	Block,
 	ChatMessage,
 	QueuedChatMessage,
@@ -145,6 +146,12 @@ export default function App() {
 	// keep its "Thinking" state while only thinking deltas are arriving.
 	const [textStreaming, setTextStreaming] = useState(false);
 	const [working, setWorking] = useState(false);
+	// pi auto-retry backoff window (auto_retry_start → auto_retry_end): an LLM
+	// retryable failure ends the run with agent_end(willRetry) and pi reopens
+	// it after exponential backoff — WITHOUT agent_settled. `working` stays
+	// true through the whole window; this state only drives the live
+	// "retrying" chip so the gap doesn't read as the conversation ending.
+	const [autoRetry, setAutoRetry] = useState<AutoRetryState | null>(null);
 	// Live pi-subagents runs for the current session (polled while working).
 	const [subagentRuns, setSubagentRuns] = useState<SubagentRun[]>([]);
 	const [models, setModels] = useState<ModelEntry[]>([]);
@@ -1241,6 +1248,10 @@ export default function App() {
 				// transcript from the session file instead.
 				if (!isCurrent) return;
 				clearPendingDeltas();
+				// New content is arriving — the retry run (or a steer sent
+				// during the backoff window) is producing output, so the
+				// "retrying" chip's wait is over.
+				setAutoRetry(null);
 				const message = event.message as { role?: string; id?: string } | undefined;
 				if (message?.role === "assistant") {
 					startStream({
@@ -1476,7 +1487,20 @@ export default function App() {
 				// that means the usual UI reset; for a background channel it
 				// just flips the sidebar spinner off (its transcript will be
 				// rebuilt from the JSONL when the user switches back).
-				setChanWorking(chan, false);
+				//
+				// pi auto-retry: a retryable LLM failure first ends the run
+				// with agent_end(willRetry:true), waits with exponential
+				// backoff (auto_retry_start → auto_retry_end) and then reopens
+				// the run with agent_start — all WITHOUT agent_settled (which
+				// only fires once the whole chain is done). Tearing the run
+				// state down on agent_end flashes the UI back to idle
+				// mid-conversation — copy/fork buttons surface, spinners die,
+				// then output "resumes by itself" seconds later — so only a
+				// non-retry agent_end or agent_settled may reset it.
+				const willRetry =
+					event.type === "agent_end" &&
+					(event as { willRetry?: boolean }).willRetry === true;
+				if (!willRetry) setChanWorking(chan, false);
 				setTextStreaming(false);
 				if (isCurrent) {
 					clearPendingDeltas();
@@ -1493,10 +1517,13 @@ export default function App() {
 							: prev,
 					);
 					setStreaming(false);
-					setWorking(false);
-					setPendingSession(null);
-					setAborting(false);
-					void refreshStats(true);
+					if (!willRetry) {
+						setAutoRetry(null);
+						setWorking(false);
+						setPendingSession(null);
+						setAborting(false);
+						void refreshStats(true);
+					}
 				}
 				void refreshSessions();
 				// agent_settled is emitted in a `finally` block after every run
@@ -1506,6 +1533,43 @@ export default function App() {
 				if (event.type === "agent_settled") {
 					void deliverQueuedNext("prompt", chan);
 				}
+				return;
+			}
+			if (event.type === "auto_retry_start") {
+				// pi auto-retry backoff window after a retryable LLM failure
+				// (timeout / overloaded / unresponsive provider). The failed run
+				// already ended with agent_end(willRetry) and `working` was kept
+				// true; surface the wait instead of dead air, and drop the
+				// failed attempt's error note: pi removed that assistant message
+				// from its own state and will regenerate it on the retry.
+				if (!isCurrent) return;
+				setAutoRetry({
+					attempt: Number(event.attempt) || 0,
+					maxAttempts: Number(event.maxAttempts) || 0,
+					delayMs: Number(event.delayMs) || 0,
+					errorMessage: typeof event.errorMessage === "string" ? event.errorMessage : "",
+					startedAt: Date.now(),
+				});
+				// Trailing retry debris: assistant messages that errored out or
+				// never got content. Walk backwards so a whole failed tail goes;
+				// stop at the first user/tool/text message.
+				setMessages((prev) => {
+					let end = prev.length;
+					while (end > 0) {
+						const m = prev[end - 1];
+						if (m.role === "assistant" && (m.error || m.blocks.length === 0)) end--;
+						else break;
+					}
+					return end === prev.length ? prev : prev.slice(0, end);
+				});
+				return;
+			}
+			if (event.type === "auto_retry_end") {
+				// The retry resolved: success=true fires on the next good
+				// message_end (the retry run is already streaming), success=false
+				// means retries are exhausted and agent_settled follows with the
+				// full teardown (and the final attempt's error note).
+				if (isCurrent) setAutoRetry(null);
 				return;
 			}
 			if (event.type === "tool_execution_end") {
@@ -1578,6 +1642,7 @@ export default function App() {
 						setStreaming(false);
 						setTextStreaming(false);
 						setWorking(false);
+						setAutoRetry(null);
 						turnStartRef.current = null;
 						firstTokenRef.current = null;
 						msgGenStartRef.current = null;
@@ -1826,6 +1891,7 @@ export default function App() {
 			setStreaming(false);
 			setTextStreaming(false);
 			setAborting(false);
+			setAutoRetry(null);
 			setWorking(entry.working);
 			// Mirror the channel's parked queue / extension dialog.
 			queuedRef.current = entry.queue;
@@ -1959,6 +2025,7 @@ export default function App() {
 					setStreaming(false);
 					setTextStreaming(false);
 					setWorking(false);
+					setAutoRetry(null);
 					setAborting(false);
 					setQueueFor([]);
 					setQueuePausedFor(false);
@@ -2110,6 +2177,7 @@ export default function App() {
 		setStreaming(false);
 		setTextStreaming(false);
 		setWorking(false);
+		setAutoRetry(null);
 		setPendingSession(null);
 		setAborting(false);
 		extensionRequestRef.current = null;
@@ -3297,6 +3365,7 @@ export default function App() {
 				setStreaming(false);
 				setTextStreaming(false);
 				setWorking(false);
+				setAutoRetry(null);
 				await refreshSessions();
 				if (sessionFile) {
 					sessionPathRef.current = sessionFile;
@@ -3328,6 +3397,7 @@ export default function App() {
 			setStreaming(false);
 			setTextStreaming(false);
 			setWorking(false);
+			setAutoRetry(null);
 			sessionPathRef.current = res.sessionFile;
 			setSelectedSessionPath(res.sessionFile);
 			localStorage.setItem(STORAGE_KEYS.lastSession, res.sessionFile);
@@ -3883,6 +3953,7 @@ export default function App() {
 						streaming={streaming}
 						textStreaming={textStreaming}
 						working={working}
+						autoRetry={autoRetry}
 						subagentRuns={subagentRuns}
 						connected={connected}
 						busy={busy}
