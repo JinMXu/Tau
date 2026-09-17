@@ -1,0 +1,72 @@
+/* ---------------------------------------------------------------------------
+ * Tailwind v4 entry — the CSS host for shadcn/beUI registry components.
+ *
+ * Cascade layers, lowest → highest priority:
+ *   theme → base (preflight) → app (App.css) → components → utilities
+ *
+ * App.css keeps winning over preflight everywhere it speaks (the 8k-line
+ * design system is untouched), while Tailwind utilities can still override
+ * app styles on the elements beUI components render. Importing App.css here
+ * replaces the old `import "./App.css"` in App.tsx — importing it both ways
+ * would also emit an unlayered copy that beats utilities.
+ * ------------------------------------------------------------------------- */
+
+@layer theme, base, app, components, utilities;
+
+/* Explicit source registration: the vite plugin's auto-detection was missing
+   candidates in class strings it didn't associate with the module graph
+   (group-data variants in Sidebar.tsx) even though the CLI build picked them
+   up. "../" is the project root relative to this file (src + index.html). */
+@source "../";
+@source "../index.html";
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+@import "./App.css" layer(app);
+
+/* Preflight imposes line-height 1.5 app-wide; the app was designed on the
+   UA default (~1.2). Same layer as preflight, declared later → wins. */
+@layer base {
+	html {
+		line-height: normal;
+	}
+}
+
+/* ---------------------------------------------------------------------------
+ * shadcn/beUI token bridge — maps the registry components' Tailwind color
+ * utilities onto the app's existing design tokens. `inline` makes utilities
+ * reference the app variables directly, so they keep following data-theme /
+ * data-color-scale / data-density at runtime without dark: variants.
+ * ------------------------------------------------------------------------- */
+
+@theme inline {
+	--color-background: var(--panel-bg);
+	--color-foreground: var(--app-fg);
+	--color-card: var(--card-bg);
+	--color-card-foreground: var(--app-fg);
+	--color-popover: var(--menu-bg);
+	--color-popover-foreground: var(--app-fg);
+	--color-primary: var(--accent);
+	--color-primary-foreground: var(--accent-fg);
+	--color-secondary: var(--tool-bg);
+	--color-secondary-foreground: var(--app-fg);
+	--color-muted: var(--active);
+	--color-muted-foreground: var(--app-muted);
+	--color-accent: var(--hover);
+	--color-accent-foreground: var(--app-fg);
+	--color-destructive: var(--err);
+	--color-destructive-foreground: #ffffff;
+	--color-border: var(--app-border);
+	--color-input: var(--input-bg);
+	--color-ring: var(--accent);
+
+	/* sidebar surface tokens (beUI sidebar panel + our own classes) */
+	--color-sidebar: var(--sidebar-bg);
+	--color-sidebar-foreground: var(--sidebar-fg);
+	--color-sidebar-muted: var(--sidebar-muted);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-hover: var(--sidebar-hover);
+	--color-sidebar-active: var(--sidebar-active);
+}

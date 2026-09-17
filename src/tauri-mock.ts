@@ -52,7 +52,40 @@ const invoked: { cmd: string; args: unknown }[] = [];
 					fromCache: false,
 				});
 			case "pi_list_sessions":
-				return Promise.resolve([]);
+				// Sample data so the sidebar/projects UI can be eyeballed in the
+				// browser preview (app-mock.html) without a real pi install.
+				return Promise.resolve([
+					{
+						path: "D:/agents/pi-gui/.pi/sessions/alpha.jsonl",
+						name: "alpha",
+						project: "D:/agents/pi-gui",
+						title: "重构侧边栏为 beUI 组件",
+						model: "mock-model",
+						messageCount: 12,
+						mtimeMs: Date.now() - 3 * 60_000,
+						pending: false,
+					},
+					{
+						path: "D:/agents/pi-gui/.pi/sessions/beta.jsonl",
+						name: "beta",
+						project: "D:/agents/pi-gui",
+						title: "修复 diff 侧栏拖拽宽度",
+						model: "mock-model",
+						messageCount: 4,
+						mtimeMs: Date.now() - 26 * 60_000,
+						pending: false,
+					},
+					{
+						path: "D:/agents/tau-docs/.pi/sessions/gamma.jsonl",
+						name: "gamma",
+						project: "D:/agents/tau-docs",
+						title: "Draft release notes",
+						model: "mock-model",
+						messageCount: 7,
+						mtimeMs: Date.now() - 5 * 3600_000,
+						pending: false,
+					},
+				]);
 			case "pi_list_archived_sessions":
 				return Promise.resolve([]);
 			case "pi_status":

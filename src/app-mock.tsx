@@ -4,7 +4,10 @@ import "./tauri-mock";
 import { createRoot } from "react-dom/client";
 import * as React from "react";
 import App from "./App";
-import "./App.css";
+// App.tsx already pulls in the styles via beui.css (layered tailwind +
+// App.css); importing App.css here as well would emit an unlayered copy that
+// beats the utilities layer and breaks the beUI components.
+import "./beui.css";
 
 const root = createRoot(document.getElementById("root")!, {
 	onUncaughtError: (error, errorInfo) => {

@@ -21,4 +21,15 @@ export default tseslint.config(
 			"react-hooks/exhaustive-deps": "warn",
 		},
 	},
+	{
+		// shadcn/beUI registry-managed sources (installed via
+		// `npx shadcn add @beui/…`). Kept byte-identical to the registry so
+		// future `add` runs don't conflict; lint quirks (e.g. empty
+		// `interface X extends Y {}` prop aliases) are silenced here instead
+		// of edited in place.
+		files: ["src/components/motion/**", "src/components/ui/**", "src/lib/ease.ts", "src/lib/utils.ts"],
+		rules: {
+			"@typescript-eslint/no-empty-object-type": "off",
+		},
+	},
 );

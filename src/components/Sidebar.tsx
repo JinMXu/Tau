@@ -2,6 +2,19 @@ import { memo, useCallback, useEffect, useState } from "react";
 import type { PiSessionInfo } from "../pi";
 import type { MessageCatalog } from "../i18n";
 import {
+	AnimatedSidebarContent,
+	AnimatedSidebarFooter,
+	AnimatedSidebarGroup,
+	AnimatedSidebarGroupContent,
+	AnimatedSidebarGroupLabel,
+	AnimatedSidebarMenu,
+	AnimatedSidebarMenuButton,
+	AnimatedSidebarMenuItem,
+	AnimatedSidebarMenuSub,
+	AnimatedSidebarMenuSubItem,
+	AnimatedSidebarTrigger,
+} from "./motion/animated-sidebar";
+import {
 	ArchiveIcon,
 	ChevronLeftIcon,
 	ChevronRightIcon,
@@ -36,6 +49,12 @@ function timeAgo(ms: number, lang: "zh" | "en"): string {
 	});
 }
 
+/**
+ * The sidebar's inner content. Must be rendered inside <AnimatedSidebar>
+ * (which itself sits inside <AnimatedSidebarProvider> in App.tsx) — the beUI
+ * menu parts read the panel state from context to drive the collapse
+ * animations.
+ */
 export const Sidebar = memo(function Sidebar({
 	t,
 	lang,
@@ -44,7 +63,6 @@ export const Sidebar = memo(function Sidebar({
 	expandedProjects,
 	onToggleProject,
 	onSelectSession,
-	onToggleSidebar,
 	onBack,
 	onForward,
 	canGoBack,
@@ -73,7 +91,6 @@ export const Sidebar = memo(function Sidebar({
 	expandedProjects: Set<string>;
 	onToggleProject: (project: string) => void;
 	onSelectSession: (s: PiSessionInfo) => void;
-	onToggleSidebar: () => void;
 	onBack: () => void;
 	onForward: () => void;
 	canGoBack: boolean;
@@ -159,16 +176,15 @@ export const Sidebar = memo(function Sidebar({
 	const ordered = [...groups.entries()];
 
 	return (
-		<aside className="sidebar">
+		<>
 			<div className="sidebar-brand" data-tauri-drag-region={isMac ? "deep" : undefined}>
-				<button
-					className="icon-btn sidebar-toggle-btn"
+				<AnimatedSidebarTrigger
+					className="icon-btn size-[26px] rounded-[var(--r-sm)]"
 					title={t.sidebar.collapse}
 					aria-label={t.sidebar.collapse}
-					onClick={onToggleSidebar}
 				>
 					<PanelLeftCloseIcon size={16} />
-				</button>
+				</AnimatedSidebarTrigger>
 				<div className="sidebar-nav-btns">
 					<button
 						className="icon-btn"
@@ -191,190 +207,246 @@ export const Sidebar = memo(function Sidebar({
 				</div>
 			</div>
 
-			<div className="sidebar-actions">
-				<button className="nav-item" onClick={onNewTask} disabled={busy}>
-					<PlusIcon size={15} />
-					<span>{t.sidebar.newTask}</span>
-					<kbd>
-						{MOD_KEY}
-						{MOD_KEY_SEP}N
-					</kbd>
-				</button>
-				<button className="nav-item" onClick={onOpenSearch}>
-					<SearchIcon size={15} />
-					<span>{t.app.search}</span>
-					<kbd>
-						{MOD_KEY}
-						{MOD_KEY_SEP}K
-					</kbd>
-				</button>
-			</div>
-
 			{binError && <div className="bin-error">{binError}</div>}
 
-			<div className="sidebar-scroll">
-				<div className="sidebar-section-header">
-					<span>{t.sidebar.projects}</span>
-					<button
-						className="icon-btn"
-						onClick={onOpenWorkspace}
-						title={t.sidebar.addProject}
-						aria-label={t.sidebar.addProject}
-					>
-						<PlusIcon size={14} />
-					</button>
-				</div>
+			<AnimatedSidebarContent>
+				<AnimatedSidebarGroup>
+					<AnimatedSidebarMenu>
+						<AnimatedSidebarMenuItem>
+							<AnimatedSidebarMenuButton
+								icon={<PlusIcon size={15} />}
+								badge={
+									<kbd className="sidebar-kbd">
+										{MOD_KEY}
+										{MOD_KEY_SEP}N
+									</kbd>
+								}
+								disabled={busy}
+								onSelect={onNewTask}
+							>
+								{t.sidebar.newTask}
+							</AnimatedSidebarMenuButton>
+						</AnimatedSidebarMenuItem>
+						<AnimatedSidebarMenuItem>
+							<AnimatedSidebarMenuButton
+								icon={<SearchIcon size={15} />}
+								badge={
+									<kbd className="sidebar-kbd">
+										{MOD_KEY}
+										{MOD_KEY_SEP}K
+									</kbd>
+								}
+								onSelect={onOpenSearch}
+							>
+								{t.app.search}
+							</AnimatedSidebarMenuButton>
+						</AnimatedSidebarMenuItem>
+					</AnimatedSidebarMenu>
+				</AnimatedSidebarGroup>
+
+				<AnimatedSidebarGroup>
+					<AnimatedSidebarGroupLabel className="flex items-center justify-between">
+						<span>{t.sidebar.projects}</span>
+						<button
+							className="icon-btn"
+							onClick={onOpenWorkspace}
+							title={t.sidebar.addProject}
+							aria-label={t.sidebar.addProject}
+						>
+							<PlusIcon size={14} />
+						</button>
+					</AnimatedSidebarGroupLabel>
+					<AnimatedSidebarGroupContent>
+						<AnimatedSidebarMenu>
+							{ordered.map(([project, list]) => {
+								const key = project === defaultKey ? "__default__" : project;
+								const expanded = expandedProjects.has(key);
+								const label =
+									project === defaultKey
+										? t.sidebar.defaultProject
+										: projectNameFromPath(project);
+								return (
+									<AnimatedSidebarMenuItem key={key} className="project-menu-item">
+										{/* relative row so the hover actions anchor to the
+										    group header even when the session list below is
+										    expanded (SharedLayoutBg's wrapper spans it all) */}
+										<div className="project-header-row">
+										<AnimatedSidebarMenuButton
+											icon={
+												expanded ? (
+													<FolderOpenIcon size={14} />
+												) : (
+													<FolderIcon size={14} />
+												)
+											}
+											ariaExpanded={expanded}
+											onSelect={() => onToggleProject(key)}
+										>
+											{label}
+										</AnimatedSidebarMenuButton>
+										{project !== defaultKey && (
+											<div className="project-row-actions">
+													<button
+														className="icon-btn"
+														title={t.sidebar.newTaskInProject}
+														aria-label={t.sidebar.newTaskInProject}
+														onClick={() => onNewTaskInProject(project)}
+													>
+														<PlusIcon size={13} />
+													</button>
+													<button
+														className="icon-btn"
+														title={t.sidebar.showProjectInFolder}
+														onClick={() => onRevealProject(project)}
+													>
+														<FolderOpenIcon size={13} />
+													</button>
+													<button
+														className="icon-btn"
+														title={t.sidebar.deleteProject}
+														onClick={() => onDeleteProject(project)}
+													>
+														<TrashIcon size={13} />
+													</button>
+												</div>
+											)}
+										</div>
+										<AnimatedSidebarMenuSub open={expanded}>
+											{orderedList(list).map((s) => {
+												const pinned = pinnedSessions.includes(s.path);
+												const isWorking = workingPaths.some((p) =>
+													sameSessionPath(p, s.path),
+												);
+												return (
+													<AnimatedSidebarMenuSubItem key={s.path}>
+														<div
+															className={`session-row ${
+																s.path === selectedPath ? "active" : ""
+															} ${dragPath === s.path ? "dragging" : ""} ${pinned ? "pinned" : ""} ${s.pending ? "pending" : ""}`}
+															draggable={!s.pending}
+															onDragStart={(e) => {
+																setDragPath(s.path);
+																e.dataTransfer.effectAllowed = "move";
+															}}
+															onDragOver={(e) => e.preventDefault()}
+															onDrop={(e) => {
+																e.preventDefault();
+																if (dragPath) handleDrop(dragPath, s.path);
+															}}
+															onClick={() => onSelectSession(s)}
+															// The row is the primary "open this session"
+															// target; give it button semantics and make it
+															// reachable/operable from the keyboard (the
+															// hover actions are focusable but they only
+															// pin/archive — they never opened a session).
+															role="button"
+															tabIndex={s.pending ? -1 : 0}
+															aria-current={
+																s.path === selectedPath ? "true" : undefined
+															}
+															onKeyDown={(e) => {
+																if (s.pending) return;
+																if (e.key === "Enter" || e.key === " ") {
+																	e.preventDefault();
+																	onSelectSession(s);
+																}
+															}}
+															title={s.pending ? s.title : `${s.title}\n${s.path}`}
+														>
+															<div className="session-main">
+																<span className="session-title">{s.title}</span>
+																{isWorking && (
+																	<span
+																		className="session-spinner"
+																		title={t.sidebar.working}
+																	/>
+																)}
+																<span className="session-time">
+																	{timeAgo(s.mtimeMs, lang)}
+																</span>
+															</div>
+															{!s.pending && (
+																<div
+																	className="session-actions"
+																	onClick={(e) => e.stopPropagation()}
+																>
+																	<button
+																		className="icon-btn pin-btn"
+																		title={pinned ? t.sidebar.unpin : t.sidebar.pin}
+																		onClick={() => onTogglePin(s.path)}
+																	>
+																		<PinIcon size={13} />
+																	</button>
+																	<button
+																		className="icon-btn"
+																		title={t.sidebar.archiveSession}
+																		onClick={() => onArchiveSession(s.path)}
+																	>
+																		<ArchiveIcon size={13} />
+																	</button>
+																	<button
+																		className="icon-btn"
+																		title={t.sidebar.moveToProject}
+																		aria-label={t.sidebar.moreActions}
+																		aria-expanded={menuPath === s.path}
+																		onMouseDown={(e) => e.stopPropagation()}
+																		onClick={() =>
+																			setMenuPath(menuPath === s.path ? null : s.path)
+																		}
+																	>
+																		<MoreIcon size={13} />
+																	</button>
+																	{menuPath === s.path && (
+																		<div
+																			className="session-pop"
+																			onMouseDown={(e) => e.stopPropagation()}
+																		>
+																			<button
+																				onClick={() => {
+																					onMoveSession(s.path);
+																					setMenuPath(null);
+																				}}
+																			>
+																				<FolderIcon size={13} />
+																				<span>{t.sidebar.moveToProject}</span>
+																			</button>
+																		</div>
+																	)}
+																</div>
+															)}
+														</div>
+													</AnimatedSidebarMenuSubItem>
+												);
+											})}
+										</AnimatedSidebarMenuSub>
+									</AnimatedSidebarMenuItem>
+								);
+							})}
+						</AnimatedSidebarMenu>
+					</AnimatedSidebarGroupContent>
+				</AnimatedSidebarGroup>
 
 				{ordered.length === 0 && <div className="sidebar-empty">{t.sidebar.noSessions}</div>}
+			</AnimatedSidebarContent>
 
-				{ordered.map(([project, list]) => {
-					const key = project === defaultKey ? "__default__" : project;
-					const expanded = expandedProjects.has(key);
-					const label =
-						project === defaultKey ? t.sidebar.defaultProject : projectNameFromPath(project);
-					return (
-						<div className="project-group" key={key}>
-							<div className="project-header-row">
-								<button className="project-header" onClick={() => onToggleProject(key)}>
-									{expanded ? <FolderOpenIcon size={14} /> : <FolderIcon size={14} />}
-									<span className="project-name" title={project}>
-										{label}
-									</span>
-								</button>
-								{project !== defaultKey && (
-									<div className="project-actions">
-										<button
-											className="icon-btn"
-											title={t.sidebar.newTaskInProject}
-											aria-label={t.sidebar.newTaskInProject}
-											onClick={() => onNewTaskInProject(project)}
-										>
-											<PlusIcon size={13} />
-										</button>
-										<button
-											className="icon-btn"
-											title={t.sidebar.showProjectInFolder}
-											onClick={() => onRevealProject(project)}
-										>
-											<FolderOpenIcon size={13} />
-										</button>
-										<button
-											className="icon-btn"
-											title={t.sidebar.deleteProject}
-											onClick={() => onDeleteProject(project)}
-										>
-											<TrashIcon size={13} />
-										</button>
-									</div>
-								)}
-							</div>
-							{expanded && (
-								<ul className="session-list">
-									{orderedList(list).map((s) => {
-										const pinned = pinnedSessions.includes(s.path);
-										const isWorking = workingPaths.some((p) => sameSessionPath(p, s.path));
-										return (
-											<li
-												key={s.path}
-												className={`session-row ${
-													s.path === selectedPath ? "active" : ""
-												} ${dragPath === s.path ? "dragging" : ""} ${pinned ? "pinned" : ""} ${s.pending ? "pending" : ""}`}
-												draggable={!s.pending}
-												onDragStart={(e) => {
-													setDragPath(s.path);
-													e.dataTransfer.effectAllowed = "move";
-												}}
-												onDragOver={(e) => e.preventDefault()}
-												onDrop={(e) => {
-													e.preventDefault();
-													if (dragPath) handleDrop(dragPath, s.path);
-												}}
-												onClick={() => onSelectSession(s)}
-												// The row is the primary "open this session"
-												// target; give it button semantics and make it
-												// reachable/operable from the keyboard (the
-												// hover actions are focusable but they only
-												// pin/archive — they never opened a session).
-												role="button"
-												tabIndex={s.pending ? -1 : 0}
-												aria-current={s.path === selectedPath ? "true" : undefined}
-												onKeyDown={(e) => {
-													if (s.pending) return;
-													if (e.key === "Enter" || e.key === " ") {
-														e.preventDefault();
-														onSelectSession(s);
-													}
-												}}
-												title={s.pending ? s.title : `${s.title}\n${s.path}`}
-											>
-												<div className="session-main">
-													<span className="session-title">{s.title}</span>
-													{isWorking && (
-														<span className="session-spinner" title={t.sidebar.working} />
-													)}
-													<span className="session-time">{timeAgo(s.mtimeMs, lang)}</span>
-												</div>
-												{!s.pending && (
-													<div className="session-actions" onClick={(e) => e.stopPropagation()}>
-														<button
-															className="icon-btn pin-btn"
-															title={pinned ? t.sidebar.unpin : t.sidebar.pin}
-															onClick={() => onTogglePin(s.path)}
-														>
-															<PinIcon size={13} />
-														</button>
-														<button
-															className="icon-btn"
-															title={t.sidebar.archiveSession}
-															onClick={() => onArchiveSession(s.path)}
-														>
-															<ArchiveIcon size={13} />
-														</button>
-														<button
-															className="icon-btn"
-															title={t.sidebar.moveToProject}
-															aria-label={t.sidebar.moreActions}
-															aria-expanded={menuPath === s.path}
-															onMouseDown={(e) => e.stopPropagation()}
-															onClick={() => setMenuPath(menuPath === s.path ? null : s.path)}
-														>
-															<MoreIcon size={13} />
-														</button>
-														{menuPath === s.path && (
-															<div className="session-pop" onMouseDown={(e) => e.stopPropagation()}>
-																<button
-																	onClick={() => {
-																		onMoveSession(s.path);
-																		setMenuPath(null);
-																	}}
-																>
-																	<FolderIcon size={13} />
-																	<span>{t.sidebar.moveToProject}</span>
-																</button>
-															</div>
-														)}
-													</div>
-												)}
-											</li>
-										);
-									})}
-								</ul>
-							)}
-						</div>
-					);
-				})}
-			</div>
-
-			<div className="sidebar-footer">
-				<button className="footer-btn" onClick={onOpenSettings} title={`${MOD_KEY}${MOD_KEY_SEP},`}>
-					<SettingsIcon size={15} />
-					<span>{t.app.settings}</span>
-					<kbd>
-						{MOD_KEY}
-						{MOD_KEY_SEP},
-					</kbd>
-				</button>
-			</div>
-		</aside>
+			<AnimatedSidebarFooter>
+				<AnimatedSidebarMenu>
+					<AnimatedSidebarMenuItem>
+						<AnimatedSidebarMenuButton
+							icon={<SettingsIcon size={15} />}
+							badge={
+								<kbd className="sidebar-kbd">
+									{MOD_KEY}
+									{MOD_KEY_SEP},
+								</kbd>
+							}
+							onSelect={onOpenSettings}
+						>
+							{t.app.settings}
+						</AnimatedSidebarMenuButton>
+					</AnimatedSidebarMenuItem>
+				</AnimatedSidebarMenu>
+			</AnimatedSidebarFooter>
+		</>
 	);
 });

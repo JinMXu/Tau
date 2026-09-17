@@ -62,6 +62,10 @@ import type {
 } from "./chat-types";
 import { buildLlmUiError, isUserAbortError } from "./errors";
 import { Sidebar } from "./components/Sidebar";
+import {
+	AnimatedSidebar,
+	AnimatedSidebarProvider,
+} from "./components/motion/animated-sidebar";
 import { ChatArea } from "./components/ChatArea";
 import { ApiKeyDialog } from "./components/ApiKeyDialog";
 import { ConfirmDialog, type ConfirmState } from "./components/ConfirmDialog";
@@ -80,7 +84,9 @@ import { CompactDialog } from "./components/CompactDialog";
 import { ShareDialog } from "./components/ShareDialog";
 import { LlamaDialog } from "./components/LlamaDialog";
 import type { ModelEntry } from "./components/Composer";
-import "./App.css";
+// Tailwind entry: layered tailwind + preflight + App.css + shadcn token
+// bridge for the beUI components. See beui.css for the layer ordering.
+import "./beui.css";
 import { formatBytes, projectNameFromPath } from "./format";
 import { isMac, isWin, sameSessionPath } from "./platform";
 import { RESPONSE_TIMEOUTS, STORAGE_KEYS } from "./app-constants";
@@ -3758,15 +3764,16 @@ export default function App() {
 					void newTask();
 				}
 			} else if (e.key === ",") {
-				e.preventDefault();
-				setSettingsOpen((v) => !v);
-			} else if (key === "b") {
-				e.preventDefault();
-				toggleSidebar();
-			} else if (key === "[" && !e.shiftKey) {
-				e.preventDefault();
-				void navGo(-1);
-			} else if (key === "]" && !e.shiftKey) {
+					e.preventDefault();
+					setSettingsOpen((v) => !v);
+				}
+				// Ctrl/⌘+B (toggle sidebar) is handled by AnimatedSidebarProvider —
+				// it owns the same shortcut, and binding it here too would toggle
+				// the sidebar twice (a no-op).
+				else if (key === "[" && !e.shiftKey) {
+					e.preventDefault();
+					void navGo(-1);
+				} else if (key === "]" && !e.shiftKey) {
 				e.preventDefault();
 				void navGo(1);
 			} else if (key === "l") {
@@ -3864,43 +3871,49 @@ export default function App() {
 	const showTurnWait = working && !streaming && connected;
 
 	const sidebarEl = (
-		<Sidebar
-			t={t}
-			lang={settings.language}
-			sessions={sidebarSessions}
-			selectedPath={effectiveSelectedPath}
-			workingPaths={allWorkingPaths}
-			expandedProjects={expandedProjects}
-			sessionOrder={sessionOrder}
-			onReorderSession={setSessionOrder}
-			onToggleProject={(key) =>
-				setExpandedProjects((prev) => {
-					const next = new Set(prev);
-					if (next.has(key)) next.delete(key);
-					else next.add(key);
-					return next;
-				})
-			}
-			onSelectSession={openSession}
-			onToggleSidebar={toggleSidebar}
-			onBack={() => void navGo(-1)}
-			onForward={() => void navGo(1)}
-			canGoBack={canGoBack}
-			canGoForward={canGoForward}
-			pinnedSessions={pinnedSessions}
-			onTogglePin={togglePinSession}
-			onArchiveSession={archiveSessionByPath}
-			onNewTask={newTask}
-			onNewTaskInProject={newTaskInProject}
-			onOpenWorkspace={pickWorkspace}
-			onOpenSettings={() => openSettings()}
-			onOpenSearch={() => setSearchOpen(true)}
-			onMoveSession={handleMoveSession}
-			onRevealProject={handleRevealProject}
-			onDeleteProject={handleDeleteProject}
-			busy={busy}
-			binError={binError}
-		/>
+		<AnimatedSidebar
+			side="left"
+			variant="sidebar"
+			collapsible="offcanvas"
+			panelClassName="h-full bg-sidebar"
+		>
+			<Sidebar
+				t={t}
+				lang={settings.language}
+				sessions={sidebarSessions}
+				selectedPath={effectiveSelectedPath}
+				workingPaths={allWorkingPaths}
+				expandedProjects={expandedProjects}
+				sessionOrder={sessionOrder}
+				onReorderSession={setSessionOrder}
+				onToggleProject={(key) =>
+					setExpandedProjects((prev) => {
+						const next = new Set(prev);
+						if (next.has(key)) next.delete(key);
+						else next.add(key);
+						return next;
+					})
+				}
+				onSelectSession={openSession}
+				onBack={() => void navGo(-1)}
+				onForward={() => void navGo(1)}
+				canGoBack={canGoBack}
+				canGoForward={canGoForward}
+				pinnedSessions={pinnedSessions}
+				onTogglePin={togglePinSession}
+				onArchiveSession={archiveSessionByPath}
+				onNewTask={newTask}
+				onNewTaskInProject={newTaskInProject}
+				onOpenWorkspace={pickWorkspace}
+				onOpenSettings={() => openSettings()}
+				onOpenSearch={() => setSearchOpen(true)}
+				onMoveSession={handleMoveSession}
+				onRevealProject={handleRevealProject}
+				onDeleteProject={handleDeleteProject}
+				busy={busy}
+				binError={binError}
+			/>
+		</AnimatedSidebar>
 	);
 
 	return (
@@ -3921,22 +3934,17 @@ export default function App() {
 					onTree={() => void openTree()}
 				/>
 			)}
-			<div className={`shell${sidebarCollapsed ? " collapsed" : ""}`}>
+			<AnimatedSidebarProvider
+				open={!sidebarCollapsed}
+				onOpenChange={(o) => setSidebarCollapsed(!o)}
+				style={{ "--sidebar-width": `${sidebarWidth}px` }}
+				className={`shell min-h-0${sidebarCollapsed ? " collapsed" : ""}`}
+			>
 				{!settingsOpen && (
 					<>
-						{/* Always mounted so the collapse/expand animates the width
-						    smoothly (the chat area flexes to fill the freed space).
-						    The inner wrapper keeps the sidebar content at its real
-						    width so it doesn't reflow while the shell shrinks. */}
-						<div
-							className={`sidebar-shell${sidebarCollapsed ? " collapsed" : ""}`}
-							style={{ width: sidebarCollapsed ? 0 : sidebarWidth }}
-							aria-hidden={sidebarCollapsed}
-						>
-							<div className="sidebar-fixed" style={{ width: sidebarWidth }}>
-								{sidebarEl}
-							</div>
-						</div>
+						{/* The beUI sidebar animates its own width (icon rail while
+						    collapsed); the chat area flexes to fill the freed space. */}
+						{sidebarEl}
 						<div
 							className={`sidebar-resizer${sidebarCollapsed ? " hidden" : ""}`}
 							onPointerDown={startResize}
@@ -4063,7 +4071,7 @@ export default function App() {
 						onCustomProvidersChanged={handleCustomProvidersChanged}
 					/>
 				)}
-			</div>
+			</AnimatedSidebarProvider>
 
 			<SearchOverlay
 				t={t}
