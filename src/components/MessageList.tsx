@@ -1,31 +1,52 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	Fragment,
+	memo,
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
+import { motion } from "motion/react";
+import { BranchIcon, CopyIcon, UndoIcon } from "../icons";
 import type { AutoRetryState, Block, ChatMessage } from "../chat-types";
 import type { SubagentRun } from "../pi";
 import type { MessageCatalog } from "../i18n";
-import { BranchIcon, CheckIcon, CopyIcon, SparkleIcon, UndoIcon } from "../icons";
 import { ErrorNote } from "./ErrorNote";
-import { formatClockDuration } from "../format";
 import { splitOnQuery } from "./message-utils";
-import { ToolCard, ThinkingBlock } from "./ToolCard";
-import { MetaGroup, TurnDiffRow } from "./MetaGroup";
-import { ThinkingOrb } from "thinking-orbs";
-import { PreviewTicker } from "./PreviewTicker";
+import {
+	ActivityCard,
+	AutoRetryCard,
+	GapLiveCard,
+	SubagentLiveCard,
+	ThinkingRow,
+	ToolRow,
+	TurnPill,
+} from "./message-activity";
 import {
 	attachToolResults,
 	buildChatRows,
 	deriveTurnChanges,
 	deriveTurnTimings,
 	searchBypassIds,
+	type GroupEntry,
 	type MessageItem,
 	type TurnChanges,
 } from "./chat-rows";
 import { Markdown } from "./Markdown";
+import { Message, MessageContent, MessageScroller } from "./agents/message";
+import { MessageBubble, MessageBubbleContent } from "./agents/message-bubble";
+import { StreamingResponse } from "./agents/streaming-response";
+import { SPRING_PRESS } from "../lib/ease";
 
 /**
- * Chat transcript renderer. Messages are folded into rows (see chat-rows.ts):
- * assistant thinking/tool calls collapse into MetaGroup lines, turns close
- * with a timer + file-changes footer row, text stays as regular message rows.
- * All the scroll-follow / search / copy machinery is unchanged.
+ * Chat transcript renderer on beUI primitives (direction C): user messages
+ * are soft bubbles, assistant answers stream through StreamingResponse with a
+ * resident dim copy/fork footer, thinking/tool work folds into ActivityCards
+ * (Percho fold philosophy, beUI activity rows inside), turns close with a
+ * centered pill. Rows derive exactly as before (chat-rows.ts); the scroll
+ * container is the vendored beUI MessageScroller with the left navigation
+ * rail. All motion comes from the beUI ease/spring vocabulary.
  */
 
 /**
@@ -78,88 +99,6 @@ function useShownWorking(working: boolean, endImmediately: boolean, resetKey?: n
 		[],
 	);
 	return shown;
-}
-
-/** Compact elapsed duration for the live "working…" status: `42s`, `1:05`. */
-
-/**
- * Turn-level activity label shown while the model is working — covering the
- * pre-first-token wait and the streaming phases alike — rendered at the end
- * of the chat column (port of DSH's ChatView TurnStatus pattern). Plain
- * content-font styling; an elapsed clock appears after 15s and counts from
- * the turn start, retained across the thinking / tool / text phases.
- *
- * Hidden while the turn's live footer row (timer chip) is showing — the two
- * would duplicate each other (see ChatArea).
- */
-export function TurnStatus({ startTime }: { startTime: number }) {
-	const [mountedAt] = useState(() => Date.now());
-	const anchor = startTime ?? mountedAt;
-	const [elapsedMs, setElapsedMs] = useState(() => Math.max(0, Date.now() - anchor));
-	useEffect(() => {
-		const tick = () => setElapsedMs(Math.max(0, Date.now() - anchor));
-		tick();
-		const id = window.setInterval(tick, 1000);
-		return () => window.clearInterval(id);
-	}, [anchor]);
-	const showClock = elapsedMs >= 15_000;
-	return (
-		<div className="turn-status" role="status" aria-live="polite">
-			Working...
-			{showClock && (
-				<span className="turn-status-clock" aria-hidden="true">
-					{formatClockDuration(elapsedMs)}
-				</span>
-			)}
-		</div>
-	);
-}
-
-/**
- * Live panel for in-flight pi-subagents runs (the extension publishes run
- * state to status.json; the backend polls it). Rendered at the end of the
- * chat column so the user can see what a detached/background subagent is
- * doing — per-step status, latest tool call and turn/tool counts — instead
- * of staring at a static "running" tool card for minutes.
- */
-export function SubagentLivePanel({ runs, t }: { runs: SubagentRun[]; t: MessageCatalog }) {
-	const statusLabels = t.chat.subagentStatus as Record<string, string>;
-	return (
-		<div className="subagent-live" role="status" aria-live="polite">
-			{runs.map((run) => (
-				<div className="subagent-run" key={run.runId}>
-					<div className="subagent-run-head">
-						<SparkleIcon size={12} />
-						<span className="subagent-run-title">{t.chat.subagents}</span>
-						{run.mode && <span className="subagent-run-mode">{run.mode}</span>}
-					</div>
-					{run.steps.map((s, i) => (
-						<div className="subagent-step" key={`${s.label}-${i}`}>
-							<span className={`subagent-dot ${s.status || "running"}`} />
-							<span className="subagent-step-label">
-								{s.label || s.agent}
-								{s.agent && s.label && s.agent !== s.label ? (
-									<span className="subagent-step-agent"> ({s.agent})</span>
-								) : null}
-							</span>
-							<span className="subagent-step-status">{statusLabels[s.status] ?? s.status}</span>
-							{(s.turnCount > 0 || s.toolCount > 0) && (
-								<span className="subagent-step-counts">
-									{s.turnCount} {t.chat.subagentTurns} · {s.toolCount} {t.chat.subagentTools}
-								</span>
-							)}
-							{s.lastTool && (
-								<span className="subagent-step-activity" title={s.lastToolArgs ?? ""}>
-									{s.lastTool}
-									{s.lastToolArgs ? `: ${s.lastToolArgs}` : ""}
-								</span>
-							)}
-						</div>
-					))}
-				</div>
-			))}
-		</div>
-	);
 }
 
 type MessageImage = { mimeType: string; data: string };
@@ -236,87 +175,50 @@ function messageText(m: ChatMessage): string {
 		.trim();
 }
 
-function MessageActions({
-	text,
-	canRecall,
-	canFork,
-	onCopy,
-	onRecall,
-	onFork,
-	t,
-}: {
-	text: string;
-	canRecall: boolean;
-	canFork: boolean;
-	onCopy?: (text: string) => void;
-	onRecall?: () => void;
-	onFork?: () => void;
-	t: MessageCatalog;
-}) {
-	const [copied, setCopied] = useState(false);
-	const timerRef = useRef<number | null>(null);
-	useEffect(
-		() => () => {
-			if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-		},
-		[],
-	);
-	if (!text || (!canRecall && !canFork)) return null;
-	const copy = () => {
-		if (!text) return;
-		void navigator.clipboard
-			.writeText(text)
-			.then(() => {
-				setCopied(true);
-				if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-				timerRef.current = window.setTimeout(() => setCopied(false), 1200);
-			})
-			.catch(() => {});
-		onCopy?.(text);
-	};
+function HighlightedText({ text, query }: { text: string; query: string }) {
 	return (
-		<div className="message-actions">
-			{text && (
-				<button
-					type="button"
-					className="message-action"
-					aria-label={copied ? t.chat.copied : t.chat.copyText}
-					title={copied ? t.chat.copied : t.chat.copyText}
-					onClick={copy}
-				>
-					{copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
-				</button>
-			)}
-			{canFork && (
-				<button
-					type="button"
-					className="message-action"
-					aria-label={t.chat.fork}
-					title={t.chat.fork}
-					onClick={() => onFork?.()}
-				>
-					<BranchIcon size={14} />
-				</button>
-			)}
-			{canRecall && (
-				<button
-					type="button"
-					className="message-action"
-					aria-label={t.chat.recall}
-					title={t.chat.recall}
-					onClick={() => onRecall?.()}
-				>
-					<UndoIcon size={14} />
-				</button>
+		<div className="text-block highlighted-text">
+			{splitOnQuery(text, query).map((p, j) =>
+				p.match ? (
+					<mark key={j} className="session-search-hit">
+						{p.text}
+					</mark>
+				) : (
+					<span key={j}>{p.text}</span>
+				),
 			)}
 		</div>
 	);
 }
 
-/** One message row (user / assistant text / orphan tool results) with search
- * highlighting and the streaming cursor. `skip` lists block indices folded
- * into a meta group. No author footer, no hover buttons — matches the
- * Percho transcript (groups + text, nothing else). */
+/** Hover-revealed action button (copy / recall) under the user bubble. */
+function MessageAction({
+	label,
+	onClick,
+	children,
+}: {
+	label: string;
+	onClick?: () => void;
+	children: React.ReactNode;
+}) {
+	return (
+		<motion.button
+			type="button"
+			className="message-action"
+			aria-label={label}
+			title={label}
+			onClick={onClick}
+			whileTap={{ scale: 0.9 }}
+			transition={SPRING_PRESS}
+		>
+			{children}
+		</motion.button>
+	);
+}
+
+/** One message row (user bubble / assistant response / orphan tool results)
+ * with search highlighting and the streaming cursor. `skip` lists block
+ * indices folded into an activity card. */
 const MessageRow = memo(function MessageRow({
 	item,
 	skip,
@@ -334,6 +236,7 @@ const MessageRow = memo(function MessageRow({
 	onRetry,
 	onCompact,
 	onOpenSettings,
+	animateIn,
 }: {
 	item: MessageItem;
 	skip: Set<number>;
@@ -354,34 +257,90 @@ const MessageRow = memo(function MessageRow({
 	onRetry?: () => void;
 	onCompact?: () => void;
 	onOpenSettings?: () => void;
+	/** Plays the beUI bubble/response entrance once (messages that arrived
+	 * while the session was open — never on history load or session switch). */
+	animateIn: boolean;
 }) {
 	const m = item.msg;
 	const isSearchTarget =
 		searchQuery != null && searchActiveMessageId != null && m.id === searchActiveMessageId;
+	const from = m.role === "user" ? ("user" as const) : ("assistant" as const);
+	const text = messageText(m);
 	return (
-		<div
-			ref={(el) => refCb(m.id, el)}
-			className={`message ${m.role}${isSearchTarget ? " message-search-target" : ""}`}
+		<Message
+			ref={(el) => refCb(m.id, el as unknown as HTMLDivElement | null)}
+			from={from}
+			className={`message${isSearchTarget ? " message-search-target" : ""}`}
 		>
-			{m.role === "user" && m.images && m.images.length > 0 && (
-				<MessageImages images={m.images} t={t} />
-			)}
-			{m.blocks.map((b: Block, i: number) => {
-				if (item.consumed.has(i) || skip.has(i)) return null;
-				if (b.kind === "text") {
-					if (textAllow && !textAllow.has(i)) return null;
-					if (m.role === "tool") {
-						// Tool result text streaming in. Nobody reads
-						// this mid-stream — the assistant's running
-						// tool card already shows the state. Keep the
-						// message empty (only the cursor) until the
-						// authoritative ToolOutput replaces it, so the
-						// DOM doesn't grow and reflow every frame.
-						// Exception: in-session search highlights the
-						// content the user is actively looking for.
+			<MessageContent>
+				{m.role === "user" && m.images && m.images.length > 0 && (
+					<MessageImages images={m.images} t={t} />
+				)}
+				{m.blocks.map((b: Block, i: number) => {
+					if (item.consumed.has(i) || skip.has(i)) return null;
+					if (b.kind === "text") {
+						if (textAllow && !textAllow.has(i)) return null;
+						if (m.role === "tool") {
+							// Tool result text streaming in. Nobody reads
+							// this mid-stream — the running activity row
+							// already shows the state. Keep the message
+							// empty until the authoritative tool result
+							// replaces it. Exception: in-session search.
+							if (isSearchTarget && searchQuery) {
+								return <HighlightedText key={i} text={b.text} query={searchQuery} />;
+							}
+							return null;
+						}
+						if (m.role === "user") {
+							// Percho UserMessage: user input is always plain
+							// text (whitespace-pre-wrap) — no markdown pass.
+							return isSearchTarget && searchQuery ? (
+								<HighlightedText key={i} text={b.text} query={searchQuery} />
+							) : (
+								<MessageBubble key={i} variant="soft" animateIn={animateIn}>
+									<MessageBubbleContent className="user-bubble-text">{b.text}</MessageBubbleContent>
+								</MessageBubble>
+							);
+						}
+						return isSearchTarget && searchQuery ? (
+							<HighlightedText key={i} text={b.text} query={searchQuery} />
+						) : (
+							<StreamingResponse
+								key={i}
+								status={m.streaming ? "streaming" : "complete"}
+								showFeedback={false}
+								showActions={canFork && last}
+								copyText={canFork && last ? text : undefined}
+								onCopy={canFork && last ? () => onCopy?.(text) : undefined}
+								copyLabel={t.chat.copyText}
+								copiedLabel={t.chat.copied}
+								contentClass="text-block"
+								actions={
+									canFork && last ? (
+										<motion.button
+											type="button"
+											className="message-action"
+											aria-label={t.chat.fork}
+											title={t.chat.fork}
+											onClick={() => onFork?.()}
+											whileTap={{ scale: 0.9 }}
+											transition={SPRING_PRESS}
+										>
+											<BranchIcon size={14} />
+										</motion.button>
+									) : undefined
+								}
+							>
+								<Markdown text={b.text} streaming={m.streaming} />
+							</StreamingResponse>
+						);
+					}
+					if (b.kind === "thinking") {
 						if (isSearchTarget && searchQuery) {
+							// Highlight matches inside thinking blocks too, so a
+							// hit there is visible (not just counted).
 							return (
-								<div className="text-block highlighted-text" key={i}>
+								<div className="text-block thinking highlighted-text" key={i}>
 									{splitOnQuery(b.text, searchQuery).map((p, j) =>
 										p.match ? (
 											<mark key={j} className="session-search-hit">
@@ -394,155 +353,93 @@ const MessageRow = memo(function MessageRow({
 								</div>
 							);
 						}
-						return null;
+						// Non-search thinking reaches here only for bypass rows
+						// (search targets); render it as a bare activity row.
+						const entry: GroupEntry = {
+							kind: "thinking",
+							msgId: m.id,
+							blockIndex: i,
+							text: b.text,
+							result: null,
+							resultStreaming: false,
+							running: m.streaming && i === m.blocks.length - 1,
+						};
+						return <ThinkingRow key={i} entry={entry} t={t} />;
 					}
-					if (isSearchTarget && searchQuery) {
-						// Plain-text rendering with highlighted matches for
-						// the focused message (markdown stays on elsewhere).
-						return (
-							<div className="text-block highlighted-text" key={i}>
-								{splitOnQuery(b.text, searchQuery).map((p, j) =>
-									p.match ? (
-										<mark key={j} className="session-search-hit">
-											{p.text}
-										</mark>
-									) : (
-										<span key={j}>{p.text}</span>
-									),
-								)}
-							</div>
-						);
-					}
-					return (
-						<div className="text-block" key={i}>
-							{/* Percho UserMessage: user input is always plain text
-								    (whitespace-pre-wrap) - no markdown pass. */}
-							{m.role === "user" ? b.text : <Markdown text={b.text} streaming={m.streaming} />}
-						</div>
-					);
-				}
-				if (b.kind === "thinking") {
-					if (isSearchTarget && searchQuery) {
-						// Highlight matches inside thinking blocks too, so a
-						// hit there is visible (not just counted).
-						return (
-							<div className="text-block thinking highlighted-text" key={i}>
-								{splitOnQuery(b.text, searchQuery).map((p, j) =>
-									p.match ? (
-										<mark key={j} className="session-search-hit">
-											{p.text}
-										</mark>
-									) : (
-										<span key={j}>{p.text}</span>
-									),
-								)}
-							</div>
-						);
-					}
-					return <ThinkingBlock key={i} text={b.text} t={t} />;
-				}
-				return (
-					<ToolCard
-						key={i}
-						block={b}
-						result={b.result ? b : (item.attached.get(i) ?? null)}
-						running={
-							(m.streaming && i === m.blocks.length - 1) || (item.attachedStreaming.get(i) ?? false)
-						}
+					// Tool call (orphan results / bypass rows): bare activity row.
+					const entry: GroupEntry = {
+						kind: "tool",
+						msgId: m.id,
+						blockIndex: i,
+						block: b,
+						result: b.result ? b : (item.attached.get(i) ?? null),
+						resultStreaming: item.attachedStreaming.get(i) ?? false,
+						running:
+							(m.streaming && i === m.blocks.length - 1) ||
+							(item.attachedStreaming.get(i) ?? false),
+					};
+					return <ToolRow key={i} entry={entry} running={entry.running} t={t} />;
+				})}
+				{last && m.error && typeof m.error !== "string" && (
+					<ErrorNote
+						error={m.error}
 						t={t}
+						onRetry={onRetry}
+						onCompact={onCompact}
+						onOpenSettings={onOpenSettings}
 					/>
-				);
-			})}
-			{last && m.error && typeof m.error !== "string" && (
-				<ErrorNote
-					error={m.error}
-					t={t}
-					onRetry={onRetry}
-					onCompact={onCompact}
-					onOpenSettings={onOpenSettings}
-				/>
-			)}
-			{last && typeof m.error === "string" && <div className="msg-error">error: {m.error}</div>}
-			{last && !m.streaming && (m.role === "user" || canFork) && (
-				<MessageActions
-					text={messageText(m)}
-					canRecall={m.role === "user" && canRecall}
-					canFork={canFork}
-					onCopy={onCopy}
-					onRecall={onRecall}
-					onFork={onFork}
-					t={t}
-				/>
-			)}
-		</div>
-	);
-});
-
-/** Live chip shown whenever the run is live but nothing is producing output
- * right now — the submit gap (first-token wait) and mid-run LLM waits / long
- * tool executions that used to read as dead air. Same visual as MetaGroup's
- * live header, so the hand-off is seamless. */
-const GapLiveChip = memo(function GapLiveChip({ label }: { label: string }) {
-	return (
-		<div className="meta-group live" aria-hidden="true">
-			<div className="meta-head" style={{ cursor: "default" }}>
-				<ThinkingOrb state="working" size={20} paused={false} />
-				<span className="meta-label">{label}</span>
-				<span className="meta-preview">
-					<PreviewTicker items={[]} reserveSpace />
-				</span>
-			</div>
-		</div>
-	);
-});
-
-/** Live chip for pi's auto-retry backoff window: the LLM request failed with
- * a retryable error (timeout / overloaded / unresponsive provider), the run
- * ended with agent_end(willRetry) and reopens after an exponential backoff.
- * `working` stays true through the window (no idle teardown, no copy/fork
- * buttons); this chip keeps the wait legible — orb + attempt + countdown +
- * error preview — instead of dead air that reads as the conversation having
- * ended, only for output to "resume by itself" seconds later. */
-const AutoRetryChip = memo(function AutoRetryChip({
-	state,
-	t,
-}: {
-	state: AutoRetryState;
-	t: MessageCatalog;
-}) {
-	const [remainingMs, setRemainingMs] = useState(
-		() => Math.max(0, state.delayMs - (Date.now() - state.startedAt)),
-	);
-	useEffect(() => {
-		const tick = () =>
-			setRemainingMs(Math.max(0, state.delayMs - (Date.now() - state.startedAt)));
-		tick();
-		const id = window.setInterval(tick, 500);
-		return () => window.clearInterval(id);
-	}, [state.delayMs, state.startedAt]);
-	return (
-		<div className="meta-group live auto-retry" role="status" aria-live="polite">
-			<div className="meta-head" style={{ cursor: "default" }}>
-				<ThinkingOrb state="working" size={20} paused={false} />
-				<span className="meta-label">{t.chat.autoRetryWaiting}</span>
-				{state.maxAttempts > 0 && (
-					<span className="auto-retry-count">
-						{state.attempt}/{state.maxAttempts}
-					</span>
 				)}
-				{remainingMs > 0 && (
-					<span className="auto-retry-clock" aria-hidden="true">
-						{formatClockDuration(remainingMs)}
-					</span>
+				{last && typeof m.error === "string" && <div className="msg-error">error: {m.error}</div>}
+				{last && !m.streaming && m.role === "user" && canRecall && (
+					<div className="message-actions">
+						{text && (
+							<MessageAction
+								label={t.chat.copyText}
+								onClick={() => {
+									void navigator.clipboard?.writeText(text).catch(() => {});
+									onCopy?.(text);
+								}}
+							>
+								<CopyIcon size={13} />
+							</MessageAction>
+						)}
+						{canRecall && (
+							<MessageAction label={t.chat.recall} onClick={() => onRecall?.()}>
+								<UndoIcon size={13} />
+							</MessageAction>
+						)}
+					</div>
 				)}
-				{state.errorMessage && (
-					<span className="meta-preview auto-retry-error" title={state.errorMessage}>
-						{state.errorMessage}
-					</span>
-				)}
-			</div>
-		</div>
+			</MessageContent>
+		</Message>
 	);
+}, (prev, next) => {
+	// Value-based equality: a committed row re-renders only when its own
+	// content or gating actually changes — never on stream deltas. motion's
+	// layout projection writes inline styles on every render, so re-rendering
+	// the whole transcript per token would dirty committed rows (the
+	// stream/committed split guarantee) and thrash layout. Callback props are
+	// intentionally not compared: they close over app-level useCallbacks
+	// (verified stable in App.tsx) and the row's own msg object.
+	if (prev.t !== next.t) return false;
+	if (prev.last !== next.last || prev.animateIn !== next.animateIn) return false;
+	if (prev.canRecall !== next.canRecall || prev.canFork !== next.canFork) return false;
+	if (prev.searchQuery !== next.searchQuery || prev.searchActiveMessageId !== next.searchActiveMessageId)
+		return false;
+	if (prev.item.msg !== next.item.msg) return false;
+	if (prev.skip.size !== next.skip.size) return false;
+	for (const v of prev.skip) if (!next.skip.has(v)) return false;
+	const pa = prev.textAllow;
+	const na = next.textAllow;
+	if ((pa?.size ?? -1) !== (na?.size ?? -1)) return false;
+	if (pa) for (const v of pa) if (!na!.has(v)) return false;
+	if (prev.item.attached.size !== next.item.attached.size) return false;
+	for (const [k, v] of prev.item.attached) if (next.item.attached.get(k) !== v) return false;
+	if (prev.item.attachedStreaming.size !== next.item.attachedStreaming.size) return false;
+	for (const [k, v] of prev.item.attachedStreaming) if (next.item.attachedStreaming.get(k) !== v) return false;
+	if (prev.item.consumed.size !== next.item.consumed.size) return false;
+	for (const v of prev.item.consumed) if (!next.item.consumed.has(v)) return false;
+	return true;
 });
 
 export const MessageList = memo(function MessageList({
@@ -558,6 +455,7 @@ export const MessageList = memo(function MessageList({
 	searchActiveMessageId,
 	turnStartTime,
 	turnChanges,
+	subagentRuns,
 	onOpenDiff,
 	onCopyMessage,
 	onRecallMessage,
@@ -581,11 +479,13 @@ export const MessageList = memo(function MessageList({
 	t: MessageCatalog;
 	searchQuery?: string;
 	searchActiveMessageId?: number | null;
-	/** Live turn anchor (Date.now at submit) for the ticking footer timer. */
+	/** Live turn anchor (Date.now at submit) for the ticking pill timer. */
 	turnStartTime?: number | null;
 	/** Shared per-turn changes (same source as the diff sidebar). */
 	turnChanges?: TurnChanges[];
-	/** Open the diff sidebar (turn footer file rows / chips). */
+	/** In-flight pi-subagent runs (rendered at the end of the transcript). */
+	subagentRuns?: SubagentRun[];
+	/** Open the diff sidebar (turn pill file rows / chips). */
 	onOpenDiff?: () => void;
 	/** Copy a message's plain text to the system clipboard. */
 	onCopyMessage?: (text: string) => void;
@@ -598,7 +498,7 @@ export const MessageList = memo(function MessageList({
 	onCompact?: () => void;
 	onOpenSettings?: () => void;
 }) {
-	const scrollRef = useRef<HTMLDivElement>(null);
+	const viewportRef = useRef<HTMLElement | null>(null);
 	const msgElsRef = useRef(new Map<number, HTMLDivElement>());
 	/**
 	 * What the transcript renders: the committed messages plus the in-flight
@@ -608,162 +508,21 @@ export const MessageList = memo(function MessageList({
 	 * percho's buildChatRows folds its StreamingState container in.
 	 */
 	const all = useMemo(() => (stream ? [...messages, stream] : messages), [messages, stream]);
-	// working→done hysteresis (percho useShownWorking): keep the live group
-	// (orb + label + dots) through turn/tool gaps so it never flickers; end
-	// immediately once the final answer text starts streaming. Switching
+	// working→done hysteresis (percho useShownWorking): keep the live card
+	// (dot + shimmer + ticker) through turn/tool gaps so it never flickers;
+	// end immediately once the final answer text starts streaming. Switching
 	// sessions resets instantly (first message id changes).
 	const shownWorking = useShownWorking(working, textStreaming ?? false, all[0]?.id);
-	// Start "stuck" so the view lands at the latest message when a session
-	// (or history) is loaded; only the user's own scrolling can unstick it.
-	const stickRef = useRef(true);
 
-	// The ref element (`.messages`) grows with content; the actual scroll
-	// container is its parent `.chat-scroll`, so scroll that instead.
-	const follow = useCallback(() => {
-		if (autoScroll === false) return;
-		const el = scrollRef.current;
-		const scroller = el?.parentElement;
-		if (!el || !scroller) return;
-		if (stickRef.current) {
-			scroller.scrollTop = scroller.scrollHeight;
-		}
-	}, [autoScroll]);
-
-	// Follow growth driven by React state (streaming deltas, message end,
-	// history load…).
-	useEffect(() => {
-		follow();
-	}, [all, streaming, autoScroll, follow]);
-
-	// Also follow growth that never re-renders: async content (images, fonts),
-	// the working-status row, window resizes.  Both observers are coalesced
-	// into a single rAF so that a burst of mutations (e.g. streaming text
-	// deltas re-rendering many nodes) produces at most one follow() per frame
-	// instead of dozens of forced reflows.
-	useEffect(() => {
-		const el = scrollRef.current;
-		const scroller = el?.parentElement;
-		if (!el || !scroller) return;
-		let rafId: number | null = null;
-		const throttledFollow = () => {
-			if (rafId !== null) return;
-			rafId = requestAnimationFrame(() => {
-				rafId = null;
-				follow();
-			});
-		};
-		const resizeObserver = new ResizeObserver(throttledFollow);
-		resizeObserver.observe(el);
-		resizeObserver.observe(scroller);
-		// childList only (no subtree) so the observer fires when direct
-		// children are added/removed (e.g. the working-status row) but NOT
-		// on every text-node mutation deep inside the streaming markdown.
-		const mutationObserver = new MutationObserver(throttledFollow);
-		mutationObserver.observe(scroller, { childList: true });
-		// User intent: scrolling away unsticks, scrolling back to the bottom
-		// re-sticks.
-		//
-		// Scroll events alone must NOT unstick: follow() scrolls are echoed
-		// back as scroll events, and Blink coalesces and dispatches those
-		// echoes asynchronously — by the time one arrives the streamed
-		// content has usually grown further, so the distance check compares
-		// the stale scrollTop against the grown scrollHeight and mistakes
-		// the echo for the user scrolling away, killing the follow mid-run.
-		// Unstick synchronously from real input (wheel up, touch drag down,
-		// scrollbar grab, scroll keys) instead; scroll events only re-stick
-		// when the view is back at the bottom.
-		const STICK_MARGIN = 120;
-		const onScroll = () => {
-			if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < STICK_MARGIN) {
-				stickRef.current = true;
-			}
-		};
-		// Whether a wheel/touch interaction over `target` would actually move
-		// the chat scroller, or is consumed by a nested scrollable (expanded
-		// tool outputs, code blocks) and must not be read as chat scrolling.
-		const chatWillScroll = (target: EventTarget | null): boolean => {
-			let node = target instanceof Element ? target : null;
-			while (node && node !== scroller) {
-				const style = getComputedStyle(node);
-				if (
-					/(auto|scroll|overlay)/.test(style.overflowY) &&
-					node.scrollHeight > node.clientHeight
-				) {
-					return false;
-				}
-				node = node.parentElement;
-			}
-			return true;
-		};
-		const onWheel = (e: WheelEvent) => {
-			if (e.deltaY < 0 && scroller.scrollTop > 0 && chatWillScroll(e.target)) {
-				stickRef.current = false;
-			}
-		};
-		let touchStartTarget: EventTarget | null = null;
-		let touchStartY: number | null = null;
-		const onTouchStart = (e: TouchEvent) => {
-			touchStartTarget = e.touches[0]?.target ?? null;
-			touchStartY = e.touches[0]?.clientY ?? null;
-		};
-		const onTouchMove = (e: TouchEvent) => {
-			const y = e.touches[0]?.clientY;
-			// Finger dragging down reveals older content (scrollTop shrinks).
-			if (
-				touchStartY !== null &&
-				y !== undefined &&
-				y - touchStartY > 4 &&
-				scroller.scrollTop > 0 &&
-				chatWillScroll(touchStartTarget)
-			) {
-				stickRef.current = false;
-			}
-		};
-		const onPointerDown = (e: PointerEvent) => {
-			// Grabbing the vertical scrollbar (custom 9px thumb) is user
-			// scrolling that never produces a wheel/touch signal.
-			if (e.button !== 0 || scroller.scrollTop <= 0) return;
-			const rect = scroller.getBoundingClientRect();
-			if (e.clientX >= rect.right - 12) stickRef.current = false;
-		};
-		const onKeyDown = (e: KeyboardEvent) => {
-			if (
-				(e.key === "PageUp" || e.key === "ArrowUp" || e.key === "Home") &&
-				scroller.scrollTop > 0
-			) {
-				stickRef.current = false;
-			}
-		};
-		scroller.addEventListener("scroll", onScroll, { passive: true });
-		scroller.addEventListener("wheel", onWheel, { passive: true });
-		scroller.addEventListener("touchstart", onTouchStart, { passive: true });
-		scroller.addEventListener("touchmove", onTouchMove, { passive: true });
-		scroller.addEventListener("pointerdown", onPointerDown);
-		scroller.addEventListener("keydown", onKeyDown);
-		return () => {
-			if (rafId !== null) cancelAnimationFrame(rafId);
-			resizeObserver.disconnect();
-			mutationObserver.disconnect();
-			scroller.removeEventListener("scroll", onScroll);
-			scroller.removeEventListener("wheel", onWheel);
-			scroller.removeEventListener("touchstart", onTouchStart);
-			scroller.removeEventListener("touchmove", onTouchMove);
-			scroller.removeEventListener("pointerdown", onPointerDown);
-			scroller.removeEventListener("keydown", onKeyDown);
-		};
-	}, [follow]);
-
-	// Scroll the active search hit into view within the chat scroller (its
-	// parent `.chat-scroll`), not via scrollIntoView (which can also scroll
-	// ancestor containers). Jumping to a hit is explicit user intent: stop
-	// following so the stream can't yank the view back down (scroll events
-	// are no longer treated as user scrolling — see the observer effect).
+	// Scroll the active search hit into view within the MessageScroller
+	// viewport. Jumping to a hit is explicit user intent; the scroller's own
+	// scroll handler then sees the view away from the live edge and stops
+	// following (its programmatic-scroll guard only covers its own scrolls).
 	useEffect(() => {
 		if (searchActiveMessageId == null) return;
 		const el = msgElsRef.current.get(searchActiveMessageId);
-		const scroller = scrollRef.current?.parentElement;
+		const scroller = viewportRef.current;
 		if (el && scroller) {
-			stickRef.current = false;
 			const elRect = el.getBoundingClientRect();
 			const scrollerRect = scroller.getBoundingClientRect();
 			const top =
@@ -808,9 +567,9 @@ export const MessageList = memo(function MessageList({
 			}),
 		[items, working, streaming, all, searchQuery, changes, timings, enteringTurn],
 	);
-	// Live groups self-identify: chat-rows marks an entry `running` only when
+	// Live cards self-identify: chat-rows marks an entry `running` only when
 	// it is the last block of a message that is streaming right now, so the
-	// MetaGroup holding that entry (and only that one) lights up while the
+	// ActivityCard holding that entry (and only that one) lights up while the
 	// agent works. No position-based scan — a position scan lit up the
 	// previous turn's group in the gap between submit and message_start,
 	// and could flash a thinking fold at the top of the transcript.
@@ -828,14 +587,12 @@ export const MessageList = memo(function MessageList({
 		return null;
 	}, [all, streaming, working]);
 
-	// Live wait chip: shown while the run is live but NOTHING is producing
-	// output right now — the first-token wait (the last message is still the
-	// user's own) and mid-run pauses (LLM request in flight after tool
-	// results, long tool executions) that otherwise read as dead air: the
-	// transcript looks finished, then output "resumes by itself". Once any
-	// entry runs again — or the final answer text streams, which ends the
-	// live shell via `endImmediately` — it disappears. The auto-retry chip
-	// takes precedence during retry backoff windows.
+	// Live wait card: shown while the run is live but NOTHING is producing
+	// output right now — the first-token wait and mid-run pauses that
+	// otherwise read as dead air. Once any entry runs again — or the final
+	// answer text streams, which ends the live shell via `endImmediately` —
+	// it disappears. The auto-retry card takes precedence during retry
+	// backoff windows.
 	const gapLive =
 		shownWorking &&
 		!autoRetry &&
@@ -861,16 +618,43 @@ export const MessageList = memo(function MessageList({
 		return null;
 	}, [all, streaming, working]);
 
+	// Entrance-animation baseline: message ids at mount (and on session
+	// switch, via the MessageScroller remount key) never animate; ids that
+	// appear afterwards — a sent message, the in-flight reply — play the beUI
+	// pop once. History loads and session switches stay still.
+	const maxId = useMemo(() => all.reduce((mx, m) => Math.max(mx, m.id), 0), [all]);
+	const animateBaselineRef = useRef<{ key: number | null; max: number }>({
+		key: sessionKey,
+		max: maxId,
+	});
+	if (animateBaselineRef.current.key !== sessionKey) {
+		animateBaselineRef.current = { key: sessionKey, max: maxId };
+	}
+	const animateFromId = animateBaselineRef.current.max;
+
 	return (
-		<div ref={scrollRef} className="messages">
+		<MessageScroller
+			key={sessionKey ?? "empty"}
+			className="flex-1 min-h-0"
+			followOutput={autoScroll !== false}
+			followThreshold={120}
+			busy={working || streaming}
+			label={t.chat.railLabel}
+			navigation="rail"
+			railSide="left"
+			navigationLabel={t.chat.railNavLabel}
+			viewportRef={viewportRef}
+			viewportClassName="chat-scroll"
+			contentClassName="messages"
+		>
 			{rows.map((row, i) => {
 				if (row.kind === "turn") {
 					const gapChip =
-						gapLive && i === rows.length - 1 ? <GapLiveChip label={gapLabel} /> : null;
+						gapLive && i === rows.length - 1 ? <GapLiveCard label={gapLabel} /> : null;
 					return (
 						<Fragment key={row.key}>
 							{gapChip}
-							<TurnDiffRow
+							<TurnPill
 								changes={row.changes}
 								startedAt={row.startedAt}
 								endedAt={row.endedAt}
@@ -885,7 +669,7 @@ export const MessageList = memo(function MessageList({
 				}
 				if (row.kind === "group") {
 					return (
-						<MetaGroup
+						<ActivityCard
 							key={row.key}
 							entries={row.entries}
 							live={shownWorking && row.entries.some((e) => e.running)}
@@ -920,16 +704,18 @@ export const MessageList = memo(function MessageList({
 						}
 						onCompact={onCompact}
 						onOpenSettings={onOpenSettings}
+						animateIn={row.item.msg.id > animateFromId}
 					/>
 				);
 			})}
-			{/* Auto-retry backoff: the retry chip replaces the gap chip so the
+			{/* Auto-retry backoff: the retry card replaces the gap card so the
 			 * wait stays legible instead of reading as the conversation's end. */}
-			{autoRetry && <AutoRetryChip state={autoRetry} t={t} />}
-			{/* Fallback: same chip when the list ends without a turn row. */}
+			{autoRetry && <AutoRetryCard state={autoRetry} t={t} />}
+			{/* Fallback: same card when the list ends without a turn row. */}
 			{!autoRetry && gapLive && (rows.length === 0 || rows[rows.length - 1].kind !== "turn") && (
-				<GapLiveChip label={gapLabel} />
+				<GapLiveCard label={gapLabel} />
 			)}
-		</div>
+			{subagentRuns && subagentRuns.length > 0 && <SubagentLiveCard runs={subagentRuns} t={t} />}
+		</MessageScroller>
 	);
 });

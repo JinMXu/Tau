@@ -7711,3 +7711,383 @@ html[data-theme="dark"] {
 .oauth-status-line .spin {
 	flex-shrink: 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * Message area on beUI primitives (direction C) — activity cards, live
+ * states, centered turn pill. Tokens come from the app design system, so
+ * data-theme / data-density keep applying. The vendored beUI components
+ * bring their own Tailwind skin; these classes only dress the app-level
+ * wrappers in MessageList / message-activity.
+ * ------------------------------------------------------------------------- */
+
+/* 用户气泡表面：beUI MessageBubble soft 是 --active 半透明，这里换回
+   实色 --user-bubble（Percho 用户气泡同款）。surface 是 content 的首个
+   子 span（pointer-events-none 的圆角层）。 */
+.message.user [data-slot="message-bubble-content"] > span:first-child {
+	background: var(--user-bubble);
+}
+
+.user-bubble-text {
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+/* ---- 活动卡（折叠组 / live 态 / 自动重试 / 子代理共用外壳） ---- */
+
+.act-card {
+	width: 100%;
+	border: 1px solid var(--app-border);
+	background: var(--tool-bg);
+	border-radius: 11px;
+	overflow: hidden;
+}
+
+.act-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 7px 11px;
+	border: none;
+	background: transparent;
+	color: var(--app-muted);
+	font-size: 12.5px;
+	line-height: 1.5;
+	text-align: left;
+	cursor: pointer;
+	transition: background var(--dur) var(--ease);
+}
+
+.act-head:hover,
+.act-head:focus-visible {
+	background: var(--hover);
+	outline: none;
+}
+
+.act-summary {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	flex-wrap: wrap;
+	color: var(--app-fg);
+	font-weight: 550;
+}
+
+.act-seg {
+	white-space: nowrap;
+}
+
+.act-seg + .act-seg::before {
+	content: "·";
+	margin-right: 6px;
+	color: var(--app-muted);
+	font-weight: 400;
+}
+
+.act-badge {
+	flex: none;
+	padding: 1px 8px;
+	border-radius: 99px;
+	background: var(--active);
+	color: var(--app-muted);
+	font-size: 10.5px;
+	line-height: 1.6;
+	white-space: nowrap;
+}
+
+.act-badge.running {
+	background: color-mix(in srgb, var(--ok) 14%, transparent);
+	color: var(--ok);
+}
+
+.act-chev {
+	display: inline-flex;
+	flex: none;
+	color: var(--app-muted);
+	opacity: 0.6;
+}
+
+/* ---- 活动行（beUI agent-activity 行语言） ---- */
+
+.act-row {
+	min-height: 30px;
+	border-radius: 7px;
+	font-size: 13px;
+}
+
+.act-row-head {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	min-height: 30px;
+	padding: 1px 6px;
+	border: none;
+	background: transparent;
+	color: var(--app-fg);
+	text-align: left;
+	cursor: pointer;
+	border-radius: inherit;
+	transition: background var(--dur) var(--ease);
+}
+
+.act-row-head:hover,
+.act-row-head:focus-visible {
+	background: var(--hover);
+	outline: none;
+}
+
+.act-status-icon {
+	display: inline-grid;
+	place-items: center;
+	flex: none;
+	width: 16px;
+	height: 16px;
+	color: var(--app-muted);
+	opacity: 0.8;
+}
+
+.act-status-ok {
+	color: var(--ok);
+	opacity: 0.9;
+}
+
+.act-dot {
+	flex: none;
+	width: 7px;
+	height: 7px;
+	border-radius: 99px;
+}
+
+.act-dot.err {
+	background: var(--err);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--err) 18%, transparent);
+}
+
+.act-pulse {
+	position: relative;
+	display: inline-grid;
+	place-items: center;
+	flex: none;
+	width: 14px;
+	height: 14px;
+}
+
+.act-pulse-halo {
+	position: absolute;
+	inset: 0;
+	border-radius: 99px;
+	background: currentColor;
+	opacity: 0.3;
+}
+
+.act-pulse-core {
+	width: 6px;
+	height: 6px;
+	border-radius: 99px;
+	background: currentColor;
+	opacity: 0.7;
+}
+
+.act-row-name {
+	flex: none;
+	font-weight: 600;
+	font-size: 12.5px;
+	color: var(--app-fg);
+}
+
+.act-sub-agent {
+	color: var(--app-muted);
+	font-weight: 400;
+	font-size: 11.5px;
+}
+
+.act-row-target {
+	min-width: 0;
+	flex: 1;
+	padding: 2.5px 10px;
+	border-radius: 8px;
+	background: var(--active);
+	color: var(--app-muted);
+	font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+	font-size: 11.5px;
+	line-height: 1.5;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	text-align: left;
+}
+
+.act-meta {
+	flex: none;
+	color: var(--app-muted);
+	opacity: 0.7;
+	font-size: 11.5px;
+	white-space: nowrap;
+}
+
+.act-row-detail {
+	padding: 0 6px 4px 32px;
+}
+
+.act-pre {
+	margin: 2px 0;
+	padding: 7px 10px;
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--app-fg) 4%, transparent);
+	color: var(--app-muted);
+	font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+	font-size: 11.5px;
+	line-height: 1.6;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.act-pre.err {
+	color: var(--err);
+	background: var(--err-bg);
+}
+
+.act-think {
+	padding: 4px 2px 2px;
+	color: var(--app-muted);
+	font-size: 12.5px;
+	line-height: 1.6;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.act-clock {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	flex: none;
+	color: var(--app-muted);
+	font-size: 11.5px;
+}
+
+.act-clock.live {
+	color: var(--app-fg);
+}
+
+.act-stat {
+	font-family: var(--font-mono, ui-monospace, Consolas, monospace);
+	font-size: 11.5px;
+}
+
+.act-stat.add {
+	color: var(--ok);
+}
+
+.act-stat.del {
+	color: var(--err);
+}
+
+/* 单条裸活动行（无卡片外壳） */
+.act-bare {
+	width: 100%;
+}
+
+/* ---- live 态外壳 ---- */
+
+.act-card.live {
+	border-color: color-mix(in srgb, var(--ok) 22%, var(--app-border));
+}
+
+.act-card.live .act-head {
+	cursor: pointer;
+}
+
+/* ---- 居中回合 pill ---- */
+
+.turn-pill-row {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+}
+
+.turn-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	max-width: 92%;
+	padding: 3.5px 13px;
+	border-radius: 99px;
+	background: var(--active);
+	color: var(--app-muted);
+	font-size: 11.5px;
+	line-height: 1.6;
+	white-space: nowrap;
+}
+
+.turn-pill.clickable {
+	cursor: pointer;
+	transition:
+		background var(--dur) var(--ease),
+		color var(--dur) var(--ease);
+}
+
+.turn-pill.clickable:hover {
+	background: var(--hover);
+	color: var(--app-fg);
+}
+
+.turn-pill-sep {
+	opacity: 0.6;
+}
+
+.turn-pill-files {
+	width: 88%;
+	padding: 4px;
+	border: 1px solid var(--app-border);
+	border-radius: 10px;
+	background: var(--tool-bg);
+}
+
+.turn-pill-file {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	width: 100%;
+	min-height: 28px;
+	padding: 4.5px 9px;
+	border: none;
+	border-radius: 7px;
+	background: transparent;
+	color: var(--app-fg);
+	font-size: 12.5px;
+	cursor: pointer;
+	transition: background var(--dur) var(--ease);
+}
+
+.turn-pill-file:hover,
+.turn-pill-file:focus-visible {
+	background: var(--hover);
+	outline: none;
+}
+
+.turn-pill-file .act-row-target {
+	flex: 1;
+	background: transparent;
+	padding: 0;
+	color: var(--app-fg);
+	font-size: 12px;
+}
+
+/* ---- 子代理 live 卡 ---- */
+
+.act-sub-run + .act-sub-run {
+	border-top: 1px solid var(--app-border);
+}
+
+.act-sub-steps {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	padding: 3px 7px 7px;
+}
