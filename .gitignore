@@ -40,3 +40,9 @@ src-tauri/resources/pi-runtime/*
 .scratch-*.txt
 .shot-*
 *.tsbuildinfo
+
+# Local AI tool state & personal writing notes (keep out of the public repo)
+.claude/
+.workbuddy-ai/
+/setting/
+/style/
