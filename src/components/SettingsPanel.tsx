@@ -35,7 +35,6 @@ import {
 	BarChartIcon,
 	BoltIcon,
 	CheckIcon,
-	ChevronDownIcon,
 	ChevronLeftIcon,
 	CopyIcon,
 	EditIcon,
@@ -58,6 +57,13 @@ import { ALL_AGENT_TOOLS } from "../settings";
 import { PACKAGES_CATALOG, formatDownloads } from "../packages-catalog";
 import { cn } from "@/lib/utils";
 import { Button } from "./motion/button";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "./motion/select";
 import { Switch } from "./motion/switch";
 import { UsageStats } from "./UsageStats";
 import { CustomProviderDialog } from "./CustomProviderDialog";
@@ -225,8 +231,44 @@ function Btn({
 }
 
 /**
- * Themed pill dropdown for the archived-page toolbar. Reuses the mcp-scope
- * styles — a native <select> renders with OS chrome on Windows.
+ * 设置页的下拉选择,统一走 beui Select(粘性展开动画 + 外点/Escape 关闭
+ * + 上下自动翻转),替代带系统原生外观的原生 <select>。
+ */
+function SettingSelect({
+	value,
+	onChange,
+	options,
+}: {
+	value: string;
+	onChange: (value: string) => void;
+	options: { value: string; label: string }[];
+}) {
+	// A null/undefined value (async setting not loaded yet) would flip the
+	// Select into uncontrolled mode showing its "Select" placeholder — fall
+	// back to the first option instead, matching the old native behaviour.
+	const safeValue = value ?? options[0]?.value ?? "";
+	// beui pins the panel to the trigger's edges (left-0 right-0); a narrow
+	// trigger would squeeze longer option labels into vertical text. Right-
+	// align and let the panel shrink-wrap the widest option instead.
+	return (
+		<Select value={safeValue} onValueChange={onChange}>
+			<SelectTrigger className="settings-select h-auto w-auto rounded-[var(--r-md)] px-2.5 py-1.5 text-[length:var(--fs-sm)]">
+				<SelectValue />
+			</SelectTrigger>
+			<SelectContent className="left-auto right-0 w-auto min-w-full">
+				{options.map((o) => (
+					<SelectItem key={o.value} value={o.value} className="whitespace-nowrap">
+						{o.label}
+					</SelectItem>
+				))}
+			</SelectContent>
+		</Select>
+	);
+}
+
+/**
+ * Themed dropdown for the archived-page toolbar, now on beui Select. The
+ * trigger keeps the pill look (icon + label + chevron) via className.
  */
 function FilterSelect({
 	value,
@@ -239,58 +281,22 @@ function FilterSelect({
 	icon?: React.ReactNode;
 	onChange: (value: string) => void;
 }) {
-	const [open, setOpen] = useState(false);
-	const wrapRef = useRef<HTMLDivElement>(null);
-
-	useEffect(() => {
-		if (!open) return;
-		const onDown = (e: MouseEvent) => {
-			if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
-				setOpen(false);
-			}
-		};
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") setOpen(false);
-		};
-		document.addEventListener("mousedown", onDown);
-		document.addEventListener("keydown", onKey);
-		return () => {
-			document.removeEventListener("mousedown", onDown);
-			document.removeEventListener("keydown", onKey);
-		};
-	}, [open]);
-
 	const label = options.find((o) => o.value === value)?.label ?? value;
 
 	return (
-		<div className="mcp-scope" ref={wrapRef}>
-			<button
-				className={`mcp-scope-btn ${open ? "open" : ""}`}
-				aria-expanded={open}
-				onClick={() => setOpen((v) => !v)}
-			>
+		<Select value={value} onValueChange={onChange}>
+			<SelectTrigger className="mcp-scope-btn h-auto w-auto rounded-full border-0 bg-[color:var(--hover)] px-2.5 py-1.5 text-[length:var(--fs-sm)] text-[color:var(--app-fg)] hover:bg-[color:var(--active)]">
 				{icon}
 				<span className="mcp-scope-btn-label">{label}</span>
-				<ChevronDownIcon size={13} />
-			</button>
-			{open && (
-				<div className="mcp-scope-menu">
-					{options.map((o) => (
-						<button
-							key={o.value}
-							className={`mcp-scope-item ${value === o.value ? "active" : ""}`}
-							onClick={() => {
-								onChange(o.value);
-								setOpen(false);
-							}}
-						>
-							<span className="mcp-scope-item-name">{o.label}</span>
-							{value === o.value && <CheckIcon size={13} />}
-						</button>
-					))}
-				</div>
-			)}
-		</div>
+			</SelectTrigger>
+			<SelectContent className="left-auto right-0 w-auto min-w-full">
+				{options.map((o) => (
+					<SelectItem key={o.value} value={o.value} className="whitespace-nowrap">
+						{o.label}
+					</SelectItem>
+				))}
+			</SelectContent>
+		</Select>
 	);
 }
 
@@ -1263,21 +1269,14 @@ export function SettingsPanel({
 								</div>
 							</Row>
 							<Row label={t.settings.fontSize}>
-								<select
-									value={settings.fontSize}
-									onChange={(e) =>
-										onChange({
-											...settings,
-											fontSize: Number(e.target.value),
-										})
-									}
-								>
-									{[13, 14, 15, 16, 17].map((n) => (
-										<option key={n} value={n}>
-											{n}px
-										</option>
-									))}
-								</select>
+								<SettingSelect
+									value={String(settings.fontSize)}
+									onChange={(v) => onChange({ ...settings, fontSize: Number(v) })}
+									options={[13, 14, 15, 16, 17].map((n) => ({
+										value: String(n),
+										label: `${n}px`,
+									}))}
+								/>
 							</Row>
 							<Row label={t.settings.density}>
 								<div className="segmented">
@@ -1293,19 +1292,20 @@ export function SettingsPanel({
 								</div>
 							</Row>
 							<Row label={t.settings.chatFontFamily} hint={t.settings.chatFontFamilyHint}>
-								<select
+								<SettingSelect
 									value={settings.chatFontFamily}
-									onChange={(e) =>
+									onChange={(v) =>
 										onChange({
 											...settings,
-											chatFontFamily: e.target.value as typeof settings.chatFontFamily,
+											chatFontFamily: v as typeof settings.chatFontFamily,
 										})
 									}
-								>
-									<option value="system">{t.settings.fontSystem}</option>
-									<option value="lxgwWenkai">{t.settings.fontLxgwWenkai}</option>
-									<option value="zhuqueFangsong">{t.settings.fontZhuqueFangsong}</option>
-								</select>
+									options={[
+										{ value: "system", label: t.settings.fontSystem },
+										{ value: "lxgwWenkai", label: t.settings.fontLxgwWenkai },
+										{ value: "zhuqueFangsong", label: t.settings.fontZhuqueFangsong },
+									]}
+								/>
 							</Row>
 							<Row label={t.settings.chatContentWidth}>
 								<div className="segmented">
@@ -1358,18 +1358,14 @@ export function SettingsPanel({
 						<section className="settings-section">
 							<h3>{t.settings.general}</h3>
 							<Row label={t.settings.language}>
-								<select
+								<SettingSelect
 									value={settings.language}
-									onChange={(e) =>
-										onChange({
-											...settings,
-											language: e.target.value as "zh" | "en",
-										})
-									}
-								>
-									<option value="zh">中文</option>
-									<option value="en">English</option>
-								</select>
+									onChange={(v) => onChange({ ...settings, language: v as "zh" | "en" })}
+									options={[
+										{ value: "zh", label: "中文" },
+										{ value: "en", label: "English" },
+									]}
+								/>
 							</Row>
 							<Row
 								label={t.settings.continueQueuedAfterInterrupt}
@@ -1382,18 +1378,16 @@ export function SettingsPanel({
 								/>
 							</Row>
 							<Row label={t.settings.sendDuringRunMode} hint={t.settings.sendDuringRunModeHint}>
-								<select
+								<SettingSelect
 									value={settings.sendDuringRunMode}
-									onChange={(e) =>
-										onChange({
-											...settings,
-											sendDuringRunMode: e.target.value as "steer" | "queue",
-										})
+									onChange={(v) =>
+										onChange({ ...settings, sendDuringRunMode: v as "steer" | "queue" })
 									}
-								>
-									<option value="steer">{t.settings.modeSteer}</option>
-									<option value="queue">{t.settings.modeQueue}</option>
-								</select>
+									options={[
+										{ value: "steer", label: t.settings.modeSteer },
+										{ value: "queue", label: t.settings.modeQueue },
+									]}
+								/>
 							</Row>
 							<Row label={t.settings.showContextUsage} hint={t.settings.showContextUsageHint}>
 								<Switch
@@ -1417,35 +1411,31 @@ export function SettingsPanel({
 								/>
 							</Row>
 							<Row label={t.settings.steeringMode} hint={t.settings.steeringModeHint}>
-								<select
+								<SettingSelect
 									value={settings.steeringMode}
-									onChange={(e) =>
-										onChange({
-											...settings,
-											steeringMode: e.target.value as "all" | "one-at-a-time",
-										})
+									onChange={(v) =>
+										onChange({ ...settings, steeringMode: v as "all" | "one-at-a-time" })
 									}
-								>
-									<option value="all">{t.settings.queueModeAll}</option>
-									<option value="one-at-a-time">{t.settings.queueModeOneAtATime}</option>
-								</select>
+									options={[
+										{ value: "all", label: t.settings.queueModeAll },
+										{ value: "one-at-a-time", label: t.settings.queueModeOneAtATime },
+									]}
+								/>
 							</Row>
 							<Row label={t.settings.followUpMode} hint={t.settings.followUpModeHint}>
-								<select
+								<SettingSelect
 									value={settings.followUpMode}
 									// The TUI default is one-at-a-time; the local queue already
 									// serializes delivery, so all/one-at-a-time maps to pi's
 									// delivery granularity per turn.
-									onChange={(e) =>
-										onChange({
-											...settings,
-											followUpMode: e.target.value as "all" | "one-at-a-time",
-										})
+									onChange={(v) =>
+										onChange({ ...settings, followUpMode: v as "all" | "one-at-a-time" })
 									}
-								>
-									<option value="all">{t.settings.queueModeAll}</option>
-									<option value="one-at-a-time">{t.settings.queueModeOneAtATime}</option>
-								</select>
+									options={[
+										{ value: "all", label: t.settings.queueModeAll },
+										{ value: "one-at-a-time", label: t.settings.queueModeOneAtATime },
+									]}
+								/>
 							</Row>
 							<Row label={t.settings.scopedModels} hint={t.settings.scopedModelsHint}>
 								<div className="scoped-models-row">
@@ -1520,31 +1510,32 @@ export function SettingsPanel({
 											: t.settings.trustNoProject}
 									</span>
 									<div className="trust-buttons">
-										<button
-											className={`btn small ${trustDecision === true ? "primary" : "secondary"}`}
+										<Btn
+											kind={trustDecision === true ? "primary" : "secondary"}
+											small
 											disabled={!workspace}
 											onClick={() => onSetProjectTrust(trustDecision === true ? null : true)}
 										>
 											{t.settings.trustTrust}
-										</button>
-										<button
-											className={`btn small ${trustDecision === false ? "danger" : "secondary"}`}
+										</Btn>
+										<Btn
+											kind={trustDecision === false ? "danger" : "secondary"}
+											small
 											disabled={!workspace}
 											onClick={() => onSetProjectTrust(trustDecision === false ? null : false)}
 										>
 											{t.settings.trustDeny}
-										</button>
+										</Btn>
 									</div>
-									<select
-										className="trust-default"
+									<SettingSelect
 										value={trustDefault}
-										title={t.settings.trustDefaultHint}
-										onChange={(e) => onSetDefaultTrust(e.target.value)}
-									>
-										<option value="ask">{t.settings.trustDefaultAsk}</option>
-										<option value="always">{t.settings.trustDefaultAlways}</option>
-										<option value="never">{t.settings.trustDefaultNever}</option>
-									</select>
+										onChange={(v) => onSetDefaultTrust(v)}
+										options={[
+											{ value: "ask", label: t.settings.trustDefaultAsk },
+											{ value: "always", label: t.settings.trustDefaultAlways },
+											{ value: "never", label: t.settings.trustDefaultNever },
+										]}
+									/>
 								</div>
 							</Row>
 						</section>

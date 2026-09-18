@@ -87,7 +87,26 @@ const invoked: { cmd: string; args: unknown }[] = [];
 					},
 				]);
 			case "pi_list_archived_sessions":
-				return Promise.resolve([]);
+				// Sample archived rows so the archived-page toolbar (project and
+				// time filter selects) renders in the browser preview.
+				return Promise.resolve([
+					{
+						path: "D:/agents/pi-gui/.pi/archived/old1.jsonl",
+						originalPath: "D:/agents/pi-gui/.pi/sessions/old1.jsonl",
+						title: "旧的调试会话",
+						project: "D:/agents/pi-gui",
+						mtimeMs: Date.now() - 3 * 86_400_000,
+						size: 18_432,
+					},
+					{
+						path: "D:/agents/tau-docs/.pi/archived/old2.jsonl",
+						originalPath: "D:/agents/tau-docs/.pi/sessions/old2.jsonl",
+						title: "Draft outline",
+						project: "D:/agents/tau-docs",
+						mtimeMs: Date.now() - 20 * 86_400_000,
+						size: 5_120,
+					},
+				]);
 			case "pi_auth_status":
 				// Pretend every provider has a key so the composer's send gate
 				// (ensureProviderKey) lets scripted sends through.
