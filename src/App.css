@@ -2163,26 +2163,6 @@ html[data-platform="macos"] .collapsed-actions-bar {
 	display: none;
 }
 
-.composer-model-btn {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	padding: var(--sp-1) var(--sp-2);
-	border-radius: var(--r-md);
-	font-size: var(--fs-sm);
-	color: var(--text-2);
-	transition:
-		background var(--dur) var(--ease),
-		color var(--dur) var(--ease);
-	max-width: 190px;
-}
-
-.composer-model-btn:hover,
-.composer-model-btn.open {
-	background: var(--hover);
-	color: var(--text-1);
-}
-
 .model-dot {
 	width: 7px;
 	height: 7px;
@@ -2197,21 +2177,14 @@ html[data-platform="macos"] .collapsed-actions-bar {
 	white-space: nowrap;
 }
 
-.composer-select {
-	position: relative;
-}
-
+/* The composer dropdown menus (model / thinking / tools / workspace /
+   branch) render inside beUI MorphPopoverContent, which portals to the
+   body and provides the surface: border, radius, shadow, clipping and the
+   corner-morph open animation. These classes only carry sizing and the
+   menu-background tone. */
 .model-menu {
-	position: absolute;
-	bottom: calc(100% + 8px);
-	left: 0;
 	width: min(300px, calc(100vw - 40px));
 	background: var(--menu-bg);
-	border: 1px solid var(--menu-border);
-	border-radius: var(--r-lg);
-	box-shadow: var(--shadow-2);
-	z-index: 70;
-	overflow: hidden;
 }
 
 .model-menu-list {
@@ -2289,38 +2262,6 @@ html[data-platform="macos"] .collapsed-actions-bar {
 	background: var(--card-bg);
 	color: var(--text-1);
 	box-shadow: var(--shadow-1);
-}
-
-.send-btn {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	width: 32px;
-	height: 32px;
-	border-radius: 50%;
-	background: var(--accent);
-	color: var(--accent-fg);
-	transition:
-		filter var(--dur) var(--ease),
-		transform 50ms var(--ease);
-}
-
-.send-btn:hover:not(:disabled) {
-	filter: brightness(1.12);
-}
-
-.send-btn:active:not(:disabled) {
-	transform: scale(0.95);
-}
-
-.send-btn.stop {
-	background: color-mix(in srgb, var(--status-err) 16%, var(--card-bg));
-	color: var(--status-err);
-}
-
-.send-btn:disabled {
-	opacity: 0.6;
-	cursor: default;
 }
 
 .attachment-strip {
@@ -3280,7 +3221,8 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 	opacity: 0.5;
 }
 
-.composer-chip.open {
+.composer-chip.open,
+.composer-chip[aria-expanded="true"] {
 	background: var(--hover);
 	color: var(--text-1);
 }
@@ -3314,35 +3256,11 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 	text-align: left;
 }
 
-/* menus attached to the top context row open downward */
-.branch-menu.drop-down {
-	top: calc(100% + 6px);
-	bottom: auto;
-}
-
-/* …but the composer hugs the bottom of the window, so a downward menu can
- * run past the window edge (hidden behind the taskbar). The `up` modifier
- * (applied by the Composer when there isn't enough room below the chip)
- * flips the menu above the chip instead. */
-.branch-menu.up,
-.workspace-menu.up {
-	top: auto;
-	bottom: calc(100% + 6px);
-}
-
 /* thinking-level picker: same visual language as the model menu */
 .thinking-menu {
-	position: absolute;
-	bottom: calc(100% + 8px);
-	left: 0;
 	width: min(180px, calc(100vw - 40px));
 	padding: var(--sp-1);
 	background: var(--menu-bg);
-	border: 1px solid var(--menu-border);
-	border-radius: var(--r-lg);
-	box-shadow: var(--shadow-2);
-	z-index: 70;
-	overflow: hidden;
 }
 
 .thinking-item {
@@ -3371,12 +3289,6 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 	text-align: left;
 }
 
-/* model menu lives on the right side of the toolbar */
-.composer-right .model-menu {
-	left: auto;
-	right: 0;
-}
-
 .branch-dirty {
 	background: var(--status-warn);
 	color: #fff;
@@ -3389,30 +3301,14 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 }
 
 .branch-menu {
-	position: absolute;
-	bottom: calc(100% + 8px);
-	left: 0;
 	width: min(280px, calc(100vw - 40px));
 	background: var(--menu-bg);
-	border: 1px solid var(--menu-border);
-	border-radius: var(--r-lg);
-	box-shadow: var(--shadow-2);
-	z-index: 70;
-	overflow: hidden;
 }
 
 /* workspace picker anchored to the top context row opens downward */
 .workspace-menu {
-	position: absolute;
-	top: calc(100% + 6px);
-	left: 0;
 	width: min(280px, calc(100vw - 40px));
 	background: var(--menu-bg);
-	border: 1px solid var(--menu-border);
-	border-radius: var(--r-lg);
-	box-shadow: var(--shadow-2);
-	z-index: 70;
-	overflow: hidden;
 }
 
 /* shared menu building blocks (search row / section label / empty hint) */
@@ -4706,16 +4602,6 @@ html[data-platform="macos"] .app.fullscreen .shell.collapsed .chat-header-left {
 	flex-shrink: 0;
 }
 
-.queue-actions .icon-btn {
-	width: 22px;
-	height: 22px;
-	background: transparent;
-}
-
-.queue-actions .icon-btn:hover {
-	background: rgba(255, 255, 255, 0.55);
-}
-
 .queue-paused-hint {
 	font-size: var(--fs-xs);
 	color: var(--app-muted);
@@ -4850,16 +4736,9 @@ html[data-platform="macos"] .app.fullscreen .shell.collapsed .chat-header-left {
  * ------------------------------------------------------------------------- */
 
 .tools-menu {
-	position: absolute;
-	bottom: calc(100% + 8px);
-	left: 0;
 	width: min(240px, calc(100vw - 40px));
 	padding: var(--sp-2);
 	background: var(--menu-bg);
-	border: 1px solid var(--menu-border);
-	border-radius: var(--r-lg);
-	box-shadow: var(--shadow-2);
-	z-index: 70;
 }
 
 .tools-menu-header {

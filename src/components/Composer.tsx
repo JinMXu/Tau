@@ -1,8 +1,6 @@
 import {
 	useCallback,
 	useEffect,
-	useId,
-	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -15,6 +13,12 @@ import { formatBytes, projectNameFromPath } from "../format";
 import type { MessageCatalog } from "../i18n";
 import type { GitBranchState, PiCommand } from "../pi";
 import { externalEdit, projectFiles } from "../pi";
+import { Button } from "./motion/button";
+import {
+	MorphPopover,
+	MorphPopoverContent,
+	MorphPopoverTrigger,
+} from "./motion/popover-morph";
 import {
 	CheckIcon,
 	ChevronDownIcon,
@@ -48,6 +52,12 @@ export interface ModelEntry {
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_TEXT_ATTACHMENT_BYTES = 300 * 1024;
+
+// Tailwind's extractor skips candidates inside a template-literal's `${…}`
+// expression, so conditional queue-row button classes live in plain string
+// constants — written inline in the JSX template they'd never be generated.
+const QUEUE_ACT_CLS = "size-[22px] rounded-[var(--r-sm)]";
+const QUEUE_ACT_EDITING_CLS = "text-white hover:bg-white/25 hover:text-white";
 
 function readFileAsDataUrl(file: File): Promise<string> {
 	return new Promise((resolve, reject) => {
@@ -286,18 +296,14 @@ export function Composer({
 	const [attachments, setAttachments] = useState<Attachment[]>([]);
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
 	const [modelQuery, setModelQuery] = useState("");
-	const modelMenuId = useId();
 	const [isComposing, setIsComposing] = useState(false);
 	const [branchMenuOpen, setBranchMenuOpen] = useState(false);
 	const [branchCreating, setBranchCreating] = useState(false);
 	const [newBranchName, setNewBranchName] = useState("");
 	const [branchQuery, setBranchQuery] = useState("");
-	const [branchMenuUp, setBranchMenuUp] = useState(false);
 	const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
 	const [workspaceQuery, setWorkspaceQuery] = useState("");
-	const [workspaceMenuUp, setWorkspaceMenuUp] = useState(false);
 	const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
-	const thinkingMenuId = useId();
 	const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
 	const [dragQueueId, setDragQueueId] = useState<string | null>(null);
 	const [slashIndex, setSlashIndex] = useState(0);
@@ -323,11 +329,8 @@ export function Composer({
 	const [attachError, setAttachError] = useState<string | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
-	const modelMenuRef = useRef<HTMLDivElement>(null);
-	const branchMenuRef = useRef<HTMLDivElement>(null);
-	const workspaceMenuRef = useRef<HTMLDivElement>(null);
-	const thinkingMenuRef = useRef<HTMLDivElement>(null);
-	const toolsMenuRef = useRef<HTMLDivElement>(null);
+	const workspaceMenuRef = useRef<HTMLButtonElement>(null);
+	const branchMenuRef = useRef<HTMLButtonElement>(null);
 
 	useEffect(() => {
 		if (composerFocusRequest > 0 && connected) {
@@ -371,29 +374,6 @@ export function Composer({
 			cancelled = true;
 		};
 	}, [workspacePath]);
-
-	useEffect(() => {
-		function onClick(e: MouseEvent) {
-			if (modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
-				setModelMenuOpen(false);
-			}
-			if (branchMenuRef.current && !branchMenuRef.current.contains(e.target as Node)) {
-				setBranchMenuOpen(false);
-				setBranchCreating(false);
-			}
-			if (workspaceMenuRef.current && !workspaceMenuRef.current.contains(e.target as Node)) {
-				setWorkspaceMenuOpen(false);
-			}
-			if (thinkingMenuRef.current && !thinkingMenuRef.current.contains(e.target as Node)) {
-				setThinkingMenuOpen(false);
-			}
-			if (toolsMenuRef.current && !toolsMenuRef.current.contains(e.target as Node)) {
-				setToolsMenuOpen(false);
-			}
-		}
-		document.addEventListener("mousedown", onClick);
-		return () => document.removeEventListener("mousedown", onClick);
-	}, []);
 
 	const createBranch = useCallback(() => {
 		const name = newBranchName.trim();
@@ -576,76 +556,53 @@ export function Composer({
 			: gitState.branches
 		: [];
 
-	const toggleWorkspaceMenu = useCallback(() => {
-		if (workspaceMenuOpen) {
-			setWorkspaceMenuOpen(false);
-		} else {
-			// Side effects moved out of the state updater (StrictMode may
-			// double-invoke updater bodies).
+	// Opening a menu resets its search and closes the other composer menus;
+	// outside-pointer / Escape dismissal is MorphPopover's job now.
+	const handleWorkspaceOpen = useCallback((open: boolean) => {
+		setWorkspaceMenuOpen(open);
+		if (open) {
 			setWorkspaceQuery("");
 			setBranchMenuOpen(false);
 			setBranchCreating(false);
-			setWorkspaceMenuOpen(true);
 		}
-	}, [workspaceMenuOpen]);
-
-	const toggleBranchMenu = useCallback(() => {
-		if (branchMenuOpen) {
-			setBranchCreating(false);
-			setBranchMenuOpen(false);
-		} else {
-			setBranchQuery("");
-			setWorkspaceMenuOpen(false);
-			setBranchMenuOpen(true);
-		}
-	}, [branchMenuOpen]);
-
-	const toggleThinkingMenu = useCallback(() => {
-		setThinkingMenuOpen((v) => {
-			if (v) return false;
-			setModelMenuOpen(false);
-			return true;
-		});
 	}, []);
 
-	// The workspace/branch menus are anchored to the context row above the
-	// composer, which hugs the bottom of the window — a downward-opening menu
-	// would run past the window edge and get clipped (ending up behind the
-	// taskbar). When there isn't enough room below the chip, flip the menu to
-	// open upward instead.
-	const fitMenuDirection = useCallback(
-		(
-			open: boolean,
-			wrapRef: React.RefObject<HTMLDivElement | null>,
-			selector: string,
-			setOpenUp: (up: boolean) => void,
-		) => {
-			if (!open) return;
-			const wrap = wrapRef.current;
-			const menu = wrap?.querySelector(selector) as HTMLElement | null;
-			if (!wrap || !menu) return;
-			const rect = wrap.getBoundingClientRect();
-			const spaceBelow = window.innerHeight - rect.bottom;
-			const spaceAbove = rect.top;
-			const height = menu.offsetHeight;
-			if (height <= spaceBelow) {
-				setOpenUp(false);
-				return;
-			}
-			// Prefer the direction with enough room; when neither fits, pick
-			// whichever has more space (the list scrolls either way).
-			setOpenUp(spaceAbove >= height || spaceAbove > spaceBelow);
-		},
-		[],
-	);
+	const handleBranchOpen = useCallback((open: boolean) => {
+		setBranchMenuOpen(open);
+		if (open) {
+			setBranchQuery("");
+			setWorkspaceMenuOpen(false);
+		} else {
+			setBranchCreating(false);
+		}
+	}, []);
 
-	useLayoutEffect(() => {
-		fitMenuDirection(workspaceMenuOpen, workspaceMenuRef, ".workspace-menu", setWorkspaceMenuUp);
-	}, [workspaceMenuOpen, workspaceQuery, fitMenuDirection]);
+	const handleThinkingOpen = useCallback((open: boolean) => {
+		setThinkingMenuOpen(open);
+		if (open) setModelMenuOpen(false);
+	}, []);
 
-	useLayoutEffect(() => {
-		fitMenuDirection(branchMenuOpen, branchMenuRef, ".branch-menu", setBranchMenuUp);
-	}, [branchMenuOpen, branchQuery, branchCreating, fitMenuDirection]);
+	const handleToolsOpen = useCallback((open: boolean) => {
+		setToolsMenuOpen(open);
+		if (open) {
+			setModelMenuOpen(false);
+			setThinkingMenuOpen(false);
+		}
+	}, []);
+
+	// MorphPopover menus portal to the body and take their opening direction
+	// from `side`. The composer hugs the bottom of the window, so its toolbar
+	// menus always open upward; the context-row menus flip up when the strip
+	// below the chip (the composer itself) is too small to hold a menu.
+	const menuSideFor = (el: HTMLElement | null): "top" | "bottom" => {
+		if (!el) return "top";
+		const rect = el.getBoundingClientRect();
+		const below = window.innerHeight - rect.bottom;
+		const above = rect.top;
+		return below >= 320 || above <= below ? "bottom" : "top";
+	};
+	const workspaceMenuSide = menuSideFor(workspaceMenuRef.current);
+	const branchMenuSide = menuSideFor(branchMenuRef.current);
 
 	// Level ids come from Pi ("off" | "minimal" | "low" | ...); show a
 	// localized name when we know the id, otherwise fall back to the raw id.
@@ -878,27 +835,36 @@ export function Composer({
 									</span>
 								)}
 								<span className="queue-actions">
-									<button
-										className="icon-btn"
+									<Button
+										variant="ghost"
+										size="icon"
 										title={t.chat.queueSendNow}
+										aria-label={t.chat.queueSendNow}
 										onClick={() => onQueueSendNow(item.id)}
+										className={`${QUEUE_ACT_CLS} ${editingQueueId === item.id ? QUEUE_ACT_EDITING_CLS : ""}`}
 									>
 										<SendIcon size={12} />
-									</button>
-									<button
-										className="icon-btn"
+									</Button>
+									<Button
+										variant="ghost"
+										size="icon"
 										title={t.chat.queueEdit}
+										aria-label={t.chat.queueEdit}
 										onClick={() => startQueueEdit(item)}
+										className={`${QUEUE_ACT_CLS} ${editingQueueId === item.id ? QUEUE_ACT_EDITING_CLS : ""}`}
 									>
 										<EditIcon size={12} />
-									</button>
-									<button
-										className="icon-btn"
+									</Button>
+									<Button
+										variant="ghost"
+										size="icon"
 										title={t.chat.queueDelete}
+										aria-label={t.chat.queueDelete}
 										onClick={() => onQueueDelete(item.id)}
+										className={`${QUEUE_ACT_CLS} ${editingQueueId === item.id ? QUEUE_ACT_EDITING_CLS : ""}`}
 									>
 										<TrashIcon size={12} />
-									</button>
+									</Button>
 								</span>
 							</div>
 						))}
@@ -907,181 +873,189 @@ export function Composer({
 				</div>
 			)}
 			<div className="composer-context">
-				<div className="composer-select" ref={workspaceMenuRef}>
-					<button
-						className={`composer-chip ${workspaceMenuOpen ? "open" : ""}`}
-						onClick={toggleWorkspaceMenu}
-						aria-expanded={workspaceMenuOpen}
-						title={workspace ?? t.sidebar.workspaceHint}
+				<MorphPopover open={workspaceMenuOpen} onOpenChange={handleWorkspaceOpen}>
+					<MorphPopoverTrigger>
+						<button
+							className="composer-chip"
+							ref={workspaceMenuRef}
+							title={workspace ?? t.sidebar.workspaceHint}
+						>
+							<FolderIcon size={13} />
+							<span className="composer-chip-name">
+								{workspace ? projectNameFromPath(workspace) : t.app.pickWorkspace}
+							</span>
+							<ChevronDownIcon size={12} />
+						</button>
+					</MorphPopoverTrigger>
+					<MorphPopoverContent
+						side={workspaceMenuSide}
+						align="start"
+						radius={14}
+						className="workspace-menu"
 					>
-						<FolderIcon size={13} />
-						<span className="composer-chip-name">
-							{workspace ? projectNameFromPath(workspace) : t.app.pickWorkspace}
-						</span>
-						<ChevronDownIcon size={12} />
-					</button>
-					{workspaceMenuOpen && (
-						<div className={`workspace-menu${workspaceMenuUp ? " up" : ""}`}>
+						<div className="menu-search">
+							<SearchIcon size={13} />
+							<input
+								autoFocus
+								value={workspaceQuery}
+								placeholder={t.chat.searchWorkspace}
+								onChange={(e) => setWorkspaceQuery(e.target.value)}
+								onKeyDown={(e) => {
+									e.stopPropagation();
+									if (e.key === "Escape") setWorkspaceMenuOpen(false);
+									if (e.key === "Enter" && visibleWorkspaces.length > 0) {
+										const target = visibleWorkspaces[0];
+										if (target !== workspace) onSelectWorkspace(target);
+										setWorkspaceMenuOpen(false);
+									}
+								}}
+							/>
+						</div>
+						<div className="workspace-menu-list">
+							{visibleWorkspaces.length === 0 && (
+								<div className="menu-empty">{t.chat.noWorkspaces}</div>
+							)}
+							{visibleWorkspaces.map((w) => {
+								const active = w === workspace;
+								return (
+									<button
+										key={w}
+										className={`workspace-item ${active ? "active" : ""}`}
+										title={w}
+										onClick={() => {
+											if (!active) onSelectWorkspace(w);
+											setWorkspaceMenuOpen(false);
+										}}
+									>
+										<FolderIcon size={13} />
+										<span className="workspace-item-name">{projectNameFromPath(w)}</span>
+										{active && <CheckIcon size={13} />}
+									</button>
+								);
+							})}
+						</div>
+						<div className="menu-sep" />
+						<button
+							className="workspace-open-btn"
+							onClick={() => {
+								setWorkspaceMenuOpen(false);
+								onPickWorkspace();
+							}}
+						>
+							<FolderOpenIcon size={13} />
+							<span>{t.chat.openFolder}</span>
+						</button>
+					</MorphPopoverContent>
+				</MorphPopover>
+				{gitState?.isRepository && (
+					<MorphPopover open={branchMenuOpen} onOpenChange={handleBranchOpen}>
+						<MorphPopoverTrigger>
+							<button
+								className="composer-chip"
+								ref={branchMenuRef}
+								disabled={!workspace}
+								title={`${t.chat.gitBranch}: ${gitState.currentBranch ?? ""}${gitState.dirtyFileCount > 0 ? ` · ${t.chat.gitDirty.replace("{count}", String(gitState.dirtyFileCount))}` : ""}`}
+							>
+								<BranchIcon size={13} />
+								<span className="composer-chip-name mono">
+									{gitState.currentBranch ?? t.chat.gitNotRepo}
+								</span>
+								{gitState.dirtyFileCount > 0 && (
+									<span
+										className="branch-dirty"
+										title={t.chat.gitDirty.replace("{count}", String(gitState.dirtyFileCount))}
+									>
+										{gitState.dirtyFileCount}
+									</span>
+								)}
+								<ChevronDownIcon size={12} />
+							</button>
+						</MorphPopoverTrigger>
+						<MorphPopoverContent
+							side={branchMenuSide}
+							align="start"
+							radius={14}
+							className="branch-menu"
+						>
 							<div className="menu-search">
 								<SearchIcon size={13} />
 								<input
 									autoFocus
-									value={workspaceQuery}
-									placeholder={t.chat.searchWorkspace}
-									onChange={(e) => setWorkspaceQuery(e.target.value)}
+									value={branchQuery}
+									placeholder={t.chat.searchBranch}
+									onChange={(e) => setBranchQuery(e.target.value)}
 									onKeyDown={(e) => {
 										e.stopPropagation();
-										if (e.key === "Escape") setWorkspaceMenuOpen(false);
-										if (e.key === "Enter" && visibleWorkspaces.length > 0) {
-											const target = visibleWorkspaces[0];
-											if (target !== workspace) onSelectWorkspace(target);
-											setWorkspaceMenuOpen(false);
+										if (e.key === "Escape") {
+											setBranchMenuOpen(false);
+											setBranchCreating(false);
+										}
+										if (e.key === "Enter") {
+											const target = visibleBranches.find((b) => b !== gitState.currentBranch);
+											if (target) {
+												onCheckoutBranch(target);
+												setBranchMenuOpen(false);
+											}
 										}
 									}}
 								/>
 							</div>
-							<div className="workspace-menu-list">
-								{visibleWorkspaces.length === 0 && (
-									<div className="menu-empty">{t.chat.noWorkspaces}</div>
+							<div className="menu-label">{t.chat.branches}</div>
+							<div className="branch-menu-list">
+								{visibleBranches.length === 0 && (
+									<div className="menu-empty">{t.chat.noBranches}</div>
 								)}
-								{visibleWorkspaces.map((w) => {
-									const active = w === workspace;
+								{visibleBranches.map((name) => {
+									const active = name === gitState.currentBranch;
 									return (
 										<button
-											key={w}
-											className={`workspace-item ${active ? "active" : ""}`}
-											title={w}
+											key={name}
+											className={`branch-item ${active ? "active" : ""}`}
+											title={t.chat.checkoutBranch}
 											onClick={() => {
-												if (!active) onSelectWorkspace(w);
-												setWorkspaceMenuOpen(false);
+												if (!active) onCheckoutBranch(name);
+												setBranchMenuOpen(false);
 											}}
 										>
-											<FolderIcon size={13} />
-											<span className="workspace-item-name">{projectNameFromPath(w)}</span>
+											<BranchIcon size={13} />
+											<span className="branch-item-text">
+												<span className="branch-item-name">{name}</span>
+												{active && gitState.dirtyFileCount > 0 && (
+													<span className="branch-item-sub">
+														{t.chat.gitDirtyDetail.replace(
+															"{count}",
+															String(gitState.dirtyFileCount),
+														)}
+													</span>
+												)}
+											</span>
 											{active && <CheckIcon size={13} />}
 										</button>
 									);
 								})}
 							</div>
-							<div className="menu-sep" />
-							<button
-								className="workspace-open-btn"
-								onClick={() => {
-									setWorkspaceMenuOpen(false);
-									onPickWorkspace();
-								}}
-							>
-								<FolderOpenIcon size={13} />
-								<span>{t.chat.openFolder}</span>
-							</button>
-						</div>
-					)}
-				</div>
-				{gitState?.isRepository && (
-					<div className="composer-select" ref={branchMenuRef}>
-						<button
-							className={`composer-chip ${branchMenuOpen ? "open" : ""}`}
-							disabled={!workspace}
-							title={`${t.chat.gitBranch}: ${gitState.currentBranch ?? ""}${gitState.dirtyFileCount > 0 ? ` · ${t.chat.gitDirty.replace("{count}", String(gitState.dirtyFileCount))}` : ""}`}
-							onClick={toggleBranchMenu}
-							aria-expanded={branchMenuOpen}
-						>
-							<BranchIcon size={13} />
-							<span className="composer-chip-name mono">
-								{gitState.currentBranch ?? t.chat.gitNotRepo}
-							</span>
-							{gitState.dirtyFileCount > 0 && (
-								<span
-									className="branch-dirty"
-									title={t.chat.gitDirty.replace("{count}", String(gitState.dirtyFileCount))}
-								>
-									{gitState.dirtyFileCount}
-								</span>
-							)}
-							<ChevronDownIcon size={12} />
-						</button>
-						{branchMenuOpen && (
-							<div className={`branch-menu drop-down${branchMenuUp ? " up" : ""}`}>
-								<div className="menu-search">
-									<SearchIcon size={13} />
+							{branchCreating ? (
+								<div className="branch-create">
 									<input
 										autoFocus
-										value={branchQuery}
-										placeholder={t.chat.searchBranch}
-										onChange={(e) => setBranchQuery(e.target.value)}
+										value={newBranchName}
+										placeholder={t.chat.newBranchPlaceholder}
+										onChange={(e) => setNewBranchName(e.target.value)}
 										onKeyDown={(e) => {
 											e.stopPropagation();
-											if (e.key === "Escape") {
-												setBranchMenuOpen(false);
-												setBranchCreating(false);
-											}
-											if (e.key === "Enter") {
-												const target = visibleBranches.find((b) => b !== gitState.currentBranch);
-												if (target) {
-													onCheckoutBranch(target);
-													setBranchMenuOpen(false);
-												}
-											}
+											if (e.key === "Enter") createBranch();
+											if (e.key === "Escape") setBranchCreating(false);
 										}}
 									/>
 								</div>
-								<div className="menu-label">{t.chat.branches}</div>
-								<div className="branch-menu-list">
-									{visibleBranches.length === 0 && (
-										<div className="menu-empty">{t.chat.noBranches}</div>
-									)}
-									{visibleBranches.map((name) => {
-										const active = name === gitState.currentBranch;
-										return (
-											<button
-												key={name}
-												className={`branch-item ${active ? "active" : ""}`}
-												title={t.chat.checkoutBranch}
-												onClick={() => {
-													if (!active) onCheckoutBranch(name);
-													setBranchMenuOpen(false);
-												}}
-											>
-												<BranchIcon size={13} />
-												<span className="branch-item-text">
-													<span className="branch-item-name">{name}</span>
-													{active && gitState.dirtyFileCount > 0 && (
-														<span className="branch-item-sub">
-															{t.chat.gitDirtyDetail.replace(
-																"{count}",
-																String(gitState.dirtyFileCount),
-															)}
-														</span>
-													)}
-												</span>
-												{active && <CheckIcon size={13} />}
-											</button>
-										);
-									})}
-								</div>
-								{branchCreating ? (
-									<div className="branch-create">
-										<input
-											autoFocus
-											value={newBranchName}
-											placeholder={t.chat.newBranchPlaceholder}
-											onChange={(e) => setNewBranchName(e.target.value)}
-											onKeyDown={(e) => {
-												e.stopPropagation();
-												if (e.key === "Enter") createBranch();
-												if (e.key === "Escape") setBranchCreating(false);
-											}}
-										/>
-									</div>
-								) : (
-									<button className="branch-create-btn" onClick={() => setBranchCreating(true)}>
-										<PlusIcon size={13} />
-										<span>{t.chat.createCheckoutBranch}</span>
-									</button>
-								)}
-							</div>
-						)}
-					</div>
+							) : (
+								<button className="branch-create-btn" onClick={() => setBranchCreating(true)}>
+									<PlusIcon size={13} />
+									<span>{t.chat.createCheckoutBranch}</span>
+								</button>
+							)}
+						</MorphPopoverContent>
+					</MorphPopover>
 				)}
 			</div>
 			<div className="composer">
@@ -1330,14 +1304,16 @@ export function Composer({
 				</div>
 				<div className="composer-toolbar">
 					<div className="composer-left">
-						<button
-							className="icon-btn"
+						<Button
+							variant="ghost"
+							size="icon"
+							className="size-7 rounded-[var(--r-md)]"
 							title={t.chat.attach}
 							disabled={!connected && !workspace}
 							onClick={() => fileInputRef.current?.click()}
 						>
 							<PlusIcon size={16} />
-						</button>
+						</Button>
 						<input
 							ref={fileInputRef}
 							type="file"
@@ -1351,43 +1327,39 @@ export function Composer({
 						/>
 
 						{availableThinkingLevels.length > 0 && (
-							<div className="composer-select" ref={thinkingMenuRef}>
-								<button
-									className={`composer-model-btn ${thinkingMenuOpen ? "open" : ""}`}
-									disabled={!connected}
-									title={t.app.thinking}
-									onClick={toggleThinkingMenu}
-									aria-haspopup="listbox"
-									aria-expanded={thinkingMenuOpen}
-									aria-controls={thinkingMenuOpen ? thinkingMenuId : undefined}
-								>
-									<BrainIcon size={14} />
-									<span className="composer-model-name">{thinkingLabel(thinkingLevel)}</span>
-									<ChevronDownIcon size={13} />
-								</button>
-								{thinkingMenuOpen && (
-									<div className="thinking-menu" id={thinkingMenuId} role="listbox">
-										{availableThinkingLevels.map((level) => {
-											const active = level === thinkingLevel;
-											return (
-												<button
-													key={level}
-													className={`thinking-item ${active ? "active" : ""}`}
-													role="option"
-													aria-selected={active}
-													onClick={() => {
-														if (!active) onThinkingLevelChange(level);
-														setThinkingMenuOpen(false);
-													}}
-												>
-													<span className="thinking-item-name">{thinkingLabel(level)}</span>
-													{active && <CheckIcon size={13} />}
-												</button>
-											);
-										})}
-									</div>
-								)}
-							</div>
+							<MorphPopover open={thinkingMenuOpen} onOpenChange={handleThinkingOpen}>
+								<MorphPopoverTrigger>
+									<Button
+										variant="ghost"
+										size="sm"
+										className="h-7 rounded-[var(--r-md)] px-2 text-[length:var(--fs-sm)]"
+										disabled={!connected}
+										title={t.app.thinking}
+									>
+										<BrainIcon size={14} />
+										<span className="composer-model-name">{thinkingLabel(thinkingLevel)}</span>
+										<ChevronDownIcon size={13} />
+									</Button>
+								</MorphPopoverTrigger>
+								<MorphPopoverContent side="top" align="start" radius={14} className="thinking-menu">
+									{availableThinkingLevels.map((level) => {
+										const active = level === thinkingLevel;
+										return (
+											<button
+												key={level}
+												className={`thinking-item ${active ? "active" : ""}`}
+												onClick={() => {
+													if (!active) onThinkingLevelChange(level);
+													setThinkingMenuOpen(false);
+												}}
+											>
+												<span className="thinking-item-name">{thinkingLabel(level)}</span>
+												{active && <CheckIcon size={13} />}
+											</button>
+										);
+									})}
+								</MorphPopoverContent>
+							</MorphPopover>
 						)}
 
 						{running && hasDraft && (
@@ -1410,161 +1382,148 @@ export function Composer({
 							</div>
 						)}
 
-						<div className="composer-select" ref={toolsMenuRef}>
-							<button
-								className={`composer-model-btn ${toolsMenuOpen ? "open" : ""}`}
-								title={t.chat.customTools}
-								aria-expanded={toolsMenuOpen}
-								onClick={() => {
-									setToolsMenuOpen((v) => {
-										if (v) return false;
-										setModelMenuOpen(false);
-										setThinkingMenuOpen(false);
-										return true;
-									});
-								}}
-							>
-								<WrenchIcon size={14} />
-							</button>
-							{toolsMenuOpen && (
-								<div className="tools-menu">
-									<div className="tools-menu-header">
-										<span>{t.chat.customTools}</span>
-										<button
-											className="link-btn"
-											onClick={() => onCustomToolsChange(ALL_AGENT_TOOLS)}
-										>
-											{t.chat.customToolsAll}
-										</button>
-									</div>
-									<p className="tools-menu-hint">{t.chat.customToolsHint}</p>
-									{ALL_AGENT_TOOLS.map((tool) => {
-										const enabled = customTools.length === 0 || customTools.includes(tool);
-										return (
-											<button
-												key={tool}
-												className={`tools-item ${enabled ? "enabled" : ""}`}
-												onClick={() => toggleCustomTool(tool)}
-											>
-												<span className="tools-item-name">
-													{(t.chat.agentToolNames as Record<string, string>)[tool] ?? tool}
-												</span>
-												<span className="tools-switch" aria-hidden>
-													<span className="tools-knob" />
-												</span>
-											</button>
-										);
-									})}
+						<MorphPopover open={toolsMenuOpen} onOpenChange={handleToolsOpen}>
+							<MorphPopoverTrigger>
+								<Button
+									variant="ghost"
+									size="icon"
+									className="size-7 rounded-[var(--r-md)]"
+									title={t.chat.customTools}
+								>
+									<WrenchIcon size={14} />
+								</Button>
+							</MorphPopoverTrigger>
+							<MorphPopoverContent side="top" align="start" radius={14} className="tools-menu">
+								<div className="tools-menu-header">
+									<span>{t.chat.customTools}</span>
+									<button className="link-btn" onClick={() => onCustomToolsChange(ALL_AGENT_TOOLS)}>
+										{t.chat.customToolsAll}
+									</button>
 								</div>
-							)}
-						</div>
+								<p className="tools-menu-hint">{t.chat.customToolsHint}</p>
+								{ALL_AGENT_TOOLS.map((tool) => {
+									const enabled = customTools.length === 0 || customTools.includes(tool);
+									return (
+										<button
+											key={tool}
+											className={`tools-item ${enabled ? "enabled" : ""}`}
+											onClick={() => toggleCustomTool(tool)}
+										>
+											<span className="tools-item-name">
+												{(t.chat.agentToolNames as Record<string, string>)[tool] ?? tool}
+											</span>
+											<span className="tools-switch" aria-hidden>
+												<span className="tools-knob" />
+											</span>
+										</button>
+									);
+								})}
+							</MorphPopoverContent>
+						</MorphPopover>
 					</div>
 
 					<div className="composer-right">
 						{showContextUsage && stats && <ContextUsageRing stats={stats} t={t} />}
-						<div className="composer-select" ref={modelMenuRef}>
-							<button
-								className="composer-model-btn"
-								onClick={() => setModelMenuOpen((v) => !v)}
-								aria-haspopup="listbox"
-								aria-expanded={modelMenuOpen}
-								aria-controls={modelMenuOpen ? modelMenuId : undefined}
-							>
-								<span className="model-dot" />
-								<span className="composer-model-name">
-									{modelsLoading
-										? t.settings.loading
-										: (selectedModel?.name ?? selectedModel?.id ?? (model || t.app.model))}
-								</span>
-								{modelsLoading ? (
-									<LoaderIcon size={13} className="spin" />
-								) : (
-									<ChevronDownIcon size={13} />
-								)}
-							</button>
-							{modelMenuOpen && (
-								<div className="model-menu">
-									<div className="menu-search">
-										<SearchIcon size={13} />
-										<input
-											autoFocus
-											value={modelQuery}
-											placeholder={t.chat.searchModels}
-											onChange={(e) => setModelQuery(e.target.value)}
-											onKeyDown={(e) => {
-												e.stopPropagation();
-												if (e.key === "Escape") setModelMenuOpen(false);
-											}}
-										/>
-									</div>
-									<div
-										className="model-menu-list"
-										id={modelMenuId}
-										role="listbox"
-										aria-label={t.app.model}
-									>
-										{!connected ? (
-											<div className="model-menu-empty">{t.chat.connectToPickModel}</div>
-										) : providers.length === 0 ? (
-											<div className="model-menu-empty">{t.chat.noModels}</div>
-										) : (
-											providers.map((provider) => (
-												<div className="model-group" key={provider} role="group" aria-label={provider}>
-													<div className="model-group-label" aria-hidden="true">
-														{provider}
-													</div>
-													{visibleModels
-														.filter((m) => m.provider === provider)
-														.map((m) => {
-															const value = `${m.provider}/${m.id}`;
-															const active = value === model;
-															return (
-																<button
-																	key={value}
-																	className={`model-item ${active ? "active" : ""}`}
-																	role="option"
-																	aria-selected={active}
-																	onClick={() => {
-																		onModelChange(value);
-																		setModelMenuOpen(false);
-																	}}
-																>
-																	<span className="model-item-name">{m.name ?? m.id}</span>
-																	<span className="model-item-id">{m.id}</span>
-																	{active && <CheckIcon size={14} />}
-																</button>
-															);
-														})}
-												</div>
-											))
-										)}
-									</div>
+						<MorphPopover open={modelMenuOpen} onOpenChange={setModelMenuOpen}>
+							<MorphPopoverTrigger>
+								<Button
+									variant="ghost"
+									size="sm"
+									className="h-7 max-w-[190px] rounded-[var(--r-md)] px-2 text-[length:var(--fs-sm)]"
+								>
+									<span className="model-dot" />
+									<span className="composer-model-name">
+										{modelsLoading
+											? t.settings.loading
+											: (selectedModel?.name ?? selectedModel?.id ?? (model || t.app.model))}
+									</span>
+									{modelsLoading ? (
+										<LoaderIcon size={13} className="spin" />
+									) : (
+										<ChevronDownIcon size={13} />
+									)}
+								</Button>
+							</MorphPopoverTrigger>
+							<MorphPopoverContent side="top" align="end" radius={14} className="model-menu">
+								<div className="menu-search">
+									<SearchIcon size={13} />
+									<input
+										autoFocus
+										value={modelQuery}
+										placeholder={t.chat.searchModels}
+										onChange={(e) => setModelQuery(e.target.value)}
+										onKeyDown={(e) => {
+											e.stopPropagation();
+											if (e.key === "Escape") setModelMenuOpen(false);
+										}}
+									/>
 								</div>
-							)}
-						</div>
+								<div className="model-menu-list">
+									{!connected ? (
+										<div className="model-menu-empty">{t.chat.connectToPickModel}</div>
+									) : providers.length === 0 ? (
+										<div className="model-menu-empty">{t.chat.noModels}</div>
+									) : (
+										providers.map((provider) => (
+											<div className="model-group" key={provider} role="group" aria-label={provider}>
+												<div className="model-group-label" aria-hidden="true">
+													{provider}
+												</div>
+												{visibleModels
+													.filter((m) => m.provider === provider)
+													.map((m) => {
+														const value = `${m.provider}/${m.id}`;
+														const active = value === model;
+														return (
+															<button
+																key={value}
+																className={`model-item ${active ? "active" : ""}`}
+																role="option"
+																aria-selected={active}
+																onClick={() => {
+																	onModelChange(value);
+																	setModelMenuOpen(false);
+																}}
+															>
+																<span className="model-item-name">{m.name ?? m.id}</span>
+																<span className="model-item-id">{m.id}</span>
+																{active && <CheckIcon size={14} />}
+															</button>
+														);
+													})}
+											</div>
+										))
+									)}
+								</div>
+							</MorphPopoverContent>
+						</MorphPopover>
 						{running && (
-							<button
-								className="send-btn stop"
+							<Button
+								size="icon"
 								onClick={onAbort}
 								disabled={aborting}
 								title={t.chat.abort}
+								aria-label={t.chat.abort}
+								className="size-8 rounded-full bg-[color-mix(in_srgb,var(--status-err)_16%,var(--card-bg))] text-[color:var(--status-err)] hover:bg-[color-mix(in_srgb,var(--status-err)_28%,var(--card-bg))] hover:text-[color:var(--status-err)]"
 							>
 								{aborting ? <LoaderIcon size={16} className="spin" /> : <StopIcon size={16} />}
-							</button>
+							</Button>
 						)}
 						{/* The send button stays visible while running only when there
 							is something to send — the message is queued
 							(steer/followUp) instead of being dropped. With no draft,
 							the stop button alone takes the slot. */}
 						{(!running || hasDraft) && (
-							<button
-								className="send-btn"
+							<Button
+								size="icon"
+								className="size-8 rounded-full"
 								disabled={busy || !hasDraft || (!connected && !workspace)}
 								onClick={() => submit("normal")}
 								title={t.chat.send}
+								aria-label={t.chat.send}
 							>
 								<SendIcon size={16} />
-							</button>
+							</Button>
 						)}
 					</div>
 				</div>

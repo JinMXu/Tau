@@ -88,6 +88,13 @@ const invoked: { cmd: string; args: unknown }[] = [];
 				]);
 			case "pi_list_archived_sessions":
 				return Promise.resolve([]);
+			case "pi_auth_status":
+				// Pretend every provider has a key so the composer's send gate
+				// (ensureProviderKey) lets scripted sends through.
+				return Promise.resolve([
+					{ provider: "anthropic", hasKey: true },
+					{ provider: "openai", hasKey: true },
+				]);
 			case "pi_status":
 				return Promise.resolve({
 					running: false,
@@ -100,11 +107,52 @@ const invoked: { cmd: string; args: unknown }[] = [];
 				return Promise.resolve(null);
 			case "pi_send":
 				// Response envelope arrives as a pi://event of type "response".
+				// RPC payloads the UI needs are dispatched by request type so
+				// the model/thinking pickers have data to render.
 				setTimeout(() => {
-					const a = args as { id?: string; chan?: string };
+					const a = args as {
+						id?: string;
+						chan?: string;
+						command?: { type?: string; id?: string };
+					};
+					let data: unknown = {};
+					if (a.command?.type === "get_available_models") {
+						data = {
+							models: [
+								{
+									provider: "anthropic",
+									id: "claude-opus-4-6",
+									name: "Claude Opus 4.6",
+									thinkingLevels: ["off", "low", "high"],
+								},
+								{
+									provider: "anthropic",
+									id: "claude-sonnet-4-6",
+									name: "Claude Sonnet 4.6",
+									thinkingLevels: ["off", "low", "high"],
+								},
+								{ provider: "openai", id: "gpt-5.2", name: "GPT-5.2" },
+								{
+									provider: "openai",
+									id: "gpt-5.2-mini",
+									name: "GPT-5.2 mini",
+								},
+							],
+						};
+					} else if (a.command?.type === "get_state") {
+						data = {
+							model: {
+								provider: "anthropic",
+								id: "claude-opus-4-6",
+								name: "Claude Opus 4.6",
+								thinkingLevels: ["off", "low", "high"],
+							},
+							thinkingLevel: "high",
+						};
+					}
 					emit("pi://event", {
 						chan: a?.chan,
-						ev: { type: "response", id: a?.id, success: true, data: {} },
+						ev: { type: "response", id: a?.command?.id, success: true, data },
 					});
 				}, 0);
 				return Promise.resolve(null);
