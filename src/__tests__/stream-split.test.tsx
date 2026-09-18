@@ -139,8 +139,8 @@ describe("stream / committed split", () => {
 			streaming: false,
 		};
 		await render([user, assistant], null, false);
-		// tool-only assistant messages fold into an ActivityCard (no .message row)
-		expect(container.querySelectorAll(".act-card, .act-bare").length).toBeGreaterThan(0);
+		// tool-only assistant messages fold into a MetaGroup (no .message row)
+		expect(container.querySelectorAll(".meta-group, .meta-bare").length).toBeGreaterThan(0);
 		// the toolResult streams first (empty blocks → invisible), then commits
 		await render([user, assistant], { id: 3, role: "tool", blocks: [], streaming: true }, true);
 		// the empty in-flight tool message contributes no row of its own

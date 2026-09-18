@@ -1,8 +1,5 @@
 import { createRoot } from "react-dom/client";
-// Tailwind entry (layered tailwind + preflight + App.css + token bridge) —
-// the beUI message-area components carry Tailwind utilities, so the preview
-// must load the same stylesheet host as the app. See beui.css.
-import "./beui.css";
+import "./App.css";
 import { getMessages } from "./i18n";
 import type { ChatMessage } from "./chat-types";
 import { MessageList } from "./components/MessageList";
@@ -230,16 +227,18 @@ function Preview() {
 		>
 			<div className="chat-main-row" style={{ flex: 1 }}>
 				<div className="chat-col">
-					<MessageList
-						messages={messages}
-						stream={null}
-						streaming={false}
-						working={true}
-						t={t}
-						turnStartTime={Date.now() - 90 * 1000}
-						turnChanges={turnChanges}
-						onOpenDiff={() => {}}
-					/>
+					<div className="chat-scroll" style={{ flex: 1, overflowY: "auto" }}>
+						<MessageList
+							messages={messages}
+							stream={null}
+							streaming={false}
+							working={true}
+							t={t}
+							turnStartTime={Date.now() - 90 * 1000}
+							turnChanges={turnChanges}
+							onOpenDiff={() => {}}
+						/>
+					</div>
 					<TodoPanel todos={todos} agentActive={true} t={t} />
 				</div>
 				<DiffSidebar

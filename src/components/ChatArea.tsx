@@ -34,7 +34,7 @@ import {
 	XIcon,
 } from "../icons";
 import { Composer, type ModelEntry } from "./Composer";
-import { MessageList } from "./MessageList";
+import { MessageList, SubagentLivePanel } from "./MessageList";
 import { TodoPanel } from "./TodoPanel";
 import { DiffSidebar, type DiffScope } from "./DiffSidebar";
 import { deriveTurnChanges, extractTodos } from "./chat-rows";
@@ -729,27 +729,29 @@ export const ChatArea = memo(function ChatArea({
 
 			<div className="chat-main-row">
 				<div className="chat-col">
-					<MessageList
-						messages={messages}
-						stream={stream}
-						streaming={streaming}
-						textStreaming={textStreaming}
-						working={working}
-						autoRetry={autoRetry}
-						t={t}
-						searchQuery={searchOpen ? searchQuery : undefined}
-						searchActiveMessageId={activeMessageId}
-						turnStartTime={turnStartTime}
-						turnChanges={turnChanges}
-						subagentRuns={subagentRuns}
-						onOpenDiff={() => setDiffOpen(true)}
-						onCopyMessage={onCopyMessage}
-						onRecallMessage={onRecallMessage}
-						onForkMessage={onForkMessage}
-						onRetryMessage={onRetryMessage}
-						onCompact={onCompactSession}
-						onOpenSettings={openSettings}
-					/>
+					<div className="chat-scroll">
+						<MessageList
+							messages={messages}
+							stream={stream}
+							streaming={streaming}
+							textStreaming={textStreaming}
+							working={working}
+							autoRetry={autoRetry}
+							t={t}
+							searchQuery={searchOpen ? searchQuery : undefined}
+							searchActiveMessageId={activeMessageId}
+							turnStartTime={turnStartTime}
+							turnChanges={turnChanges}
+							onOpenDiff={() => setDiffOpen(true)}
+							onCopyMessage={onCopyMessage}
+							onRecallMessage={onRecallMessage}
+							onForkMessage={onForkMessage}
+							onRetryMessage={onRetryMessage}
+							onCompact={onCompactSession}
+							onOpenSettings={openSettings}
+						/>
+						{subagentRuns.length > 0 && <SubagentLivePanel runs={subagentRuns} t={t} />}
+					</div>
 					<TodoPanel todos={todos} agentActive={working} t={t} />
 					{Object.values(extensionWidgets)
 						.filter((w) => w.placement === "aboveEditor")
