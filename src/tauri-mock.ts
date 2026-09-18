@@ -95,6 +95,16 @@ const invoked: { cmd: string; args: unknown }[] = [];
 					{ provider: "anthropic", hasKey: true },
 					{ provider: "openai", hasKey: true },
 				]);
+			case "pi_providers":
+			case "pi_provider_models":
+			case "pi_custom_providers":
+			case "pi_mcp_servers":
+			case "pi_packages":
+				// Empty lists: the settings panel falls back to its bundled
+				// provider catalog and renders empty MCP/packages sections.
+				return Promise.resolve([]);
+			case "pi_installed_skills":
+				return Promise.resolve([]);
 			case "pi_status":
 				return Promise.resolve({
 					running: false,

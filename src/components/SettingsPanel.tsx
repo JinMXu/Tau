@@ -56,6 +56,9 @@ import {
 import type { AppSettings, ColorScale, Density, Theme } from "../settings";
 import { ALL_AGENT_TOOLS } from "../settings";
 import { PACKAGES_CATALOG, formatDownloads } from "../packages-catalog";
+import { cn } from "@/lib/utils";
+import { Button } from "./motion/button";
+import { Switch } from "./motion/switch";
 import { UsageStats } from "./UsageStats";
 import { CustomProviderDialog } from "./CustomProviderDialog";
 import { ProviderModelDialog } from "./ProviderModelDialog";
@@ -186,6 +189,38 @@ function Row({
 			</div>
 			<div className="settings-control">{children}</div>
 		</div>
+	);
+}
+
+/**
+ * Settings 按钮统一走 beUI Button(motion 按压/悬停反馈);kind 映射旧
+ * .btn 的视觉 token——secondary 是灰底、danger 是红底白字,primary 直接用
+ * beui 的 accent 底。small 对应旧 .btn.small 的紧凑尺寸。
+ */
+function Btn({
+	kind = "secondary",
+	small,
+	className,
+	...props
+}: React.ComponentProps<typeof Button> & {
+	kind?: "primary" | "secondary" | "danger";
+	small?: boolean;
+}) {
+	return (
+		<Button
+			variant={kind === "primary" ? "primary" : "ghost"}
+			size={small ? "sm" : "md"}
+			{...props}
+			className={cn(
+				"rounded-[var(--r-md)] text-[length:var(--fs-sm)] font-medium",
+				small ? "h-7 px-2.5" : "h-auto px-4 py-2",
+				kind === "secondary" &&
+					"bg-[color:var(--hover)] text-[color:var(--app-fg)] hover:bg-[color:var(--active)] hover:text-[color:var(--app-fg)]",
+				kind === "danger" &&
+					"bg-[color:var(--err)] text-white hover:bg-[color:var(--err)] hover:text-white",
+				className,
+			)}
+		/>
 	);
 }
 
@@ -360,14 +395,14 @@ function ProviderModels({
 			{m.image && <span className="pm-pill">{t.settings.cpImage}</span>}
 			{m.overridden && <span className="pm-pill modified">{t.settings.modelModified}</span>}
 			<span className="pm-actions">
-				<button
-					className="btn secondary small"
+				<Btn small
+					
 					onClick={() =>
 						setDialog({ mode: m.custom ? "edit-custom" : "edit-override", initial: m })
 					}
 				>
 					{t.settings.editModel}
-				</button>
+				</Btn>
 				{m.custom ? (
 					<button
 						className={`btn small ${confirmDelete === m.id ? "danger" : "secondary"}`}
@@ -412,9 +447,9 @@ function ProviderModels({
 				</>
 			)}
 			<div className="pm-footer">
-				<button className="btn secondary small" onClick={() => setDialog({ mode: "add-custom" })}>
+				<Btn small onClick={() => setDialog({ mode: "add-custom" })}>
 					<PlusIcon size={12} /> {t.settings.cpAddModel}
-				</button>
+				</Btn>
 			</div>
 			{dialog && (
 				<ProviderModelDialog
@@ -545,53 +580,53 @@ function ProviderRow({
 							if (e.key === "Escape") setEditing(false);
 						}}
 					/>
-					<button
-						className="btn primary small"
+					<Btn kind="primary" small
+						
 						disabled={busy || !key.trim()}
 						onClick={() => void save()}
 					>
 						{t.settings.saveKey}
-					</button>
-					<button className="btn secondary small" onClick={() => setEditing(false)}>
+					</Btn>
+					<Btn small onClick={() => setEditing(false)}>
 						{t.app.cancel}
-					</button>
+					</Btn>
 					{configured && (
-						<button className="btn danger small" disabled={busy} onClick={() => void clear()}>
+						<Btn kind="danger" small disabled={busy} onClick={() => void clear()}>
 							{t.settings.clearKey}
-						</button>
+						</Btn>
 					)}
 				</div>
 			) : (
 				<div className="provider-actions">
-					<button className="btn secondary small" onClick={() => togglePanel("models")}>
+					<Btn small onClick={() => togglePanel("models")}>
 						{t.settings.providerModels}
-					</button>
-					<button
-						className="btn secondary small"
+					</Btn>
+					<Btn small
+						
 						onClick={() => {
 							setPanel(null);
 							setEditing(true);
 						}}
 					>
 						{configured ? t.settings.apiKey : t.settings.saveKey}
-					</button>
+					</Btn>
 					{oauth && !isOAuth && (
-						<button
-							className="btn secondary small"
+						<Btn small
+							
 							title={t.settings.oauthLoginHint}
 							onClick={onOAuthLogin}
 						>
 							{t.settings.oauthLogin}
-						</button>
+						</Btn>
 					)}
 					{isOAuth && (
-						<button
-							className="btn secondary small"
+						<Btn small
+							
 							title={t.settings.oauthLoginHint}
 							onClick={() => togglePanel("help")}
 						>
 							{t.settings.oauthLogin}
-						</button>
+						</Btn>
 					)}
 				</div>
 			)}
@@ -1340,21 +1375,11 @@ export function SettingsPanel({
 								label={t.settings.continueQueuedAfterInterrupt}
 								hint={t.settings.continueQueuedAfterInterruptHint}
 							>
-								<label className="switch-row">
-									<input
-										type="checkbox"
-										checked={settings.continueQueuedAfterInterrupt}
-										onChange={(e) =>
-											onChange({
-												...settings,
-												continueQueuedAfterInterrupt: e.target.checked,
-											})
-										}
-									/>
-									<span className="switch-track">
-										<span />
-									</span>
-								</label>
+								<Switch
+									checked={settings.continueQueuedAfterInterrupt}
+									onCheckedChange={(v) => onChange({ ...settings, continueQueuedAfterInterrupt: v })}
+									ariaLabel={t.settings.continueQueuedAfterInterrupt}
+								/>
 							</Row>
 							<Row label={t.settings.sendDuringRunMode} hint={t.settings.sendDuringRunModeHint}>
 								<select
@@ -1371,55 +1396,25 @@ export function SettingsPanel({
 								</select>
 							</Row>
 							<Row label={t.settings.showContextUsage} hint={t.settings.showContextUsageHint}>
-								<label className="switch-row">
-									<input
-										type="checkbox"
-										checked={settings.showContextUsage}
-										onChange={(e) =>
-											onChange({
-												...settings,
-												showContextUsage: e.target.checked,
-											})
-										}
-									/>
-									<span className="switch-track">
-										<span />
-									</span>
-								</label>
+								<Switch
+									checked={settings.showContextUsage}
+									onCheckedChange={(v) => onChange({ ...settings, showContextUsage: v })}
+									ariaLabel={t.settings.showContextUsage}
+								/>
 							</Row>
 							<Row label={t.settings.autoRetryOnFailure} hint={t.settings.autoRetryOnFailureHint}>
-								<label className="switch-row">
-									<input
-										type="checkbox"
-										checked={settings.autoRetryOnFailure}
-										onChange={(e) =>
-											onChange({
-												...settings,
-												autoRetryOnFailure: e.target.checked,
-											})
-										}
-									/>
-									<span className="switch-track">
-										<span />
-									</span>
-								</label>
+								<Switch
+									checked={settings.autoRetryOnFailure}
+									onCheckedChange={(v) => onChange({ ...settings, autoRetryOnFailure: v })}
+									ariaLabel={t.settings.autoRetryOnFailure}
+								/>
 							</Row>
 							<Row label={t.settings.autoCompaction} hint={t.settings.autoCompactionHint}>
-								<label className="switch-row">
-									<input
-										type="checkbox"
-										checked={settings.autoCompaction}
-										onChange={(e) =>
-											onChange({
-												...settings,
-												autoCompaction: e.target.checked,
-											})
-										}
-									/>
-									<span className="switch-track">
-										<span />
-									</span>
-								</label>
+								<Switch
+									checked={settings.autoCompaction}
+									onCheckedChange={(v) => onChange({ ...settings, autoCompaction: v })}
+									ariaLabel={t.settings.autoCompaction}
+								/>
 							</Row>
 							<Row label={t.settings.steeringMode} hint={t.settings.steeringModeHint}>
 								<select
@@ -1459,9 +1454,9 @@ export function SettingsPanel({
 											? settings.scopedModels.join(", ")
 											: t.settings.scopedModelsEmpty}
 									</span>
-									<button className="btn secondary" onClick={onOpenScopedModels}>
+									<Btn onClick={onOpenScopedModels}>
 										{t.settings.scopedModelsEdit}
-									</button>
+									</Btn>
 								</div>
 							</Row>
 							<Row label={t.settings.excludedTools} hint={t.settings.excludedToolsHint} wrap>
@@ -1511,10 +1506,10 @@ export function SettingsPanel({
 										spellCheck={false}
 										onChange={(e) => onChange({ ...settings, llamaApiKey: e.target.value })}
 									/>
-									<button className="btn secondary" onClick={onOpenLlama}>
+									<Btn onClick={onOpenLlama}>
 										<TerminalIcon size={13} />
 										<span>{t.settings.llamaManage}</span>
-									</button>
+									</Btn>
 								</div>
 							</Row>
 							<Row label={t.settings.trust} hint={t.settings.trustHint} wrap>
@@ -1562,15 +1557,15 @@ export function SettingsPanel({
 
 							<div className="settings-section-title-row">
 								<h4 className="settings-sub">{t.settings.customProviders}</h4>
-								<button
-									className="btn secondary small"
+								<Btn small
+									
 									onClick={() => {
 										setCpEditing(null);
 										setCpDialogOpen(true);
 									}}
 								>
 									<PlusIcon size={12} /> {t.settings.addProvider}
-								</button>
+								</Btn>
 							</div>
 							<p className="settings-hint">{t.settings.customProvidersHint}</p>
 							{customProviders.length === 0 ? (
@@ -1596,8 +1591,8 @@ export function SettingsPanel({
 													</span>
 												</div>
 												<div className="provider-actions">
-													<button
-														className="btn secondary small"
+													<Btn small
+														
 														onClick={() => {
 															setCpConfirmDelete(null);
 															setCpEditing(entry);
@@ -1605,7 +1600,7 @@ export function SettingsPanel({
 														}}
 													>
 														{t.settings.editProvider}
-													</button>
+													</Btn>
 													<button
 														className={`btn small ${
 															cpConfirmDelete === entry.id ? "danger" : "secondary"
@@ -1675,8 +1670,8 @@ export function SettingsPanel({
 									<button className="link-btn" onClick={refreshMcpServers}>
 										{t.sidebar.refresh}
 									</button>
-									<button
-										className="btn secondary small"
+									<Btn small
+										
 										onClick={() => {
 											setMcpConfirmDelete(null);
 											setMcpEditing(null);
@@ -1684,7 +1679,7 @@ export function SettingsPanel({
 										}}
 									>
 										<PlusIcon size={12} /> {t.settings.mcpAdd}
-									</button>
+									</Btn>
 								</div>
 							</div>
 							<p className="settings-hint">{t.settings.mcpHint}</p>
@@ -1692,15 +1687,15 @@ export function SettingsPanel({
 							{!packagesLoading && !mcpAdapterInstalled && (
 								<div className="mcp-adapter-notice">
 									<span>{t.settings.mcpAdapterMissing}</span>
-									<button
-										className="btn secondary small"
+									<Btn small
+										
 										disabled={busySource === "npm:pi-mcp-adapter"}
 										onClick={() => void handleInstall("npm:pi-mcp-adapter")}
 									>
 										{busySource === "npm:pi-mcp-adapter"
 											? t.settings.packageBusy
 											: t.settings.mcpAdapterInstall}
-									</button>
+									</Btn>
 								</div>
 							)}
 
@@ -1745,8 +1740,8 @@ export function SettingsPanel({
 												<div className="mcp-actions">
 													{entry.editable && (
 														<>
-															<button
-																className="btn secondary small"
+															<Btn small
+																
 																onClick={() => {
 																	setMcpConfirmDelete(null);
 																	setMcpEditing(entry);
@@ -1754,7 +1749,7 @@ export function SettingsPanel({
 																}}
 															>
 																{t.settings.editProvider}
-															</button>
+															</Btn>
 															<button
 																className={`btn small ${
 																	mcpConfirmDelete === entry.name ? "danger" : "secondary"
@@ -1767,16 +1762,11 @@ export function SettingsPanel({
 															</button>
 														</>
 													)}
-													<label className="switch-row">
-														<input
-															type="checkbox"
-															checked={!entry.disabled}
-															onChange={() => void toggleMcpServer(entry)}
-														/>
-														<span className="switch-track">
-															<span />
-														</span>
-													</label>
+													<Switch
+														checked={!entry.disabled}
+														onCheckedChange={() => void toggleMcpServer(entry)}
+														ariaLabel={t.settings.mcpEnabled.replace("{name}", entry.name)}
+													/>
 												</div>
 											</li>
 										))}
@@ -1919,21 +1909,21 @@ export function SettingsPanel({
 														</div>
 													</div>
 													{installed ? (
-														<button
-															className="btn secondary small"
+														<Btn small
+															
 															disabled={busy}
 															onClick={() => void handleRemove(source)}
 														>
 															{busy ? t.settings.packageBusy : t.settings.remove}
-														</button>
+														</Btn>
 													) : (
-														<button
-															className="btn primary small"
+														<Btn kind="primary" small
+															
 															disabled={busy}
 															onClick={() => void handleInstall(source)}
 														>
 															{busy ? t.settings.packageBusy : t.settings.install}
-														</button>
+														</Btn>
 													)}
 												</li>
 											);
@@ -1956,8 +1946,8 @@ export function SettingsPanel({
 										}
 									}}
 								/>
-								<button
-									className="btn primary small"
+								<Btn kind="primary" small
+									
 									disabled={!customSource.trim() || busySource === customSource.trim()}
 									onClick={() => {
 										void handleInstall(customSource.trim());
@@ -1965,7 +1955,7 @@ export function SettingsPanel({
 									}}
 								>
 									{t.settings.installSource}
-								</button>
+								</Btn>
 							</div>
 							{installedSources.size > 0 && (
 								<>
@@ -1976,13 +1966,13 @@ export function SettingsPanel({
 												<span className="installed-source" title={p.installedPath ?? undefined}>
 													{p.source}
 												</span>
-												<button
-													className="btn danger small"
+												<Btn kind="danger" small
+													
 													disabled={busySource === p.source}
 													onClick={() => setPendingRemove(p.source)}
 												>
 													{t.settings.remove}
-												</button>
+												</Btn>
 											</li>
 										))}
 									</ul>
@@ -1999,13 +1989,13 @@ export function SettingsPanel({
 							</Row>
 							<Row label={t.settings.updates} hint={t.settings.updatesHint}>
 								<div className="update-control">
-									<button
-										className="btn secondary"
+									<Btn
+										
 										disabled={checkingUpdates || !onCheckUpdates}
 										onClick={() => onCheckUpdates?.()}
 									>
 										{checkingUpdates ? t.settings.checkingUpdates : t.settings.checkUpdates}
-									</button>
+									</Btn>
 									{updateInfo &&
 										(updateInfo.available ? (
 											<span className="update-status available">
@@ -2039,13 +2029,13 @@ export function SettingsPanel({
 								</button>
 							</Row>
 							<Row label={t.settings.diagnostics} hint={t.settings.diagnosticsHint}>
-								<button
-									className="btn secondary"
+								<Btn
+									
 									disabled={exportingDiag}
 									onClick={() => void handleExportDiagnostics()}
 								>
 									{t.settings.exportDiagnostics}
-								</button>
+								</Btn>
 							</Row>
 						</section>
 					)}
@@ -2063,10 +2053,10 @@ export function SettingsPanel({
 								<h3>{t.settings.archivedTitle}</h3>
 								{archived.length > 0 && (
 									<div className="settings-section-actions">
-										<button className="btn danger archived-delete-all" onClick={onPurgeAll}>
+										<Btn kind="danger" small onClick={onPurgeAll}>
 											<TrashIcon size={13} />
 											{t.settings.deleteAllArchived}
-										</button>
+										</Btn>
 									</div>
 								)}
 							</div>
