@@ -26,13 +26,13 @@
 | 动效来源 | 全部使用 beUI 组件自带动效(`@/lib/ease` 弹簧/缓动体系),不手写 CSS 动画 |
 | 滚动容器 | 换用 vendored `MessageScroller` |
 | 助手 footer 操作(复制/分叉) | 常驻低透明(约 50%),hover 变亮(beUI `StreamingResponse` 默认风格) |
-| 右侧消息导航轨(`navigation="rail"`) | **开启**(与 DiffSidebar 并存:导航轨位于聊天列右缘内侧,DiffSidebar 打开时覆盖其上,不做互斥逻辑) |
+| 消息导航轨(`navigation="rail"`) | **开启,放左侧**(`railSide="left"`:轨道贴聊天列左缘,预览卡向右弹出;与右侧 DiffSidebar 完全错开) |
 
 ## 3. 部件映射
 
 | 现有 | 改为 | 说明 |
 |---|---|---|
-| `.chat-scroll` + `MessageList` 内手写吸附跟随(stickRef + wheel/touch/pointer/keydown,约 150 行) | `MessageScroller`(`src/components/agents/message-scroller.tsx`) | `followOutput`、`followThreshold={120}`(保持现有 120px 手感)、`smooth`、`busy={working}`;`onFollowChange` 备用;会话切换以 `key={sessionId}` 重挂载复位到最新消息 |
+| `.chat-scroll` + `MessageList` 内手写吸附跟随(stickRef + wheel/touch/pointer/keydown,约 150 行) | `MessageScroller`(`src/components/agents/message-scroller.tsx`) | `followOutput`、`followThreshold={120}`(保持现有 120px 手感)、`smooth`、`busy={working}`;`onFollowChange` 备用;会话切换以 `key={sessionId}` 重挂载复位到最新消息;`navigation="rail"` + `railSide="left"` 开启左侧导航轨 —— 开启后视口滚动条按 beUI 行为隐藏,轨道 tick 即位置指示(悬停出预览卡、点击跳转对应消息) |
 | 搜索定位命中消息 | 自定义逻辑经 `viewportRef` 滚动 | 保留居中定位算法;程序滚动后 `MessageScroller` 的 scroll handler 自然置 `following=false`,等价现有行为 |
 | 用户消息行 | `Message from="user"` + `MessageBubble variant="soft"` | 入场 `animateIn`;图片网格(`MessageImages`)保留在气泡内容区内;撤回按钮保留在气泡旁 hover |
 | 助手文本行 | `Message from="assistant"` + `StreamingResponse` | 三态 `streaming / complete / error`;markdown 仍走现有 `Markdown` 流式渲染与打字光标;footer 操作 = copy + fork(用 `ResponseAction` 样式扩展 fork 按钮,常驻低透明 hover 变亮) |
@@ -63,6 +63,7 @@
 ## 5. 实现策略
 
 - `chat-rows.ts`(行推导纯函数,`src/__tests__/chat-rows.test.ts` 已覆盖)原样保留 —— 渲染层重建不触碰数据层
+- vendored `message-scroller.tsx` 最小扩展:新增 `railSide?: "left" | "right"`(默认 `"right"` 保持上游行为),按侧切换轨道定位类(`left-1`/`right-1`)、tick 对齐(`justify-start`/`origin-left` 与 `justify-end`/`origin-right`)、预览卡弹出方向(`previewSide` 与容器类)及溢出留白(`pl-10`/`pr-10`);除此之外不改上游跟随/吸附逻辑
 - `MessageList.tsx` 重写为 vendored beUI 组件组合;`MetaGroup.tsx`、`ToolCard.tsx`、`use-sweep-highlight.ts` 退役;`message-utils.ts`、`Markdown.tsx`、`ErrorNote.tsx` 按需沿用;live 活动卡的 mono 预览条复用 `PreviewTicker`(及其依赖 `activity-ticker`,到达序最新活动滚动预览的职责与 beUI 组件不重叠,测试保持不动)
 - `ChatArea.tsx`:滚动容器外壳换 `MessageScroller`(viewport 样式保留现有 9px 自定义滚动条与 welcome 态);`MessageList` props 接口保持不变,使 `ChatArea`/`dev-preview.tsx` 改动最小
 - 样式:App.css 消息区段落替换为少量新类;组件皮肤优先用 beUI token bridge(`beui.css` 的 `@theme inline` 已映射 `--panel-bg`/`--accent` 等到 Tailwind 语义色);主题(dark/light)、`data-density`、`data-color-scale` 经 token 自动跟随
@@ -73,11 +74,11 @@
 - 单测:`chat-rows.test.ts` 不动应保持绿;`message-actions.test.tsx`、`stream-split.test.tsx`、`markdown-fade.test.tsx` 按新 DOM 适配查询选择器;新增活动卡折叠/展开与回合 pill 展开的渲染测试
 - 命令:`npm test`、`npm run lint`、`npm run build`
 - 视觉验收:`preview.html`(`src/dev-preview.tsx` 静态稿)覆盖折叠/展开/live/回合 pill/图片/错误各态;dark + light 双主题过一遍
-- 手工回归:流式跟随、上滚脱离/回底吸附、会话切换复位、搜索定位、撤回/分叉/复制、auto-retry 倒计时、子代理面板、DiffSidebar 打开
+- 手工回归:流式跟随、上滚脱离/回底吸附、会话切换复位、搜索定位、撤回/分叉/复制、auto-retry 倒计时、子代理面板、DiffSidebar 打开、导航轨(hover 预览卡、tick 高亮跟随、点击跳转、左侧布局)
 
 ## 7. 风险与对策
 
 - **StreamingResponse footer 扩展 fork 按钮**:beUI 源为 copy-paste 所有,允许轻量扩展(新增一个 `ResponseAction`),不 fork 其内部结构
-- **rail 与 DiffSidebar 并存**:导航轨渲染在聊天列内部右缘,DiffSidebar 为覆盖面板,打开时自然盖住轨道,无布局冲突;若实测拥挤,可在 sidebar 打开时临时隐藏轨道(留作实现期微调点)
+- **导航轨在左侧**:与右侧 DiffSidebar 完全错开,无并存冲突;开启 rail 后视口滚动条隐藏(beUI 行为),轨道 tick 承担位置指示 —— 若手感不适,可在 `viewportClassName` 恢复细滚动条(留作实现期微调点)
 - **长会话性能**:活动卡展开态按需渲染(未展开不渲染完整输出),与现有「折叠省 DOM」策略一致;`MessageRow` memo 结构保留
 - **`PreviewTicker`/`activity-ticker` 既有测试**:live 活动卡复用 `PreviewTicker`,`preview-ticker.test.tsx` 与 `activity-ticker.test.ts` 均不动
