@@ -3,6 +3,7 @@ import type { AutoRetryState, Block, ChatMessage } from "../chat-types";
 import type { SubagentRun } from "../pi";
 import type { MessageCatalog } from "../i18n";
 import { BranchIcon, CheckIcon, CopyIcon, SparkleIcon, UndoIcon } from "../icons";
+import { Button } from "./motion/button";
 import { ErrorNote } from "./ErrorNote";
 import { formatClockDuration } from "../format";
 import { splitOnQuery } from "./message-utils";
@@ -277,37 +278,43 @@ function MessageActions({
 	return (
 		<div className="message-actions">
 			{text && (
-				<button
+				<Button
 					type="button"
-					className="message-action"
+					variant="ghost"
+					size="icon"
+					className="message-action size-7 rounded-[var(--r-sm)]"
 					aria-label={copied ? t.chat.copied : t.chat.copyText}
 					title={copied ? t.chat.copied : t.chat.copyText}
 					onClick={copy}
 				>
 					{copied ? <CheckIcon size={14} /> : <CopyIcon size={14} />}
-				</button>
+				</Button>
 			)}
 			{canFork && (
-				<button
+				<Button
 					type="button"
-					className="message-action"
+					variant="ghost"
+					size="icon"
+					className="message-action size-7 rounded-[var(--r-sm)]"
 					aria-label={t.chat.fork}
 					title={t.chat.fork}
 					onClick={() => onFork?.()}
 				>
 					<BranchIcon size={14} />
-				</button>
+				</Button>
 			)}
 			{canRecall && (
-				<button
+				<Button
 					type="button"
-					className="message-action"
+					variant="ghost"
+					size="icon"
+					className="message-action size-7 rounded-[var(--r-sm)]"
 					aria-label={t.chat.recall}
 					title={t.chat.recall}
 					onClick={() => onRecall?.()}
 				>
 					<UndoIcon size={14} />
-				</button>
+				</Button>
 			)}
 		</div>
 	);
@@ -315,8 +322,9 @@ function MessageActions({
 
 /** One message row (user / assistant text / orphan tool results) with search
  * highlighting and the streaming cursor. `skip` lists block indices folded
- * into a meta group. No author footer, no hover buttons — matches the
- * Percho transcript (groups + text, nothing else). */
+ * into a meta group. Layout is beui's Message: the user turn renders as a
+ * tinted end-aligned bubble, assistant/tool turns stay an open transcript
+ * column — matching the beui chat design. */
 const MessageRow = memo(function MessageRow({
 	item,
 	skip,
@@ -356,9 +364,108 @@ const MessageRow = memo(function MessageRow({
 	onOpenSettings?: () => void;
 }) {
 	const m = item.msg;
+	const from = m.role === "user" ? "user" : "assistant";
 	const isSearchTarget =
 		searchQuery != null && searchActiveMessageId != null && m.id === searchActiveMessageId;
+	const highlight = (text: string) =>
+		splitOnQuery(text, searchQuery ?? "").map((p, j) =>
+			p.match ? (
+				<mark key={j} className="session-search-hit">
+					{p.text}
+				</mark>
+			) : (
+				<span key={j}>{p.text}</span>
+			),
+		);
+
+	const blocks = m.blocks.map((b: Block, i: number) => {
+		if (item.consumed.has(i) || skip.has(i)) return null;
+		if (b.kind === "text") {
+			if (textAllow && !textAllow.has(i)) return null;
+			if (m.role === "tool") {
+				// Tool result text streaming in. Nobody reads
+				// this mid-stream — the assistant's running
+				// tool card already shows the state. Keep the
+				// message empty (only the cursor) until the
+				// authoritative ToolOutput replaces it, so the
+				// DOM doesn't grow and reflow every frame.
+				// Exception: in-session search highlights the
+				// content the user is actively looking for.
+				if (isSearchTarget && searchQuery) {
+					return (
+						<div className="text-block highlighted-text" key={i}>
+							{highlight(b.text)}
+						</div>
+					);
+				}
+				return null;
+			}
+			if (isSearchTarget && searchQuery) {
+				// Plain-text rendering with highlighted matches for
+				// the focused message (markdown stays on elsewhere).
+				return (
+					<div className="text-block highlighted-text" key={i}>
+						{highlight(b.text)}
+					</div>
+				);
+			}
+			return (
+				<div className="text-block" key={i}>
+					{/* Percho UserMessage: user input is always plain text
+						    (whitespace-pre-wrap) - no markdown pass. */}
+					{m.role === "user" ? (
+						<div className="whitespace-pre-wrap">{b.text}</div>
+					) : (
+						<Markdown text={b.text} streaming={m.streaming} />
+					)}
+				</div>
+			);
+		}
+		if (b.kind === "thinking") {
+			if (isSearchTarget && searchQuery) {
+				// Highlight matches inside thinking blocks too, so a
+				// hit there is visible (not just counted).
+				return (
+					<div className="text-block thinking highlighted-text" key={i}>
+						{highlight(b.text)}
+					</div>
+				);
+			}
+			return <ThinkingBlock key={i} text={b.text} t={t} />;
+		}
+		return (
+			<ToolCard
+				key={i}
+				block={b}
+				result={b.result ? b : (item.attached.get(i) ?? null)}
+				running={
+					(m.streaming && i === m.blocks.length - 1) || (item.attachedStreaming.get(i) ?? false)
+				}
+				t={t}
+			/>
+		);
+	});
+
+	const actions =
+		last && !m.streaming && (m.role === "user" || canFork) ? (
+			<MessageActions
+				text={messageText(m)}
+				canRecall={m.role === "user" && canRecall}
+				canFork={canFork}
+				onCopy={onCopy}
+				onRecall={onRecall}
+				onFork={onFork}
+				t={t}
+			/>
+		) : null;
+
 	return (
+		// Plain elements, not beui's Message/MessageBubble: those are motion
+		// components whose layout measurement rewrites style attributes on
+		// every streaming re-render of the list — the transcript's perf
+		// contract (stream mutations never touch committed rows' DOM, guarded
+		// by stream-split.test) forbids that. The existing .message.user CSS
+		// already renders the tinted end-aligned user bubble.
 		<div
 			ref={(el) => refCb(m.id, el)}
 			className={`message ${m.role}${isSearchTarget ? " message-search-target" : ""}`}
@@ -366,113 +473,23 @@ const MessageRow = memo(function MessageRow({
 			{m.role === "user" && m.images && m.images.length > 0 && (
 				<MessageImages images={m.images} t={t} />
 			)}
-			{m.blocks.map((b: Block, i: number) => {
-				if (item.consumed.has(i) || skip.has(i)) return null;
-				if (b.kind === "text") {
-					if (textAllow && !textAllow.has(i)) return null;
-					if (m.role === "tool") {
-						// Tool result text streaming in. Nobody reads
-						// this mid-stream — the assistant's running
-						// tool card already shows the state. Keep the
-						// message empty (only the cursor) until the
-						// authoritative ToolOutput replaces it, so the
-						// DOM doesn't grow and reflow every frame.
-						// Exception: in-session search highlights the
-						// content the user is actively looking for.
-						if (isSearchTarget && searchQuery) {
-							return (
-								<div className="text-block highlighted-text" key={i}>
-									{splitOnQuery(b.text, searchQuery).map((p, j) =>
-										p.match ? (
-											<mark key={j} className="session-search-hit">
-												{p.text}
-											</mark>
-										) : (
-											<span key={j}>{p.text}</span>
-										),
-									)}
-								</div>
-							);
-						}
-						return null;
-					}
-					if (isSearchTarget && searchQuery) {
-						// Plain-text rendering with highlighted matches for
-						// the focused message (markdown stays on elsewhere).
-						return (
-							<div className="text-block highlighted-text" key={i}>
-								{splitOnQuery(b.text, searchQuery).map((p, j) =>
-									p.match ? (
-										<mark key={j} className="session-search-hit">
-											{p.text}
-										</mark>
-									) : (
-										<span key={j}>{p.text}</span>
-									),
-								)}
-							</div>
-						);
-					}
-					return (
-						<div className="text-block" key={i}>
-							{/* Percho UserMessage: user input is always plain text
-								    (whitespace-pre-wrap) - no markdown pass. */}
-							{m.role === "user" ? b.text : <Markdown text={b.text} streaming={m.streaming} />}
-						</div>
-					);
-				}
-				if (b.kind === "thinking") {
-					if (isSearchTarget && searchQuery) {
-						// Highlight matches inside thinking blocks too, so a
-						// hit there is visible (not just counted).
-						return (
-							<div className="text-block thinking highlighted-text" key={i}>
-								{splitOnQuery(b.text, searchQuery).map((p, j) =>
-									p.match ? (
-										<mark key={j} className="session-search-hit">
-											{p.text}
-										</mark>
-									) : (
-										<span key={j}>{p.text}</span>
-									),
-								)}
-							</div>
-						);
-					}
-					return <ThinkingBlock key={i} text={b.text} t={t} />;
-				}
-				return (
-					<ToolCard
-						key={i}
-						block={b}
-						result={b.result ? b : (item.attached.get(i) ?? null)}
-						running={
-							(m.streaming && i === m.blocks.length - 1) || (item.attachedStreaming.get(i) ?? false)
-						}
-						t={t}
-					/>
-				);
-			})}
-			{last && m.error && typeof m.error !== "string" && (
-				<ErrorNote
-					error={m.error}
-					t={t}
-					onRetry={onRetry}
-					onCompact={onCompact}
-					onOpenSettings={onOpenSettings}
-				/>
-			)}
-			{last && typeof m.error === "string" && <div className="msg-error">error: {m.error}</div>}
-			{last && !m.streaming && (m.role === "user" || canFork) && (
-				<MessageActions
-					text={messageText(m)}
-					canRecall={m.role === "user" && canRecall}
-					canFork={canFork}
-					onCopy={onCopy}
-					onRecall={onRecall}
-					onFork={onFork}
-					t={t}
-				/>
+			{blocks}
+			{actions}
+			{from === "assistant" && (
+				<>
+					{last && m.error && typeof m.error !== "string" && (
+						<ErrorNote
+							error={m.error}
+							t={t}
+							onRetry={onRetry}
+							onCompact={onCompact}
+							onOpenSettings={onOpenSettings}
+						/>
+					)}
+					{last && typeof m.error === "string" && (
+						<div className="msg-error">error: {m.error}</div>
+					)}
+				</>
 			)}
 		</div>
 	);

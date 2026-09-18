@@ -2,10 +2,11 @@ import { memo, useEffect, useMemo, useReducer, useState } from "react";
 import type { MessageCatalog } from "../i18n";
 import { ChevronDownIcon } from "../icons";
 import { useSweepHighlight } from "./use-sweep-highlight";
-import { ThinkingOrb, type OrbState } from "thinking-orbs";
+import { ThinkingOrb } from "thinking-orbs";
 import { PreviewTicker, type LivePreviewItem } from "./PreviewTicker";
 import { ToolCard, ThinkingBlock } from "./ToolCard";
 import { formatDuration } from "../format";
+import { AgentActivity, type AgentActivityItem } from "./agents/agent-activity";
 import {
 	summarizeCategories,
 	type GroupEntry,
@@ -14,13 +15,12 @@ import {
 } from "./chat-rows";
 
 /**
- * MetaGroup — the folded work group (port of the Percho chat UI).
- *
- * While the agent works the group shows a live header: orb + "Thinking /
- * Working" + the latest activity line + one dot per call (running dot
- * breathes). Once settled it folds into a single category-summary line
- * ("读取 1 个文件 · 编辑 2 个文件"). Clicking either state expands the full
- * thinking rows and tool cards.
+ * MetaGroup — the folded work group, now rendered through beui's
+ * AgentActivity: while the agent works the header is a ThinkingShimmer line
+ * and entries stream in; once settled it folds under a category-summary line
+ * ("读取 1 个文件 · 编辑 2 个文件"). Expanding shows the same full thinking
+ * rows and tool cards as before (carried as text-type activity items, which
+ * render their content verbatim).
  */
 
 /** en plural units (zh templates ignore the {unit} param). */
@@ -100,17 +100,35 @@ export const MetaGroup = memo(
 		live: boolean;
 		t: MessageCatalog;
 	}) {
-		// The user owns the fold state; the group never auto-expands (the live
-		// header + dots carry the activity, the body is opt-in — same as percho).
-		const [open, setOpen] = useState(false);
 		const summary = useMemo(() => summarizeCategories(entries), [entries]);
 		const lastEntry = entries[entries.length - 1];
 		const preview = useMemo(() => previewOf(lastEntry), [lastEntry]);
 		const label = preview.kind === "thinking" && live ? t.chat.metaThinking : t.chat.metaWorking;
-		// Orb state mirrors percho: the newest activity decides — a running
-		// tool shows the connecting animation ("Working"), pure thinking
-		// shows the faster particle orbit ("Thinking").
-		const orbState: OrbState = preview.kind === "tool" ? "connecting" : "working";
+
+		// Activity items: one per entry, content = the existing full renderer
+		// (ThinkingBlock / ToolCard) so expansion keeps the complete args +
+		// output exactly as before. The beui shell contributes the live
+		// shimmer, the streaming entrance, and the folded summary.
+		const items = useMemo<AgentActivityItem[]>(
+			() =>
+				entries.map((e) => ({
+					id: `${e.msgId}:${e.blockIndex}`,
+					type: "text" as const,
+					content:
+						e.kind === "thinking" ? (
+							<ThinkingBlock text={e.text ?? ""} t={t} />
+						) : (
+							<ToolCard
+								block={e.block!}
+								result={e.result}
+								running={live && e.running}
+								t={t}
+							/>
+						),
+				})),
+			[entries, live, t],
+		);
+
 		// Live preview items: one per activity (thinking text / tool name +
 		// summarized args), in arrival order. PreviewTicker shows the newest
 		// (latest-wins) and slides rows up as activities change.
@@ -128,6 +146,19 @@ export const MetaGroup = memo(
 		// Codex-style sweep highlight shared by the label and the preview's
 		// tool name (percho: one band, constant speed, rAF-painted).
 		const { labelRef, wrapRef } = useSweepHighlight(live, liveItems.map((i) => i.id).join(","));
+
+		// Working status row: the sweep-highlighted label + per-activity ticker
+		// (our orb/ticker language) rendered through beui's working-status slot.
+		const summaryLine = (
+			<span className="meta-summary-line">
+				{summary.map((seg, i) => (
+					<span key={i} className="meta-seg">
+						{summaryLabel(t, seg)}
+					</span>
+				))}
+			</span>
+		);
+
 		// Single settled entry (e.g. one thinking block before the text)
 		// renders as a bare row without the folding chrome — same as percho,
 		// which only wraps groups of 2+ (or working) in the shell.
@@ -143,63 +174,32 @@ export const MetaGroup = memo(
 				</div>
 			);
 		}
+
 		return (
-			<div className={`meta-group${live ? " live" : ""}${open ? " open" : ""}`}>
-				<button
-					type="button"
-					className="meta-head"
-					aria-expanded={open}
-					onClick={() => setOpen((v) => !v)}
-				>
-					{live ? (
-						<>
-							<ThinkingOrb state={orbState} size={20} paused={false} />
+			<div className={`meta-group${live ? " live" : ""}`}>
+				<AgentActivity
+					items={items}
+					status={live ? "working" : "complete"}
+					activeLabel={label}
+					summary={summaryLine}
+					collapseOnComplete
+					renderWorkingStatus={() => (
+						<div className="meta-head" style={{ cursor: "default" }}>
+							<ThinkingOrb
+								state={preview.kind === "tool" ? "connecting" : "working"}
+								size={20}
+								paused={false}
+							/>
 							<span ref={labelRef} className="meta-label sweep-target">
 								{label}
 							</span>
 							<span className="meta-preview" ref={wrapRef}>
 								<PreviewTicker items={liveItems} reserveSpace />
 							</span>
-						</>
-					) : (
-						<span className="meta-summary-line">
-							{summary.map((seg, i) => (
-								<span key={i} className="meta-seg">
-									{summaryLabel(t, seg)}
-								</span>
-							))}
-						</span>
+						</div>
 					)}
-				</button>
-				{/* dots: one per call (thinking included), running dot breathes */}
-				<div className="meta-dots" aria-hidden="true">
-					{entries.map((_, i) => (
-						<span
-							key={i}
-							className={`meta-dot${live && i === entries.length - 1 ? " running" : ""}`}
-						/>
-					))}
-				</div>
-				{/* body 常驻 DOM：展开只过渡高度（percho globals.css:873-891 .drawer-details 抽屉动画，
-				    这里用等价的 grid-rows 0fr→1fr，见 App.css .meta-body-wrap）。常驻是为了展开时不重挂内容
-				    —— 否则 .tool-card 的 dsh-block-in 会在展开瞬间再播一次入场。 */}
-				<div className={`meta-body-wrap${open ? " open" : ""}`} inert={!open}>
-					<div className="meta-body">
-						{entries.map((e) =>
-							e.kind === "thinking" ? (
-								<ThinkingBlock key={`${e.msgId}:${e.blockIndex}`} text={e.text ?? ""} t={t} />
-							) : (
-								<ToolCard
-									key={`${e.msgId}:${e.blockIndex}`}
-									block={e.block!}
-									result={e.result}
-									running={live && e.running}
-									t={t}
-								/>
-							),
-						)}
-					</div>
-				</div>
+					contentClassName="meta-body"
+				/>
 			</div>
 		);
 	},

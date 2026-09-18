@@ -1,15 +1,19 @@
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useState } from "react";
 import type { Block } from "../chat-types";
 import type { MessageCatalog } from "../i18n";
 import { ChevronRightIcon } from "../icons";
+import { ToolResult, ToolResultOutput } from "./agents/tool-result";
 
 /**
  * Tool call / thinking rendering, shared by the message rows and the folded
- * meta groups. ToolCard is a faithful port of Percho's ToolCallCard:
- * borderless one-liner = tool name + single-line summary (gradient fade on
- * overflow) + hover-reveal arrow; expanded = raw args + output <pre>.
- * No icons, no "结果/输出 N 行" suffixes, no diff view — the transcript
- * reads as a flat command list, exactly like Percho.
+ * meta groups. The card is beui's ToolResult: a status pill (running spinner
+ * / success check / error cross) with an ActionSwapRoll on the title, a
+ * collapsible body whose output renders through AgentCode (shiki), and a
+ * built-in copy action. Streaming runs auto-open the body and pin the scroll
+ * to the newest output; completing auto-collapses back to the one-liner.
+ *
+ * summarizeArgs stays the Percho port: command → filePath/path/file → url,
+ * with regex fallback while args stream in as partial JSON.
  */
 
 export type ToolBlockT = Extract<Block, { kind: "tool" }>;
@@ -25,7 +29,7 @@ export function summarizeArgs(args: string): string {
 		const filePath = parsed.filePath ?? parsed.path ?? parsed.file;
 		if (typeof filePath === "string") return filePath;
 		const url = parsed.url;
-		if (typeof url === "string") return url;
+		return typeof url === "string" ? url : "";
 	} catch {
 		// 流式中的不完整 JSON：按优先级正则抽取字段值（值允许未闭合，随流式增长原地更新）
 		for (const key of ["command", "cmd", "filePath", "path", "file", "url"]) {
@@ -49,71 +53,42 @@ export const ToolCard = memo(function ToolCard({
 	 * or the block itself when this card renders an orphan result. */
 	result?: ToolBlockT | null;
 	running: boolean;
-	/** Kept for call-site compatibility; the Percho card needs no labels. */
+	/** Kept for call-site compatibility; the beui card needs no labels. */
 	t?: MessageCatalog;
 }) {
 	const summary = summarizeArgs(block.args);
-	/** 内容是否超过一行（决定渐变 + 箭头是否贴行尾） */
-	const [overflowing, setOverflowing] = useState(false);
-	const [open, setOpen] = useState(false);
-	const textRef = useRef<HTMLSpanElement>(null);
-	const rowRef = useRef<HTMLButtonElement>(null);
-
-	// 挂载时 args 可能为空（流式 toolcall，textRef 未渲染）→ 随 summary 变化重测；
-	// overflow:hidden 下 scrollWidth 恒为内容全宽，收缩后重测结果依然正确
-	// biome-ignore lint/correctness/useExhaustiveDependencies: summary 是刻意的重跑触发器（effect 内只读 ref，args 流式增长时需重测）
-	useEffect(() => {
-		const check = () => {
-			const el = textRef.current;
-			const row = rowRef.current;
-			if (!el || !row) return;
-			const left = el.getBoundingClientRect().left - row.getBoundingClientRect().left;
-			setOverflowing(el.scrollWidth > row.clientWidth - left);
-		};
-		check();
-		const row = rowRef.current;
-		if (!row) return;
-		const ro = new ResizeObserver(check);
-		ro.observe(row);
-		return () => ro.disconnect();
-	}, [summary]);
-
 	const error = block.error || result?.error;
 	// orphan result（无配对调用的纯结果消息）：args 本身就是输出文本
 	const callArgs = block.result ? "" : block.args;
 	const output = (block.result ? block.args : (result?.args ?? "")).replace(/\n+$/, "");
 
 	return (
-		<div
-			className={`tool-card${running ? " running" : ""}${error ? " error" : ""}${open ? " open" : ""}`}
-			data-state={running ? "running" : error ? "error" : "ok"}
+		<ToolResult
+			tool={displayName(block.name)}
+			title={summary}
+			status={running ? "running" : error ? "error" : "success"}
+			kind={/bash|command|exec|shell/i.test(block.name) ? "terminal" : "custom"}
+			defaultOpen={false}
+			maxHeight={260}
+			copyText={output || undefined}
 		>
-			<button
-				type="button"
-				ref={rowRef}
-				className="tool-head"
-				aria-expanded={open}
-				onClick={() => setOpen((v) => !v)}
-			>
-				<span className={`tool-name${running ? " shimmer-sweep" : ""}`}>
-					{displayName(block.name)}
-				</span>
-				{summary && (
-					<span ref={textRef} className={overflowing ? "tool-summary of" : "tool-summary"}>
-						{summary}
-						{overflowing && <span className="tool-summary-fade" />}
-					</span>
-				)}
-				{running && summary && <span className="tool-ellipsis">…</span>}
-				<ChevronRightIcon size={12} className="tool-chevron" />
-			</button>
-			{open && (
-				<div className="tool-body">
-					{callArgs && <pre className="tool-pre args">{callArgs}</pre>}
-					{output && <pre className={`tool-pre output${error ? " err" : ""}`}>{output}</pre>}
+			{callArgs ? (
+				<div className="mb-2">
+					<div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+						args
+					</div>
+					<ToolResultOutput language="json">{callArgs}</ToolResultOutput>
 				</div>
-			)}
-		</div>
+			) : null}
+			{output ? (
+				<div>
+					<div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+						output
+					</div>
+					<ToolResultOutput language="bash">{output}</ToolResultOutput>
+				</div>
+			) : null}
+		</ToolResult>
 	);
 });
 
