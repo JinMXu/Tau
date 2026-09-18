@@ -20,11 +20,6 @@
 @source "../";
 @source "../index.html";
 
-/* Conditional classes inside template-literal interpolations escape the
-   extractor (the queue-row buttons toggle their colors this way), so they
-   are force-registered here. Brace expansion = with and without hover:. */
-@source inline("{hover:,}text-white {hover:,}bg-white/25");
-
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/preflight.css" layer(base);
 @import "tailwindcss/utilities.css" layer(utilities);
@@ -74,4 +69,16 @@
 	--color-sidebar-border: var(--sidebar-border);
 	--color-sidebar-hover: var(--sidebar-hover);
 	--color-sidebar-active: var(--sidebar-active);
+}
+
+/* Editing-state color for the queue-row buttons. A hand-written @utility
+   because conditional classes inside template-literal interpolations escape
+   the scanner, and it must live in the utilities layer to out-rank the ghost
+   variant's text color (same layer, @utility definitions come later). */
+@utility queue-act-editing {
+	color: #fff;
+	&:hover {
+		background: rgb(255 255 255 / 0.25);
+		color: #fff;
+	}
 }

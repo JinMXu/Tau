@@ -56,8 +56,12 @@ const MAX_TEXT_ATTACHMENT_BYTES = 300 * 1024;
 // Tailwind's extractor skips candidates inside a template-literal's `${…}`
 // expression, so conditional queue-row button classes live in plain string
 // constants — written inline in the JSX template they'd never be generated.
+// Tailwind's extractor skips candidates inside a template-literal's `${…}`
+// expression, so the editing-state class lives in beui.css's utilities layer
+// (hand-written, always available) and only the static size/radius class is
+// referenced here.
 const QUEUE_ACT_CLS = "size-[22px] rounded-[var(--r-sm)]";
-const QUEUE_ACT_EDITING_CLS = "text-white hover:bg-white/25 hover:text-white";
+const QUEUE_ACT_EDITING_CLS = "queue-act-editing";
 
 function readFileAsDataUrl(file: File): Promise<string> {
 	return new Promise((resolve, reject) => {

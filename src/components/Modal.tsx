@@ -1,26 +1,27 @@
-import { useCallback, useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import type { ReactNode, RefObject } from "react";
 import { XIcon } from "../icons";
-
-/** Everything inside the panel that can hold focus, in DOM order. */
-const FOCUSABLE =
-	'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+import { CenterMorphModal, CenterMorphModalContent } from "./motion/center-morph-modal";
 
 /**
  * Shared dialog shell for every overlay in the app.
  *
- * Each of the nine `*Dialog` components (plus three inline modals in App.tsx)
- * used to hand-roll the same
- * `overlay-backdrop > extension-dialog > tree-dialog-header` skeleton. Twelve
- * copies had drifted apart: most lacked `role="dialog"`, a few closed on
- * Escape but only while a textarea inside them had focus, and none trapped
- * Tab, so focus escaped into the page behind the backdrop. Routing them all
- * through one component is what makes that behaviour consistent instead of
- * accidental — and it is the single place to fix when it is wrong.
+ * The surface and its animation come from beui's CenterMorphModal: the panel
+ * unfolds from its center via a clip-path while the backdrop fades. The
+ * `.extension-dialog` class (plus any per-dialog `className`) keeps owning the
+ * visual contract — width, background, border, padding — with one exception:
+ * the corner radius now reads at beui's 30px because the unfolding clip-path
+ * itself is cut at that radius.
  *
- * The visual contract is unchanged: same class names, so the existing CSS
- * (`.overlay-backdrop`, `.extension-dialog`, `.tree-dialog-header`, …) applies
- * as before. `className` is appended to the panel for per-dialog sizing.
+ * Two pieces of behaviour deliberately stay here instead of delegating:
+ * - Escape is handled on `document` with `stopPropagation`, so dismissing a
+ *   dialog can never reach the app-level Escape handler (which would
+ *   interrupt a running turn) and a nested control can still consume the key
+ *   first. beui's own Escape listener sits on `window`, after ours, and never
+ *   fires for the same event.
+ * - Focus is restored to whatever held it before the dialog opened. beui
+ *   restores to its trigger element, but every dialog here opens
+ *   programmatically — no trigger exists.
  */
 export function Modal({
 	open,
@@ -50,7 +51,7 @@ export function Modal({
 	showClose?: boolean;
 	closeOnBackdrop?: boolean;
 	closeOnEscape?: boolean;
-	/** Element to focus on open. Defaults to the panel itself. */
+	/** Element to focus on open. Defaults to the first focusable in the panel. */
 	initialFocusRef?: RefObject<HTMLElement | null>;
 }) {
 	const panelRef = useRef<HTMLDivElement>(null);
@@ -61,12 +62,19 @@ export function Modal({
 	// first: if it calls preventDefault — meaning it consumed Escape to close
 	// itself — the dialog stays open. Otherwise the dialog closes and
 	// stopPropagation keeps the event from reaching the app-level Escape
-	// handler, which would otherwise interrupt the running turn.
+	// handler, which would otherwise interrupt the running turn. It also
+	// starves beui's own window-level Escape listener: closeOnEscape=false
+	// swallows the key instead of closing, and beui never sees it.
 	useEffect(() => {
-		if (!open || !closeOnEscape) return;
+		if (!open) return;
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key !== "Escape") return;
 			if (e.defaultPrevented) return;
+			if (!closeOnEscape) {
+				e.preventDefault();
+				e.stopPropagation();
+				return;
+			}
 			e.stopPropagation();
 			onClose();
 		};
@@ -76,80 +84,65 @@ export function Modal({
 
 	// Move focus into the dialog on open and hand it back to whatever had it
 	// before on close — without this, dismissing a dialog dropped focus on
-	// <body> and keyboard users lost their place.
+	// <body> and keyboard users lost their place. beui focuses its first
+	// focusable element from its own rAF; scheduling ours the same way (and
+	// after theirs) means an initialFocusRef target wins that race, matching
+	// the pre-beui behaviour where the named target got focus.
 	useEffect(() => {
 		if (!open) return;
 		const previous = document.activeElement as HTMLElement | null;
-		const target = initialFocusRef?.current ?? panelRef.current;
-		target?.focus({ preventScroll: true });
+		const frame = requestAnimationFrame(() => {
+			const target = initialFocusRef?.current ?? panelRef.current;
+			target?.focus({ preventScroll: true });
+		});
 		return () => {
+			cancelAnimationFrame(frame);
 			if (previous && previous.isConnected) {
 				previous.focus({ preventScroll: true });
 			}
 		};
 	}, [open, initialFocusRef]);
 
-	// Focus trap: Tab cycles inside the panel instead of walking out to the
-	// page behind the backdrop.
-	const onKeyDown = useCallback((e: React.KeyboardEvent) => {
-		if (e.key !== "Tab") return;
-		const panel = panelRef.current;
-		if (!panel) return;
-		const items = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE));
-		if (items.length === 0) {
-			e.preventDefault();
-			return;
-		}
-		const first = items[0];
-		const last = items[items.length - 1];
-		const active = document.activeElement;
-		if (e.shiftKey && (active === first || active === panel)) {
-			e.preventDefault();
-			last.focus();
-		} else if (!e.shiftKey && active === last) {
-			e.preventDefault();
-			first.focus();
-		}
-	}, []);
-
-	if (!open) return null;
-
 	return (
-		<div
-			className="overlay-backdrop"
-			// mousedown, not click: a text selection that starts inside the
-			// panel and ends on the backdrop must not dismiss the dialog.
-			onMouseDown={(e) => {
-				if (closeOnBackdrop && e.target === e.currentTarget) onClose();
+		<CenterMorphModal
+			open={open}
+			onOpenChange={(next) => {
+				if (!next) onClose();
 			}}
 		>
-			<div
-				ref={panelRef}
-				className={className ? `extension-dialog ${className}` : "extension-dialog"}
-				role="dialog"
-				aria-modal="true"
-				aria-labelledby={title != null ? titleId : undefined}
-				tabIndex={-1}
-				onKeyDown={onKeyDown}
+			<CenterMorphModalContent
+				ariaLabel={typeof title === "string" ? title : "Dialog"}
+				// Backdrop presses close through beui; Escape is ours (above).
+				// ExtensionDialog, which must be answered, opts out entirely.
+				dismissible={closeOnBackdrop}
+				showCloseButton={false}
+				className="max-w-none w-auto rounded-[inherit] border-0 bg-transparent"
 			>
-				{title != null && (
-					<div className="tree-dialog-header">
-						<h3 id={titleId}>{title}</h3>
-						{headerActions}
-						{showClose && (
-							<button
-								className="icon-btn"
-								title={closeLabel}
-								aria-label={closeLabel}
-								onClick={onClose}
-							>
-								<XIcon size={15} />
-							</button>
-						)}
-					</div>
-				)}
-				{children}
-			</div>
-		</div>
+				<div
+					ref={panelRef}
+					className={className ? `extension-dialog ${className}` : "extension-dialog"}
+					aria-labelledby={title != null ? titleId : undefined}
+					tabIndex={-1}
+				>
+					{title != null && (
+						<div className="tree-dialog-header">
+							<h3 id={titleId}>{title}</h3>
+							{headerActions}
+							{showClose && (
+								<button
+									className="icon-btn"
+									title={closeLabel}
+									aria-label={closeLabel}
+									onClick={onClose}
+								>
+									<XIcon size={15} />
+								</button>
+							)}
+						</div>
+					)}
+					{children}
+				</div>
+			</CenterMorphModalContent>
+		</CenterMorphModal>
 	);
 }

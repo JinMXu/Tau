@@ -66,6 +66,7 @@ import {
 	AnimatedSidebar,
 	AnimatedSidebarProvider,
 } from "./components/motion/animated-sidebar";
+import { AnimatedToastStack } from "./components/motion/animated-toast-stack";
 import { ChatArea } from "./components/ChatArea";
 import { ApiKeyDialog } from "./components/ApiKeyDialog";
 import { ConfirmDialog, type ConfirmState } from "./components/ConfirmDialog";
@@ -265,7 +266,7 @@ export default function App() {
 	const extensionRequestRef = useRef<ExtensionRequest | null>(null);
 	const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 	const [renameState, setRenameState] = useState<RenameState | null>(null);
-	const { toasts, toast } = useToasts();
+	const { toasts, toast, dismiss } = useToasts();
 
 	// ---- extension UI: widgets / status / window title / editor prefill ----
 	const [extensionWidgets, setExtensionWidgets] = useState<
@@ -4166,14 +4167,15 @@ export default function App() {
 			/>
 
 			{/* aria-live so a toast is announced rather than only shown: these
-			    carry the app's failure and limit messages. */}
-			<div className="toasts" role="status" aria-live="polite">
-				{toasts.map((x) => (
-					<div key={x.id} className="toast">
-						{x.text}
-					</div>
-				))}
-			</div>
+			    carry the app's failure and limit messages. beui's stack renders
+			    the live region itself, with slide/drag dismissal. */}
+			<AnimatedToastStack
+				toasts={toasts}
+				onDismiss={dismiss}
+				position="bottom-center"
+				fixed
+				className="z-[130]"
+			/>
 		</div>
 	);
 }
