@@ -294,7 +294,7 @@ fn write_models_doc(doc: &serde_json::Map<String, serde_json::Value>) -> Result<
 	let raw = serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?;
 	let tmp = path.with_extension("json.tmp");
 	fs::write(&tmp, raw).map_err(|e| format!("failed to write models.json: {e}"))?;
-	fs::rename(&tmp, &path).map_err(|e| format!("failed to persist models.json: {e}"))
+	fs::rename(tmp, path).map_err(|e| format!("failed to persist models.json: {e}"))
 }
 
 #[tauri::command]
@@ -863,7 +863,7 @@ fn update_mcp_file(
 	let raw = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
 	let tmp = path.with_extension("json.tmp");
 	fs::write(&tmp, raw).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
-	fs::rename(&tmp, &path).map_err(|e| format!("failed to persist {}: {e}", path.display()))
+	fs::rename(tmp, path).map_err(|e| format!("failed to persist {}: {e}", path.display()))
 }
 
 fn mcp_transport(config: &serde_json::Value) -> &'static str {
@@ -1542,7 +1542,7 @@ pub async fn pi_move_session(
 		writer
 			.flush()
 			.map_err(|e| format!("failed to write session: {e}"))?;
-		fs::rename(&tmp, &path).map_err(|e| format!("failed to persist session: {e}"))?;
+		fs::rename(tmp, path).map_err(|e| format!("failed to persist session: {e}"))?;
 		Ok(())
 	})
 	.await
