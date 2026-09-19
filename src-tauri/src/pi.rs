@@ -212,7 +212,11 @@ pub(crate) fn vendored_runtime_dirs() -> Vec<PathBuf> {
 		}
 	}
 	// Dev builds run from target/debug — fall back to the source tree layout.
-	dirs.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources").join("pi-runtime"));
+	dirs.push(
+		PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.join("resources")
+			.join("pi-runtime"),
+	);
 	dirs
 }
 
@@ -224,12 +228,10 @@ pub(crate) fn vendored_layout(dir: &Path) -> Option<(PathBuf, PathBuf)> {
 	} else {
 		&["node", "node.exe"]
 	};
-	let node = node_names
-		.iter()
-		.find_map(|n| {
-			let c = dir.join("node").join(n);
-			c.is_file().then_some(c)
-		})?;
+	let node = node_names.iter().find_map(|n| {
+		let c = dir.join("node").join(n);
+		c.is_file().then_some(c)
+	})?;
 	let cli = dir
 		.join("node_modules")
 		.join("@earendil-works")
@@ -422,8 +424,9 @@ fn session_host_command(
 		.direct
 		.as_ref()
 		.ok_or_else(|| "vendored pi runtime not found — run `npm run vendor:pi`".to_string())?;
-	let host = crate::sidecar::locate_sidecar_script("session-host.mjs")
-		.ok_or_else(|| "session-host.mjs not found in bundled agent-sidecar resources".to_string())?;
+	let host = crate::sidecar::locate_sidecar_script("session-host.mjs").ok_or_else(|| {
+		"session-host.mjs not found in bundled agent-sidecar resources".to_string()
+	})?;
 	// bin = <pkg>/dist/bundle/cli.js — the SDK entry is dist/index.js.
 	let cli = Path::new(&info.bin);
 	let pkg_index = cli
@@ -431,7 +434,9 @@ fn session_host_command(
 		.and_then(|p| p.parent())
 		.map(|dist| dist.join("index.js"))
 		.filter(|p| p.is_file())
-		.ok_or_else(|| "pi SDK entry (dist/index.js) not found in the vendored runtime".to_string())?;
+		.ok_or_else(|| {
+			"pi SDK entry (dist/index.js) not found in the vendored runtime".to_string()
+		})?;
 	// Tau desktop tools extension: only when the vendored runtime is available
 	// (same condition the old --extension flag had).
 	let extension = crate::sidecar::tau_extension_paths().map(|(ext, _)| ext);
@@ -706,12 +711,13 @@ impl PiProcess {
 				let code = exit_code
 					.map(|c| c.to_string())
 					.unwrap_or_else(|| "signal".to_string());
-				let last_err = last_stderr_stdout.lock().map(|s| s.clone()).unwrap_or_default();
+				let last_err = last_stderr_stdout
+					.lock()
+					.map(|s| s.clone())
+					.unwrap_or_default();
 				crate::runtime_log::log_error(
 					&app_stdout,
-					&format!(
-						"pi process exited (code={code}) stderr-last: {last_err}"
-					),
+					&format!("pi process exited (code={code}) stderr-last: {last_err}"),
 				);
 				let _ = win_stdout.emit("pi://exit", serde_json::json!({ "chan": chan_thread }));
 			}
@@ -730,8 +736,10 @@ impl PiProcess {
 				}
 				// Channel-scoped emit: each channel's stderr is tagged so the
 				// webview can attribute diagnostics to the right session.
-				let _ = win_stderr
-					.emit("pi://stderr", serde_json::json!({ "chan": chan_stderr, "line": line }));
+				let _ = win_stderr.emit(
+					"pi://stderr",
+					serde_json::json!({ "chan": chan_stderr, "line": line }),
+				);
 			}
 		});
 
@@ -871,8 +879,7 @@ pub(crate) fn kill_window_process_inner(
 				.filter(|k| k.starts_with(&prefix))
 				.cloned()
 				.collect();
-			let removed: Vec<PiProcess> =
-				keys.iter().filter_map(|k| map.remove(k)).collect();
+			let removed: Vec<PiProcess> = keys.iter().filter_map(|k| map.remove(k)).collect();
 			if removed.is_empty() {
 				None
 			} else {
@@ -1035,8 +1042,7 @@ fn par_map<T: Send>(items: Vec<PathBuf>, f: impl Fn(&Path) -> T + Sync) -> Vec<T
 /// 分支会话（pi 的 fork 与 Tau 的 pi_fork_session）与用户会话同层，
 /// header 也带 parentSession——判据是相对目录深度而非 header。
 fn is_nested_session(sessions_root: &Path, path: &Path) -> bool {
-	path
-		.strip_prefix(sessions_root)
+	path.strip_prefix(sessions_root)
 		.map(|r| r.components().count() > 2)
 		.unwrap_or(false)
 }
@@ -1264,7 +1270,11 @@ fn pi_start_inner(
 }
 
 #[tauri::command]
-fn pi_stop(window: WebviewWindow, state: State<'_, PiState>, chan: Option<String>) -> Result<(), String> {
+fn pi_stop(
+	window: WebviewWindow,
+	state: State<'_, PiState>,
+	chan: Option<String>,
+) -> Result<(), String> {
 	let label = window.label().to_string();
 	// Remove the process under the lock, then kill it after the lock is
 	// released: kill() waits for the child to exit, and doing that while
@@ -1409,7 +1419,11 @@ fn pi_send(
 }
 
 #[tauri::command]
-fn pi_status(window: WebviewWindow, state: State<'_, PiState>, chan: Option<String>) -> Result<PiStatus, String> {
+fn pi_status(
+	window: WebviewWindow,
+	state: State<'_, PiState>,
+	chan: Option<String>,
+) -> Result<PiStatus, String> {
 	let label = window.label().to_string();
 	let map = lock_state(&state.inner);
 	// A window that never started pi (fresh multi-window) reports idle
@@ -1555,9 +1569,7 @@ fn iso_utc_now() -> String {
 	let d = doy - (153 * mp + 2) / 5 + 1;
 	let month = if mp < 10 { mp + 3 } else { mp - 9 };
 	let year = if month <= 2 { y + 1 } else { y };
-	format!(
-		"{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}.000Z"
-	)
+	format!("{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}.000Z")
 }
 
 /// 分叉会话到指定条目（含该条目）：复刻 pi SessionManager.createBranchedSession
@@ -1650,7 +1662,10 @@ fn fork_session_at(src: &Path, entry_id: Option<&str>) -> Result<PiForkResult, S
 				},
 			);
 		}
-		prev_id = copy.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
+		prev_id = copy
+			.get("id")
+			.and_then(|x| x.as_str())
+			.map(|s| s.to_string());
 		out_entries.push(copy);
 	}
 
@@ -1678,13 +1693,17 @@ fn fork_session_at(src: &Path, entry_id: Option<&str>) -> Result<PiForkResult, S
 	);
 
 	let mut body = String::new();
-	body.push_str(&serde_json::to_string(&serde_json::Value::Object(new_header)).map_err(|e| e.to_string())?);
+	body.push_str(
+		&serde_json::to_string(&serde_json::Value::Object(new_header))
+			.map_err(|e| e.to_string())?,
+	);
 	body.push('\n');
 	for e in &out_entries {
 		body.push_str(&serde_json::to_string(e).map_err(|e| e.to_string())?);
 		body.push('\n');
 	}
-	std::fs::write(&new_file, body).map_err(|e| format!("failed to write branched session: {e}"))?;
+	std::fs::write(&new_file, body)
+		.map_err(|e| format!("failed to write branched session: {e}"))?;
 	Ok(PiForkResult {
 		session_file: new_file.to_string_lossy().to_string(),
 	})
@@ -2697,7 +2716,11 @@ fn subagent_run_dirs() -> Vec<PathBuf> {
 		return out;
 	};
 	for entry in temp_entries.flatten() {
-		if !entry.file_name().to_string_lossy().starts_with("pi-subagents") {
+		if !entry
+			.file_name()
+			.to_string_lossy()
+			.starts_with("pi-subagents")
+		{
 			continue;
 		}
 		let Ok(run_entries) = std::fs::read_dir(entry.path().join("async-subagent-runs")) else {
@@ -2716,7 +2739,12 @@ fn subagent_run_dirs() -> Vec<PathBuf> {
 fn subagent_run_terminal(state: &str) -> bool {
 	matches!(
 		state,
-		"complete" | "completed" | "failed" | "error" | "cancelled" | "canceled" | "timeout"
+		"complete"
+			| "completed"
+			| "failed"
+			| "error" | "cancelled"
+			| "canceled"
+			| "timeout"
 			| "aborted"
 	)
 }
@@ -2731,7 +2759,11 @@ fn parse_subagent_status(
 	now_ms: u64,
 ) -> Option<SubagentRunInfo> {
 	let sid = v.get("sessionId").and_then(|x| x.as_str())?;
-	if canonical_or(Path::new(sid)).to_string_lossy().to_lowercase() != session_lower {
+	if canonical_or(Path::new(sid))
+		.to_string_lossy()
+		.to_lowercase()
+		!= session_lower
+	{
 		return None;
 	}
 	let state = v
@@ -3627,7 +3659,9 @@ mod tests {
 		)
 		.unwrap();
 		// 子代理会话：嵌套目录（<会话uuid>/<agent-id>/…，depth >= 2）—— 必须跳过
-		let nested_dir = project.join("2026-01-01T00-00-00-000Z_parent").join("11859066");
+		let nested_dir = project
+			.join("2026-01-01T00-00-00-000Z_parent")
+			.join("11859066");
 		std::fs::create_dir_all(&nested_dir).unwrap();
 		let nested = nested_dir.join("2026-01-01T00-05-00-000Z_sub.jsonl");
 		std::fs::write(
@@ -3689,15 +3723,22 @@ mod tests {
 		assert_eq!(run.steps[0].last_tool.as_deref(), Some("bash"));
 		assert_eq!(run.steps[0].last_tool_args.as_deref(), Some("ls -la"));
 		// Terminal, stale and other-session runs are filtered out.
-		assert!(parse_subagent_status(&mk("complete", now - 1000, session), &session_lower, now).is_none());
 		assert!(
-			parse_subagent_status(&mk("running", now - 20 * 60 * 1000, session), &session_lower, now)
+			parse_subagent_status(&mk("complete", now - 1000, session), &session_lower, now)
 				.is_none()
 		);
-		assert!(
-			parse_subagent_status(&mk("running", now - 1000, "D:\\sessions\\other.jsonl"), &session_lower, now)
-				.is_none()
-		);
+		assert!(parse_subagent_status(
+			&mk("running", now - 20 * 60 * 1000, session),
+			&session_lower,
+			now
+		)
+		.is_none());
+		assert!(parse_subagent_status(
+			&mk("running", now - 1000, "D:\\sessions\\other.jsonl"),
+			&session_lower,
+			now
+		)
+		.is_none());
 	}
 
 	#[test]
@@ -3862,9 +3903,7 @@ mod tests {
 
 	/// Look up one key in the env vector the session host is spawned with.
 	fn env_get<'a>(env: &'a [(String, String)], key: &str) -> Option<&'a str> {
-		env.iter()
-			.find(|(k, _)| k == key)
-			.map(|(_, v)| v.as_str())
+		env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
 	}
 
 	#[allow(clippy::too_many_arguments)]
@@ -3958,10 +3997,7 @@ mod tests {
 			None,
 		)
 		.unwrap();
-		assert_eq!(
-			env_get(&env, "TAU_SESSION_FILE"),
-			Some("/sessions/a.jsonl")
-		);
+		assert_eq!(env_get(&env, "TAU_SESSION_FILE"), Some("/sessions/a.jsonl"));
 		assert!(env_get(&env, "TAU_FORK_OF").is_none());
 	}
 
@@ -4001,8 +4037,17 @@ mod tests {
 
 		// Empty exclude list and blank name/models stay unset.
 		let empty: &[String] = &[];
-		let env = host_env(None, None, Some("  "), None, None, None, Some(empty), Some("  "))
-			.unwrap();
+		let env = host_env(
+			None,
+			None,
+			Some("  "),
+			None,
+			None,
+			None,
+			Some(empty),
+			Some("  "),
+		)
+		.unwrap();
 		assert!(env_get(&env, "TAU_SESSION_NAME").is_none());
 		assert!(env_get(&env, "TAU_EXCLUDED_TOOLS").is_none());
 		assert!(env_get(&env, "TAU_MODELS").is_none());
@@ -4163,7 +4208,8 @@ mod e2e_tests {
 		// Dev builds must be able to find src-tauri/resources/pi-runtime even
 		// though the executable lives in target/debug.
 		let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-		assert!(vendored_runtime_dirs()
-			.contains(&manifest_dir.join("resources").join("pi-runtime")));
+		assert!(
+			vendored_runtime_dirs().contains(&manifest_dir.join("resources").join("pi-runtime"))
+		);
 	}
 }

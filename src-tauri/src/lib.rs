@@ -415,19 +415,17 @@ pub fn run() {
 			// was logged just before the freeze is the suspect.
 			{
 				let handle = app.handle().clone();
-				std::thread::spawn(move || {
-					loop {
-						let scheduled = std::time::Instant::now();
-						let h = handle.clone();
-						let _ = handle.run_on_main_thread(move || {
-							let delay = scheduled.elapsed().as_millis();
-							runtime_log::log_info(
-								&h,
-								&format!("main-thread alive (dispatch delay {delay}ms)"),
-							);
-						});
-						std::thread::sleep(std::time::Duration::from_secs(15));
-					}
+				std::thread::spawn(move || loop {
+					let scheduled = std::time::Instant::now();
+					let h = handle.clone();
+					let _ = handle.run_on_main_thread(move || {
+						let delay = scheduled.elapsed().as_millis();
+						runtime_log::log_info(
+							&h,
+							&format!("main-thread alive (dispatch delay {delay}ms)"),
+						);
+					});
+					std::thread::sleep(std::time::Duration::from_secs(15));
 				});
 			}
 			if let Some(win) = app.get_webview_window("main") {
@@ -495,11 +493,17 @@ pub fn run() {
 							// child tree dies — log the timing so a teardown
 							// stall is visible in tau.log.
 							let t0 = std::time::Instant::now();
-							crate::runtime_log::log_info(&app_handle, "killing pi (main destroyed)");
+							crate::runtime_log::log_info(
+								&app_handle,
+								"killing pi (main destroyed)",
+							);
 							crate::pi::kill_window_process_inner(&inner, "main");
 							crate::runtime_log::log_info(
 								&app_handle,
-								&format!("pi killed in {}ms (main destroyed)", t0.elapsed().as_millis()),
+								&format!(
+									"pi killed in {}ms (main destroyed)",
+									t0.elapsed().as_millis()
+								),
 							);
 						}
 					});

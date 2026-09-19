@@ -349,7 +349,10 @@ pub(crate) fn start_warmup(app: tauri::AppHandle) {
 				}
 				Err(e) => {
 					if std::time::Instant::now() >= deadline {
-						crate::runtime_log::log_error(&app, &format!("sidecar warmup gave up: {e}"));
+						crate::runtime_log::log_error(
+							&app,
+							&format!("sidecar warmup gave up: {e}"),
+						);
 						return;
 					}
 					// The timed-out process stays alive (a call timeout does
@@ -434,8 +437,8 @@ mod tests {
 	#[test]
 	fn sidecar_script_resolves_from_manifest_layout() {
 		// Dev builds resolve the committed scripts through the source tree.
-		let found = locate_sidecar_script("sidecar.mjs")
-			.expect("sidecar.mjs must ship with the repo");
+		let found =
+			locate_sidecar_script("sidecar.mjs").expect("sidecar.mjs must ship with the repo");
 		assert!(found.is_file());
 		assert!(locate_sidecar_script("tau-extension.mjs").is_some());
 	}
@@ -487,9 +490,15 @@ mod tests {
 			return;
 		}
 		let err = oauth_status_call("no-such-flow").expect_err("unknown flow must error");
-		assert!(err.contains("unknown oauth flow"), "unexpected error: {err}");
+		assert!(
+			err.contains("unknown oauth flow"),
+			"unexpected error: {err}"
+		);
 		let err = oauth_cancel_call("no-such-flow").expect_err("unknown flow must error");
-		assert!(err.contains("unknown oauth flow"), "unexpected error: {err}");
+		assert!(
+			err.contains("unknown oauth flow"),
+			"unexpected error: {err}"
+		);
 	}
 
 	#[test]
@@ -520,6 +529,9 @@ mod tests {
 		assert!(error.is_some(), "error phase must carry a message");
 		// Terminal statuses are single-read: the sidecar forgot the flow.
 		let err = oauth_status_call(&flow_id).expect_err("consumed flow must be gone");
-		assert!(err.contains("unknown oauth flow"), "unexpected error: {err}");
+		assert!(
+			err.contains("unknown oauth flow"),
+			"unexpected error: {err}"
+		);
 	}
 }

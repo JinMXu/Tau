@@ -309,8 +309,8 @@ pub(crate) fn parse_message_blocks(message: &serde_json::Value) -> Vec<PiParsedB
 							kind: "text".into(),
 							text: text.to_string(),
 							name: None,
-						image: None,
-					});
+							image: None,
+						});
 					}
 				}
 				"thinking" => {
@@ -319,8 +319,8 @@ pub(crate) fn parse_message_blocks(message: &serde_json::Value) -> Vec<PiParsedB
 							kind: "thinking".into(),
 							text: text.to_string(),
 							name: None,
-						image: None,
-					});
+							image: None,
+						});
 					}
 				}
 				"toolCall" | "tool_call" | "toolUse" => {
@@ -344,29 +344,29 @@ pub(crate) fn parse_message_blocks(message: &serde_json::Value) -> Vec<PiParsedB
 						kind: "tool".into(),
 						text: args,
 						name: Some(name),
-					image: None,
+						image: None,
 					});
 				}
 				"image" => {
-				let mime = item
-					.get("mime_type")
-					.or_else(|| item.get("mimeType"))
-					.and_then(|x| x.as_str())
-					.unwrap_or("image/png")
-					.to_string();
-				if let Some(data) = item.get("data").and_then(|x| x.as_str()) {
-					blocks.push(PiParsedBlock {
-						kind: "image".into(),
-						text: String::new(),
-						name: None,
-						image: Some(PiParsedImage {
-							mime_type: mime,
-							data: data.to_string(),
-						}),
-					});
+					let mime = item
+						.get("mime_type")
+						.or_else(|| item.get("mimeType"))
+						.and_then(|x| x.as_str())
+						.unwrap_or("image/png")
+						.to_string();
+					if let Some(data) = item.get("data").and_then(|x| x.as_str()) {
+						blocks.push(PiParsedBlock {
+							kind: "image".into(),
+							text: String::new(),
+							name: None,
+							image: Some(PiParsedImage {
+								mime_type: mime,
+								data: data.to_string(),
+							}),
+						});
+					}
 				}
-			}
-			_ => {}
+				_ => {}
 			}
 		}
 	}
@@ -441,7 +441,7 @@ pub(crate) fn read_session_messages(path: &Path) -> Vec<PiParsedMessage> {
 							text
 						},
 						name: Some(name.to_string()),
-					image: None,
+						image: None,
 					}],
 					stop_reason: None,
 					error_message: None,

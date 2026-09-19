@@ -107,7 +107,9 @@ pub fn pi_providers() -> Result<Vec<PiProviderInfo>, String> {
 /// is installed.
 fn pi_ai_providers_data_dir() -> Option<PathBuf> {
 	let dirs = crate::pi::vendored_runtime_dirs();
-	let (_, cli) = dirs.iter().find_map(|dir| crate::pi::vendored_layout(dir))?;
+	let (_, cli) = dirs
+		.iter()
+		.find_map(|dir| crate::pi::vendored_layout(dir))?;
 	// cli = <pkg>/dist/bundle/cli.js — the package root is three levels up.
 	let pkg = cli.parent()?.parent()?.parent()?;
 	let data = |base: &Path| {
@@ -276,8 +278,8 @@ fn read_models_doc() -> Result<serde_json::Map<String, serde_json::Value>, Strin
 	let Ok(raw) = fs::read_to_string(&path) else {
 		return Ok(serde_json::Map::new());
 	};
-	let value: serde_json::Value = serde_json::from_str(&raw)
-		.map_err(|e| format!("models.json is not valid JSON: {e}"))?;
+	let value: serde_json::Value =
+		serde_json::from_str(&raw).map_err(|e| format!("models.json is not valid JSON: {e}"))?;
 	value
 		.as_object()
 		.cloned()
@@ -448,7 +450,10 @@ pub struct ProviderModelEntry {
 /// Display fields extracted from a catalog / models.json model object.
 /// Returns None when the entry has no usable id.
 fn model_entry(v: &serde_json::Value, custom: bool) -> Option<ProviderModelEntry> {
-	let id = v.get("id").and_then(|x| x.as_str()).filter(|s| !s.is_empty())?;
+	let id = v
+		.get("id")
+		.and_then(|x| x.as_str())
+		.filter(|s| !s.is_empty())?;
 	Some(ProviderModelEntry {
 		id: id.to_string(),
 		name: v
@@ -464,14 +469,8 @@ fn model_entry(v: &serde_json::Value, custom: bool) -> Option<ProviderModelEntry
 			.get("input")
 			.and_then(|x| x.as_array())
 			.is_some_and(|a| a.iter().any(|i| i.as_str() == Some("image"))),
-		context_window: v
-			.get("contextWindow")
-			.and_then(|x| x.as_u64())
-			.unwrap_or(0),
-		max_tokens: v
-			.get("maxTokens")
-			.and_then(|x| x.as_u64())
-			.unwrap_or(0),
+		context_window: v.get("contextWindow").and_then(|x| x.as_u64()).unwrap_or(0),
+		max_tokens: v.get("maxTokens").and_then(|x| x.as_u64()).unwrap_or(0),
 		custom,
 		overridden: false,
 	})
@@ -572,10 +571,7 @@ pub fn pi_provider_models(provider: String) -> Result<Vec<ProviderModelEntry>, S
 /// `models` array is touched; every other key of the provider entry
 /// (apiKey/baseUrl/compat/headers/...) passes through untouched.
 #[tauri::command]
-pub fn pi_provider_model_upsert(
-	provider: String,
-	model: serde_json::Value,
-) -> Result<(), String> {
+pub fn pi_provider_model_upsert(provider: String, model: serde_json::Value) -> Result<(), String> {
 	let provider = provider.trim().to_string();
 	validate_provider_id(&provider)?;
 	{
@@ -607,9 +603,7 @@ pub fn pi_provider_model_upsert(
 		.and_then(|v| v.as_str())
 		.unwrap_or("")
 		.to_string();
-	let entry = map
-		.entry(provider)
-		.or_insert_with(|| serde_json::json!({}));
+	let entry = map.entry(provider).or_insert_with(|| serde_json::json!({}));
 	let entry_obj = entry
 		.as_object_mut()
 		.ok_or("provider entry must be an object")?;
@@ -669,7 +663,11 @@ pub fn pi_provider_model_override_upsert(
 	if model_id.is_empty() {
 		return Err("model id must not be empty".into());
 	}
-	if patch.as_object().ok_or("override patch must be an object")?.is_empty() {
+	if patch
+		.as_object()
+		.ok_or("override patch must be an object")?
+		.is_empty()
+	{
 		return pi_provider_model_override_remove(provider, model_id);
 	}
 	let _guard = MODELS_MUTEX
@@ -682,9 +680,7 @@ pub fn pi_provider_model_override_upsert(
 	let map = providers
 		.as_object_mut()
 		.ok_or("models.json 'providers' must be an object")?;
-	let entry = map
-		.entry(provider)
-		.or_insert_with(|| serde_json::json!({}));
+	let entry = map.entry(provider).or_insert_with(|| serde_json::json!({}));
 	let entry_obj = entry
 		.as_object_mut()
 		.ok_or("provider entry must be an object")?;
@@ -701,10 +697,7 @@ pub fn pi_provider_model_override_upsert(
 /// Deletes `providers[provider].modelOverrides[modelId]`; an emptied
 /// `modelOverrides` map and an emptied provider entry are cleaned up too.
 #[tauri::command]
-pub fn pi_provider_model_override_remove(
-	provider: String,
-	model_id: String,
-) -> Result<(), String> {
+pub fn pi_provider_model_override_remove(provider: String, model_id: String) -> Result<(), String> {
 	let _guard = MODELS_MUTEX
 		.lock()
 		.map_err(|e| format!("models lock poisoned: {e}"))?;
@@ -776,9 +769,21 @@ fn mcp_layers(project: Option<&str>) -> Vec<McpLayer> {
 		}
 	};
 	if let Some(home) = home.as_ref() {
-		push("shared-global", home.join(".config").join("mcp").join("mcp.json"), false);
-		push("agents-global", home.join(".agents").join("mcp.json"), false);
-		push("agents-nested-global", home.join(".agents").join("mcp").join("mcp.json"), false);
+		push(
+			"shared-global",
+			home.join(".config").join("mcp").join("mcp.json"),
+			false,
+		);
+		push(
+			"agents-global",
+			home.join(".agents").join("mcp.json"),
+			false,
+		);
+		push(
+			"agents-nested-global",
+			home.join(".agents").join("mcp").join("mcp.json"),
+			false,
+		);
 	}
 	push("pi-global", agent, true);
 	if let Some(project) = project.filter(|p| !p.trim().is_empty()) {
@@ -811,9 +816,7 @@ fn read_mcp_servers(path: &Path) -> Result<serde_json::Map<String, serde_json::V
 		.as_object()
 		.ok_or_else(|| format!("{} root must be an object", path.display()))?;
 	// The adapter accepts both `mcpServers` and `mcp-servers`.
-	let servers = obj
-		.get("mcpServers")
-		.or_else(|| obj.get("mcp-servers"));
+	let servers = obj.get("mcpServers").or_else(|| obj.get("mcp-servers"));
 	match servers {
 		Some(serde_json::Value::Object(map)) => Ok(map.clone()),
 		Some(_) => Err(format!("{} 'mcpServers' must be an object", path.display())),
@@ -953,10 +956,7 @@ fn validate_mcp_server(name: &str, config: &serde_json::Value) -> Result<(), Str
 	Ok(())
 }
 
-fn mcp_write_path(
-	scope: &str,
-	project: Option<&str>,
-) -> Result<PathBuf, String> {
+fn mcp_write_path(scope: &str, project: Option<&str>) -> Result<PathBuf, String> {
 	match scope {
 		"global" => Ok(pi_agent_dir().join("mcp.json")),
 		"project" => {
@@ -1278,10 +1278,7 @@ fn package_name_from_source(source: &str) -> Option<String> {
 /// in `source` — preserve it so the UI renders exactly what it used to.
 fn configured_package_entry(v: &serde_json::Value) -> PiPackageEntry {
 	let raw_source = v.get("source").and_then(|s| s.as_str()).unwrap_or_default();
-	let filtered = v
-		.get("filtered")
-		.and_then(|f| f.as_bool())
-		.unwrap_or(false);
+	let filtered = v.get("filtered").and_then(|f| f.as_bool()).unwrap_or(false);
 	let source = if filtered {
 		format!("{raw_source} (filtered)")
 	} else {
@@ -1613,8 +1610,7 @@ mod tests {
 	fn custom_providers_upsert_merge_remove() {
 		let _guard = crate::pi::ENV_GUARD.lock().unwrap();
 		let old_agent_dir = std::env::var_os("PI_AGENT_DIR");
-		let dir =
-			std::env::temp_dir().join(format!("pi-gui-models-test-{}", std::process::id()));
+		let dir = std::env::temp_dir().join(format!("pi-gui-models-test-{}", std::process::id()));
 		std::fs::create_dir_all(&dir).unwrap();
 		std::env::set_var("PI_AGENT_DIR", &dir);
 
@@ -1674,10 +1670,8 @@ mod tests {
 	fn custom_provider_validation_errors() {
 		let _guard = crate::pi::ENV_GUARD.lock().unwrap();
 		let old_agent_dir = std::env::var_os("PI_AGENT_DIR");
-		let dir = std::env::temp_dir().join(format!(
-			"pi-gui-models-validation-{}",
-			std::process::id()
-		));
+		let dir =
+			std::env::temp_dir().join(format!("pi-gui-models-validation-{}", std::process::id()));
 		std::fs::create_dir_all(&dir).unwrap();
 		std::env::set_var("PI_AGENT_DIR", &dir);
 
@@ -1861,13 +1855,14 @@ mod tests {
 		fn new(tag: &str) -> Self {
 			let guard = crate::pi::ENV_GUARD.lock().unwrap();
 			let old = std::env::var_os("PI_AGENT_DIR");
-			let dir = std::env::temp_dir().join(format!(
-				"pi-gui-mcp-{tag}-{}",
-				std::process::id()
-			));
+			let dir = std::env::temp_dir().join(format!("pi-gui-mcp-{tag}-{}", std::process::id()));
 			std::fs::create_dir_all(&dir).unwrap();
 			std::env::set_var("PI_AGENT_DIR", &dir);
-			AgentDirGuard { old, dir, _guard: guard }
+			AgentDirGuard {
+				old,
+				dir,
+				_guard: guard,
+			}
 		}
 	}
 
@@ -1920,10 +1915,7 @@ mod tests {
 
 		// Without a project only the global layer applies.
 		let servers = merged_mcp_servers(None).unwrap();
-		let entry = servers
-			.iter()
-			.find(|s| s.name == "gui-test-srv")
-			.unwrap();
+		let entry = servers.iter().find(|s| s.name == "gui-test-srv").unwrap();
 		assert_eq!(entry.config["args"], serde_json::json!(["-y", "srv"]));
 		assert!(!entry.disabled);
 		assert_eq!(entry.source, "pi-global");
@@ -1940,10 +1932,9 @@ mod tests {
 		.unwrap();
 
 		pi_mcp_set_disabled("gui-test-toggle".into(), true, None).unwrap();
-		let raw: serde_json::Value = serde_json::from_str(
-			&std::fs::read_to_string(agent.dir.join("mcp.json")).unwrap(),
-		)
-		.unwrap();
+		let raw: serde_json::Value =
+			serde_json::from_str(&std::fs::read_to_string(agent.dir.join("mcp.json")).unwrap())
+				.unwrap();
 		assert_eq!(
 			raw["mcpServers"]["gui-test-toggle"]["disabled"],
 			serde_json::json!(true)
@@ -1955,11 +1946,12 @@ mod tests {
 		);
 
 		pi_mcp_set_disabled("gui-test-toggle".into(), false, None).unwrap();
-		let raw: serde_json::Value = serde_json::from_str(
-			&std::fs::read_to_string(agent.dir.join("mcp.json")).unwrap(),
-		)
-		.unwrap();
-		assert!(raw["mcpServers"]["gui-test-toggle"].get("disabled").is_none());
+		let raw: serde_json::Value =
+			serde_json::from_str(&std::fs::read_to_string(agent.dir.join("mcp.json")).unwrap())
+				.unwrap();
+		assert!(raw["mcpServers"]["gui-test-toggle"]
+			.get("disabled")
+			.is_none());
 		assert_eq!(
 			raw["mcpServers"]["gui-test-toggle"]["command"],
 			serde_json::json!("npx")
@@ -1984,22 +1976,21 @@ mod tests {
 		)
 		.unwrap();
 		let servers = merged_mcp_servers(Some(&project)).unwrap();
-		let entry = servers
-			.iter()
-			.find(|s| s.name == "gui-test-http")
-			.unwrap();
+		let entry = servers.iter().find(|s| s.name == "gui-test-http").unwrap();
 		assert_eq!(entry.transport, "http");
 		assert_eq!(entry.source, "shared-project");
 		assert!(entry.editable);
 
-		pi_mcp_remove_server("project".into(), Some(project.clone()), "gui-test-http".into())
-			.unwrap();
-		assert!(
-			!merged_mcp_servers(Some(&project))
-				.unwrap()
-				.iter()
-				.any(|s| s.name == "gui-test-http")
-		);
+		pi_mcp_remove_server(
+			"project".into(),
+			Some(project.clone()),
+			"gui-test-http".into(),
+		)
+		.unwrap();
+		assert!(!merged_mcp_servers(Some(&project))
+			.unwrap()
+			.iter()
+			.any(|s| s.name == "gui-test-http"));
 
 		// A config without command/url/socket is rejected.
 		assert!(pi_mcp_upsert_server(
@@ -2096,16 +2087,13 @@ mod tests {
 		.unwrap();
 
 		// Validation: bad provider id, missing model id, non-positive limits.
-		assert!(pi_provider_model_upsert(
-			"Bad Id".into(),
-			serde_json::json!({"id": "m"}),
-		)
-		.is_err());
-		assert!(pi_provider_model_upsert(
-			"anthropic".into(),
-			serde_json::json!({"name": "no id"}),
-		)
-		.is_err());
+		assert!(
+			pi_provider_model_upsert("Bad Id".into(), serde_json::json!({"id": "m"}),).is_err()
+		);
+		assert!(
+			pi_provider_model_upsert("anthropic".into(), serde_json::json!({"name": "no id"}),)
+				.is_err()
+		);
 		assert!(pi_provider_model_upsert(
 			"anthropic".into(),
 			serde_json::json!({"id": "m", "contextWindow": 0}),
@@ -2156,7 +2144,9 @@ mod tests {
 		)
 		.unwrap();
 		let doc = read_models_doc().unwrap();
-		assert!(doc["providers"]["anthropic"].get("modelOverrides").is_none());
+		assert!(doc["providers"]["anthropic"]
+			.get("modelOverrides")
+			.is_none());
 		assert_eq!(doc["providers"]["anthropic"]["apiKey"], "sk-x");
 
 		// Removing the last model drops the models key; the entry stays
@@ -2202,7 +2192,9 @@ mod tests {
 		assert!(models[0].custom && models[0].image);
 		assert_eq!(models[0].context_window, 64000);
 		// Unknown provider yields an empty list, not an error.
-		assert!(pi_provider_models("no-such-provider".into()).unwrap().is_empty());
+		assert!(pi_provider_models("no-such-provider".into())
+			.unwrap()
+			.is_empty());
 		assert!(pi_provider_models("Bad Id".into()).is_err());
 	}
 
