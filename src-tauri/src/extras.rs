@@ -1592,12 +1592,14 @@ mod tests {
 			providers.iter().map(|p| (p.id.as_str(), p.known)).collect();
 		// Custom provider from models.json is present and marked unknown.
 		assert_eq!(by_id.get("ollama"), Some(&false));
-		// Stored credential is present even without a catalog entry.
-		assert_eq!(by_id.get("anthropic"), Some(&true));
-		// The built-in catalog is found when the vendored runtime is installed
-		// and its providers are marked known.
+		// The built-in catalog exists only when the vendored runtime is
+		// installed (CI's cargo test runs without it); count first, then
+		// expect the stored credential to read as known exactly when the
+		// catalog is present.
 		let known = providers.iter().filter(|p| p.known).count();
 		assert!(known == 0 || known >= 30, "unexpected known count: {known}");
+		// Stored credential is present even without a catalog entry.
+		assert_eq!(by_id.get("anthropic"), Some(&(known > 0)));
 
 		std::fs::remove_dir_all(&dir).ok();
 		match old_agent_dir {
