@@ -188,7 +188,7 @@ fn write_auth_map(map: &serde_json::Map<String, serde_json::Value>) -> Result<()
 	let raw = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
 	let tmp = path.with_extension("json.tmp");
 	fs::write(&tmp, raw).map_err(|e| format!("failed to write auth: {e}"))?;
-	fs::rename(&tmp, path).map_err(|e| format!("failed to persist auth: {e}"))
+	fs::rename(tmp, path).map_err(|e| format!("failed to persist auth: {e}"))
 }
 
 #[tauri::command]
