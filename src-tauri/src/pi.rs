@@ -670,7 +670,7 @@ impl PiProcess {
 					emit_errors += 1;
 				}
 				streamed += 1;
-				if streamed % 250 == 0 {
+				if streamed.is_multiple_of(250) {
 					crate::runtime_log::log_info(
 						&app_stdout,
 						&format!(
@@ -1626,7 +1626,7 @@ fn fork_session_at(src: &Path, entry_id: Option<&str>) -> Result<PiForkResult, S
 		.iter()
 		.filter_map(|e| e.get("id").and_then(|x| x.as_str()).map(|s| (s, e)))
 		.collect();
-	if by_id.get(target_id.as_str()).is_none() {
+	if !by_id.contains_key(target_id.as_str()) {
 		return Err(format!("entry {target_id} not found in session"));
 	}
 	// 沿 parentId 走到根（leaf→root），再反转为 root→leaf
@@ -1672,7 +1672,7 @@ fn fork_session_at(src: &Path, entry_id: Option<&str>) -> Result<PiForkResult, S
 	// 新文件：pi 命名约定 {fileTimestamp}_{sessionId}.jsonl（同一会话目录）
 	let new_id = random_session_id();
 	let now_iso = iso_utc_now();
-	let file_stamp = now_iso.replace(':', "-").replace('.', "-");
+	let file_stamp = now_iso.replace([':', '.'], "-");
 	let dir = src
 		.parent()
 		.map(|p| p.to_path_buf())

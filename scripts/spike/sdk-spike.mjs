@@ -1,4 +1,3 @@
-/* global process, console, URL */
 // Stage-0 spike: verify the pi SDK covers everything Tau's session-host needs.
 // Run with the vendored node from the repo root:
 //   src-tauri/resources/pi-runtime/node/node scripts/spike/sdk-spike.mjs

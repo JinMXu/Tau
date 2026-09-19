@@ -32,4 +32,27 @@ export default tseslint.config(
 			"@typescript-eslint/no-empty-object-type": "off",
 		},
 	},
+	{
+		// One-off Node scripts (runtime vendoring, spike smoke tests). They
+		// run under plain node, so the browser-flavoured default globals
+		// don't know process/console/fetch/timers; the spike scripts stay
+		// unpolished on purpose, so the style rules that only fire there are
+		// silenced rather than churning throwaway code.
+		files: ["scripts/**/*.mjs"],
+		languageOptions: {
+			globals: {
+				process: "readonly",
+				console: "readonly",
+				fetch: "readonly",
+				URL: "readonly",
+				setTimeout: "readonly",
+				clearTimeout: "readonly",
+			},
+		},
+		rules: {
+			"@typescript-eslint/no-unused-vars": "off",
+			"@typescript-eslint/no-unused-expressions": "off",
+			"no-empty": "off",
+		},
+	},
 );

@@ -188,7 +188,7 @@ fn write_auth_map(map: &serde_json::Map<String, serde_json::Value>) -> Result<()
 	let raw = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
 	let tmp = path.with_extension("json.tmp");
 	fs::write(&tmp, raw).map_err(|e| format!("failed to write auth: {e}"))?;
-	fs::rename(&tmp, &path).map_err(|e| format!("failed to persist auth: {e}"))
+	fs::rename(&tmp, path).map_err(|e| format!("failed to persist auth: {e}"))
 }
 
 #[tauri::command]
@@ -582,7 +582,7 @@ pub fn pi_provider_model_upsert(provider: String, model: serde_json::Value) -> R
 		}
 		for key in ["contextWindow", "maxTokens"] {
 			if let Some(v) = obj.get(key) {
-				if v.as_u64().map_or(true, |n| n == 0) {
+				if v.as_u64().is_none_or(|n| n == 0) {
 					return Err(format!("model {key} must be a positive integer"));
 				}
 			}

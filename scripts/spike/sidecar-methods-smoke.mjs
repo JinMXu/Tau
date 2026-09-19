@@ -1,4 +1,3 @@
-/* global process, console, URL */
 // Stage-3 smoke test: exercise the new sidecar methods (session.export_html,
 // package.list) against a real session file, talking to sidecar.mjs directly
 // over its JSONL stdio protocol.

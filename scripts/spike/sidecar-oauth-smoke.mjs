@@ -1,4 +1,3 @@
-/* global process, console, URL, setTimeout */
 // OAuth sidecar smoke test: drives the oauth.* methods against sidecar.mjs
 // directly over its JSONL stdio protocol. Starts a kimi-coding device flow,
 // waits for the device_code event (proving notify() reaches oauth.status),

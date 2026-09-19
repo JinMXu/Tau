@@ -1,4 +1,3 @@
-/* global process, console, URL */
 // Smoke test for src-tauri/resources/agent-sidecar/session-host.mjs: spawns it
 // on the vendored node with the TAU_* env contract and drives the RPC protocol
 // end-to-end (state, models, prompt roundtrip, bash, session switching).

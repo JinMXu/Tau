@@ -30,10 +30,12 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// 30s round-trip budget that covers local-only calls.
 const PACKAGE_CALL_TIMEOUT: Duration = Duration::from_secs(600);
 
+type PendingMap = HashMap<u64, mpsc::SyncSender<Result<Value, String>>>;
+
 struct Conn {
 	child: Child,
 	stdin: ChildStdin,
-	pending: Arc<Mutex<HashMap<u64, mpsc::SyncSender<Result<Value, String>>>>>,
+	pending: Arc<Mutex<PendingMap>>,
 	next_id: AtomicU64,
 	/// Set by the reader thread once stdout closes (sidecar exited).
 	dead: Arc<Mutex<Option<String>>>,
