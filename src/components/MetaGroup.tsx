@@ -204,8 +204,11 @@ export const MetaGroup = memo(
 		);
 	},
 	(prev, next) => {
-		// Cheap equality: same live flag, same length, same per-entry identity —
-		// entry text/args are compared by reference where it matters.
+		// Cheap equality: same live flag, same length, same per-entry identity.
+		// Deltas update blocks immutably (flushDeltas / toolcall_end always
+		// create fresh block objects), so reference equality is enough to
+		// catch a streaming tool call's growing args / arriving result —
+		// without these the live group freezes on its first args snapshot.
 		if (prev.live !== next.live || prev.t !== next.t || prev.entries.length !== next.entries.length)
 			return false;
 		for (let i = 0; i < prev.entries.length; i++) {
@@ -214,6 +217,10 @@ export const MetaGroup = memo(
 			if (a.kind !== b.kind || a.msgId !== b.msgId || a.blockIndex !== b.blockIndex) return false;
 			if (a.running !== b.running) return false;
 			if (a.kind === "thinking" && a.text !== b.text) return false;
+			if (a.kind === "tool") {
+				if (a.block !== b.block || a.result !== b.result || a.resultStreaming !== b.resultStreaming)
+					return false;
+			}
 		}
 		return true;
 	},

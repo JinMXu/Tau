@@ -181,6 +181,32 @@ function count(lines: NumDiffLine[], kind: "add" | "del"): number {
 	return n;
 }
 
+// Parsed file changes per (tool, args): deriveTurnChanges re-runs on every
+// streamed delta, and a committed call's args never change, so the bounded
+// cache turns the repeated JSON.parse + LCS work into map hits — only the
+// in-flight call re-parses while its args grow. Partial-args keys churn, so
+// the cache must stay bounded.
+const FILE_CHANGE_CACHE_MAX = 512;
+const fileChangeCache: Map<string, ReturnType<typeof fileChangeFromArgs>> = new Map();
+
+function cachedFileChangeFromArgs(
+	name: string,
+	args: string,
+): ReturnType<typeof fileChangeFromArgs> {
+	const key = `${name}\u0000${args}`;
+	const hit = fileChangeCache.get(key);
+	if (hit !== undefined) return hit;
+	const parsed = fileChangeFromArgs(name, args);
+	// Re-insert to refresh recency (Map iterates in insertion order).
+	fileChangeCache.delete(key);
+	fileChangeCache.set(key, parsed);
+	if (fileChangeCache.size > FILE_CHANGE_CACHE_MAX) {
+		const oldest = fileChangeCache.keys().next().value;
+		if (oldest !== undefined) fileChangeCache.delete(oldest);
+	}
+	return parsed;
+}
+
 /**
  * Per-turn file changes derived from edit/write tool calls. Turn boundary =
  * user message (same rule as the row builder). Messages before the first
@@ -205,7 +231,7 @@ export function deriveTurnChanges(messages: ChatMessage[]): TurnChanges[] {
 		if (msg.role !== "assistant") continue;
 		for (const b of msg.blocks) {
 			if (b.kind !== "tool" || b.result) continue;
-			const change = fileChangeFromArgs(b.name, b.args);
+			const change = cachedFileChangeFromArgs(b.name, b.args);
 			if (!change) continue;
 			let file = current.files.find((f) => f.path === change.path);
 			if (!file) {
@@ -426,8 +452,6 @@ export function buildChatRows(
 	let group: GroupEntry[] | null = null;
 	let groupKey = 0;
 	let turnCount = 0;
-	// Per-assistant-message blocks already folded into a group.
-	const skipByMsg = new Map<number, Set<number>>();
 
 	const flushGroup = () => {
 		if (!group || group.length === 0) {
@@ -535,7 +559,6 @@ export function buildChatRows(
 			});
 		});
 		pushSeg();
-		if (skip.size > 0) skipByMsg.set(msg.id, skip);
 		// The cursor + error belong to the message's LAST TEXT row (a trailing
 		// meta group renders after it; its live orb is the activity signal).
 		let lastTextSeg = -1;

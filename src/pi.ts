@@ -34,6 +34,10 @@ export interface PiParsedMessage {
 	timestamp: string | null;
 	entryId?: string | null;
 	blocks: PiParsedBlock[];
+	/** pi's assistant stopReason ("error" / "aborted" / …) when set. */
+	stopReason?: string | null;
+	/** Raw provider error text accompanying stopReason === "error". */
+	errorMessage?: string | null;
 }
 
 export interface PiArchivedSession {

@@ -7,10 +7,12 @@ import { ToolResult, ToolResultOutput } from "./agents/tool-result";
 /**
  * Tool call / thinking rendering, shared by the message rows and the folded
  * meta groups. The card is beui's ToolResult: a status pill (running spinner
- * / success check / error cross) with an ActionSwapRoll on the title, a
- * collapsible body whose output renders through AgentCode (shiki), and a
- * built-in copy action. Streaming runs auto-open the body and pin the scroll
- * to the newest output; completing auto-collapses back to the one-liner.
+ * / success check / error cross) with an ActionSwapRoll on the title and a
+ * collapsible body whose output renders through AgentCode (shiki), plus a
+ * built-in copy action. The card always renders collapsed (defaultOpen=false)
+ * and stays that way: beui's auto-open/auto-collapse transitions only fire on
+ * a status CHANGE while mounted, but the card mounts with its status already
+ * set (running or done), so they never trigger.
  *
  * summarizeArgs stays the Percho port: command → filePath/path/file → url,
  * with regex fallback while args stream in as partial JSON.
@@ -47,13 +49,15 @@ export const ToolCard = memo(function ToolCard({
 	block,
 	result,
 	running,
+	t,
 }: {
 	block: ToolBlockT;
 	/** The call's output — attached from the following tool-result message,
 	 * or the block itself when this card renders an orphan result. */
 	result?: ToolBlockT | null;
 	running: boolean;
-	/** Kept for call-site compatibility; the beui card needs no labels. */
+	/** Supplies the card's user-facing strings (status pill, copy/retry,
+	 * section labels) in the active language. */
 	t?: MessageCatalog;
 }) {
 	const summary = summarizeArgs(block.args);
@@ -61,6 +65,17 @@ export const ToolCard = memo(function ToolCard({
 	// orphan result（无配对调用的纯结果消息）：args 本身就是输出文本
 	const callArgs = block.result ? "" : block.args;
 	const output = (block.result ? block.args : (result?.args ?? "")).replace(/\n+$/, "");
+	const labels = t
+		? {
+				running: t.chat.toolRunning,
+				success: t.chat.toolCompleted,
+				error: t.chat.toolFailed,
+				cancelled: t.chat.toolCancelled,
+				copy: t.chat.copyResult,
+				copied: t.chat.copied,
+				retry: t.chat.toolRetry,
+			}
+		: undefined;
 
 	return (
 		<ToolResult
@@ -71,11 +86,12 @@ export const ToolCard = memo(function ToolCard({
 			defaultOpen={false}
 			maxHeight={260}
 			copyText={output || undefined}
+			labels={labels}
 		>
 			{callArgs ? (
 				<div className="mb-2">
 					<div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-						args
+						{t?.chat.toolArgs ?? "args"}
 					</div>
 					<ToolResultOutput language="json">{callArgs}</ToolResultOutput>
 				</div>
@@ -83,7 +99,7 @@ export const ToolCard = memo(function ToolCard({
 			{output ? (
 				<div>
 					<div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-						output
+						{t?.chat.toolOutput ?? "output"}
 					</div>
 					<ToolResultOutput language="bash">{output}</ToolResultOutput>
 				</div>

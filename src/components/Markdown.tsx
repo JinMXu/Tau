@@ -2,6 +2,7 @@ import MarkdownRender, { type SmoothMarkdownStreamOptions } from "markstream-rea
 import "markstream-react/index.css";
 import { memo, useRef, type MouseEvent } from "react";
 import { useSyncExternalStore } from "react";
+import { useReducedMotion } from "motion/react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 /**
@@ -41,9 +42,9 @@ const CODE_BLOCK_PROPS = {
 	},
 } as const;
 
-/** 减速动效偏好：直接关闭 pacing（直出）；库 CSS 自带 animation:none 处理淡入 */
-const REDUCED_MOTION =
-	typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+/** 减速动效偏好：直接关闭 pacing（直出）；库 CSS 自带 animation:none 处理淡入。
+ *  经 useReducedMotion 响应式读取——运行中改系统设置即时生效（模块级常量只在
+ *  加载时求值一次，改设置后要重启应用才会应用）。 */
 
 /// Messages longer than this render as plain text instead of the full
 /// incremental renderer (see the degraded branch in the component).
@@ -109,10 +110,11 @@ export const Markdown = memo(function Markdown({
 	streaming?: boolean;
 }) {
 	const isDark = useSyncExternalStore(subscribeTheme, getThemeSnapshot) === "dark";
+	const reducedMotion = useReducedMotion() ?? false;
 	// Mount-time lock (percho): enable smoothing only for messages that were
 	// already streaming when mounted — history messages render instantly and
 	// never replay the typing animation.
-	const smoothableRef = useRef<boolean>(Boolean(streaming) && !REDUCED_MOTION);
+	const smoothableRef = useRef<boolean>(Boolean(streaming) && !reducedMotion);
 	// Degraded rendering for very large messages.
 	if (text.length > MAX_MARKDOWN_CHARS) {
 		return (
@@ -140,7 +142,7 @@ export const Markdown = memo(function Markdown({
 			<MarkdownRender
 				content={text}
 				final={!streaming}
-				fade={!REDUCED_MOTION}
+				fade={!reducedMotion}
 				smoothStreaming={smoothableRef.current}
 				smoothStreamingOptions={SMOOTH_OPTIONS}
 				isDark={isDark}

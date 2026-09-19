@@ -30,11 +30,11 @@ import { Markdown } from "./Markdown";
  */
 
 /**
- * working→worked hysteresis (port of percho useShownWorking): the live
- * signal lingers for HYSTERESIS_MS after `working` drops so turn/tool gaps
- * don't flicker the group shell; `endImmediately` (final-answer text
- * streaming) flips it right away. `resetKey` change (session switch) resets
- * instantly without leaking the previous session's pending timer.
+ * working→done hysteresis (percho useShownWorking): the live signal lingers
+ * for HYSTERESIS_MS after `working` drops so turn/tool gaps don't flicker
+ * the group shell; `endImmediately` (final-answer text streaming) flips it
+ * right away. `resetKey` change (session switch) resets instantly without
+ * leaking the previous session's pending timer.
  */
 const HYSTERESIS_MS = 1500;
 
@@ -79,41 +79,6 @@ function useShownWorking(working: boolean, endImmediately: boolean, resetKey?: n
 		[],
 	);
 	return shown;
-}
-
-/** Compact elapsed duration for the live "working…" status: `42s`, `1:05`. */
-
-/**
- * Turn-level activity label shown while the model is working — covering the
- * pre-first-token wait and the streaming phases alike — rendered at the end
- * of the chat column (port of DSH's ChatView TurnStatus pattern). Plain
- * content-font styling; an elapsed clock appears after 15s and counts from
- * the turn start, retained across the thinking / tool / text phases.
- *
- * Hidden while the turn's live footer row (timer chip) is showing — the two
- * would duplicate each other (see ChatArea).
- */
-export function TurnStatus({ startTime }: { startTime: number }) {
-	const [mountedAt] = useState(() => Date.now());
-	const anchor = startTime ?? mountedAt;
-	const [elapsedMs, setElapsedMs] = useState(() => Math.max(0, Date.now() - anchor));
-	useEffect(() => {
-		const tick = () => setElapsedMs(Math.max(0, Date.now() - anchor));
-		tick();
-		const id = window.setInterval(tick, 1000);
-		return () => window.clearInterval(id);
-	}, [anchor]);
-	const showClock = elapsedMs >= 15_000;
-	return (
-		<div className="turn-status" role="status" aria-live="polite">
-			Working...
-			{showClock && (
-				<span className="turn-status-clock" aria-hidden="true">
-					{formatClockDuration(elapsedMs)}
-				</span>
-			)}
-		</div>
-	);
 }
 
 /**
@@ -364,7 +329,6 @@ const MessageRow = memo(function MessageRow({
 	onOpenSettings?: () => void;
 }) {
 	const m = item.msg;
-	const from = m.role === "user" ? "user" : "assistant";
 	const isSearchTarget =
 		searchQuery != null && searchActiveMessageId != null && m.id === searchActiveMessageId;
 	const highlight = (text: string) =>
@@ -475,22 +439,20 @@ const MessageRow = memo(function MessageRow({
 			)}
 			{blocks}
 			{actions}
-			{from === "assistant" && (
-				<>
-					{last && m.error && typeof m.error !== "string" && (
-						<ErrorNote
-							error={m.error}
-							t={t}
-							onRetry={onRetry}
-							onCompact={onCompact}
-							onOpenSettings={onOpenSettings}
-						/>
-					)}
-					{last && typeof m.error === "string" && (
-						<div className="msg-error">error: {m.error}</div>
-					)}
-				</>
+			{/* Error cards render on ANY role that carries one: the assistant
+			    (LLM failure), the user message (send failure) and the bash tool
+			    message (direct-command failure). onRetry resends the turn's
+			    user text in every case (retryTextFor). */}
+			{last && m.error && typeof m.error !== "string" && (
+				<ErrorNote
+					error={m.error}
+					t={t}
+					onRetry={onRetry}
+					onCompact={onCompact}
+					onOpenSettings={onOpenSettings}
+				/>
 			)}
+			{last && typeof m.error === "string" && <div className="msg-error">error: {m.error}</div>}
 		</div>
 	);
 });
@@ -498,10 +460,12 @@ const MessageRow = memo(function MessageRow({
 /** Live chip shown whenever the run is live but nothing is producing output
  * right now — the submit gap (first-token wait) and mid-run LLM waits / long
  * tool executions that used to read as dead air. Same visual as MetaGroup's
- * live header, so the hand-off is seamless. */
+ * live header, so the hand-off is seamless. Announced politely (like the
+ * auto-retry / subagent panels) so the first-token wait isn't silent for
+ * screen readers. */
 const GapLiveChip = memo(function GapLiveChip({ label }: { label: string }) {
 	return (
-		<div className="meta-group live" aria-hidden="true">
+		<div className="meta-group live" role="status" aria-live="polite">
 			<div className="meta-head" style={{ cursor: "default" }}>
 				<ThinkingOrb state="working" size={20} paused={false} />
 				<span className="meta-label">{label}</span>

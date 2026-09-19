@@ -35,6 +35,11 @@ pub struct PiParsedMessage {
 	pub(crate) timestamp: Option<String>,
 	pub(crate) entry_id: Option<String>,
 	pub(crate) blocks: Vec<PiParsedBlock>,
+	/// pi's assistant-message stopReason ("error", "aborted", …) when the
+	/// turn failed — the frontend rebuilds its UiError envelope from it so
+	/// replayed history shows the failure like the live stream did.
+	pub(crate) stop_reason: Option<String>,
+	pub(crate) error_message: Option<String>,
 }
 
 fn is_leap_year(y: i64) -> bool {
@@ -393,11 +398,21 @@ pub(crate) fn read_session_messages(path: &Path) -> Vec<PiParsedMessage> {
 					.map(|s| s.to_string());
 				let entry_id = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string());
 				let blocks = parse_message_blocks(msg);
+				let stop_reason = msg
+					.get("stopReason")
+					.and_then(|x| x.as_str())
+					.map(|s| s.to_string());
+				let error_message = msg
+					.get("errorMessage")
+					.and_then(|x| x.as_str())
+					.map(|s| s.to_string());
 				out.push(PiParsedMessage {
 					role,
 					timestamp,
 					entry_id,
 					blocks,
+					stop_reason,
+					error_message,
 				});
 			}
 			"tool_result" => {
@@ -428,6 +443,8 @@ pub(crate) fn read_session_messages(path: &Path) -> Vec<PiParsedMessage> {
 						name: Some(name.to_string()),
 					image: None,
 					}],
+					stop_reason: None,
+					error_message: None,
 				});
 			}
 			_ => {}

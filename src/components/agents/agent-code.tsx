@@ -41,7 +41,30 @@ export interface AgentCodeLineProps {
 const LIGHT_THEME = "github-light-high-contrast";
 const DARK_THEME = "github-dark-high-contrast";
 let agentCodeHighlighter: Promise<Highlighter> | null = null;
+// Bounded LRU: a long session highlights hundreds of distinct outputs (and a
+// streaming output highlights every intermediate prefix), so an unbounded
+// cache would grow without limit.
+const TOKEN_CACHE_MAX = 200;
 const tokenCache = new Map<string, AgentCodeTokenLines>();
+
+function tokenCacheGet(key: string): AgentCodeTokenLines | undefined {
+  const lines = tokenCache.get(key);
+  if (lines !== undefined) {
+    // Refresh recency (Map iteration order = insertion order).
+    tokenCache.delete(key);
+    tokenCache.set(key, lines);
+  }
+  return lines;
+}
+
+function tokenCacheSet(key: string, lines: AgentCodeTokenLines) {
+  tokenCache.delete(key);
+  tokenCache.set(key, lines);
+  if (tokenCache.size > TOKEN_CACHE_MAX) {
+    const oldest = tokenCache.keys().next().value;
+    if (oldest !== undefined) tokenCache.delete(oldest);
+  }
+}
 
 function getAgentCodeHighlighter() {
   if (!agentCodeHighlighter) {
@@ -62,6 +85,9 @@ export function useAgentCodeTokens(
   language: AgentCodeLanguage,
 ) {
   const key = tokenCacheKey(code, language);
+  // Sync read at mount so a remounted block (search bypass, scroll window)
+  // paints highlighted on the first frame; recency refresh happens in the
+  // effect below.
   const cached = tokenCache.get(key);
   const [result, setResult] = useState<{
     key: string;
@@ -71,7 +97,7 @@ export function useAgentCodeTokens(
   } | null>(cached ? { key, code, language, lines: cached } : null);
 
   useEffect(() => {
-    const current = tokenCache.get(key);
+    const current = tokenCacheGet(key);
     if (current) {
       setResult({ key, code, language, lines: current });
       return;
@@ -95,8 +121,8 @@ export function useAgentCodeTokens(
             light: token.variants.light?.color,
             dark: token.variants.dark?.color,
           })),
-      );
-      tokenCache.set(key, lines);
+        );
+      tokenCacheSet(key, lines);
       setResult({ key, code, language, lines });
     });
     return () => {

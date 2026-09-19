@@ -1861,62 +1861,6 @@ html[data-platform="macos"] .collapsed-actions-bar {
 	}
 }
 
-/* ---------------------------------------------------------------------------
- * Turn status — "Working..." label at the end of the chat column while the
- * model works (covering the pre-first-token wait too); an elapsed clock
- * joins it after 15s (tabular digits). The shimmering gradient is built
- * from the neutral font-color family (primary base, caption highlight) so
- * the flowing effect keeps the text color identity without brand accents.
- * ------------------------------------------------------------------------- */
-.turn-status-wrap {
-	padding: 0 var(--chat-gutter) 10px;
-	max-width: var(--chat-max-width);
-	width: 100%;
-	margin: 0 auto;
-}
-
-.turn-status {
-	height: 26px;
-	font-weight: 600;
-	font-size: 14px;
-	line-height: 22px;
-	white-space: nowrap;
-	background: linear-gradient(
-		90deg,
-		var(--dsh-fg-primary) 0%,
-		var(--dsh-fg-primary) 40%,
-		var(--dsh-fg-caption) 50%,
-		var(--dsh-fg-primary) 60%,
-		var(--dsh-fg-primary) 100%
-	);
-	color: transparent;
-	-webkit-text-fill-color: transparent;
-	background-position: 100% 0;
-	background-size: 250% 100%;
-	-webkit-background-clip: text;
-	background-clip: text;
-	flex: none;
-	display: inline-flex;
-	align-items: center;
-	animation: dsh-turn-status-shimmer 1.8s linear infinite;
-}
-
-.turn-status-clock {
-	font-weight: 400;
-	font-size: 13px;
-	line-height: 20px;
-	font-variant-numeric: tabular-nums;
-	color: var(--dsh-fg-caption);
-	-webkit-text-fill-color: var(--dsh-fg-caption);
-	margin-left: 8px;
-}
-
-@keyframes dsh-turn-status-shimmer {
-	to {
-		background-position: 0 0;
-	}
-}
-
 /* --- live subagent run panel (pi-subagents status.json via pi_subagent_runs) --- */
 .subagent-live {
 	padding: 0 var(--chat-gutter) 10px;
@@ -2011,14 +1955,6 @@ html[data-platform="macos"] .collapsed-actions-bar {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	font-family: var(--font-mono, monospace);
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.turn-status {
-		animation: none;
-		background-position: 0 0;
-		background-size: 100% 100%;
-	}
 }
 
 .spin {

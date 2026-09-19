@@ -216,6 +216,30 @@ export function chatMessageToPlainText(m: ChatMessage): string {
 		.join("\n\n");
 }
 
+/**
+ * The text to resend when the user hits "retry" on an error card. The card
+ * sits on the FAILED message — usually the assistant that errored mid-turn,
+ * whose own text is a half-written answer, not something to resend — so the
+ * text comes from the user message that opened that turn. A failed user
+ * message (send failure) carries the text itself. Returns null when no user
+ * text can be found (retry is then a no-op).
+ */
+export function retryTextFor(messages: ChatMessage[], failed: ChatMessage): string | null {
+	let target: ChatMessage | undefined = failed.role === "user" ? failed : undefined;
+	if (!target) {
+		const idx = messages.findIndex((m) => m.id === failed.id);
+		for (let i = idx - 1; i >= 0; i--) {
+			if (messages[i].role === "user") {
+				target = messages[i];
+				break;
+			}
+		}
+	}
+	if (!target) return null;
+	const text = chatMessageToPlainText(target).trim();
+	return text || null;
+}
+
 /** Render parsed session messages (archived preview/export) as Markdown. */
 export function parsedMessagesToMarkdown(messages: PiParsedMessage[]): string {
 	const parts = messages

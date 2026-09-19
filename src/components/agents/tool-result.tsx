@@ -36,6 +36,28 @@ import { cn } from "@/lib/utils";
 export type ToolResultStatus = "running" | "success" | "error" | "cancelled";
 export type ToolResultKind = "terminal" | "request" | "custom";
 
+/** All user-facing strings the card renders. i18n hosts pass these in; the
+ *  defaults keep the vendored component working standalone. */
+export interface ToolResultLabels {
+  running: string;
+  success: string;
+  error: string;
+  cancelled: string;
+  copy: string;
+  copied: string;
+  retry: string;
+}
+
+const DEFAULT_LABELS: ToolResultLabels = {
+  running: "Running",
+  success: "Completed",
+  error: "Failed",
+  cancelled: "Cancelled",
+  copy: "Copy result",
+  copied: "Copied",
+  retry: "Run again",
+};
+
 export interface ToolResultProps {
   tool: ReactNode;
   title: ReactNode;
@@ -52,6 +74,7 @@ export interface ToolResultProps {
   copyText?: string;
   onCopy?: () => void | Promise<void>;
   onRetry?: () => void;
+  labels?: Partial<ToolResultLabels>;
   className?: string;
   contentClassName?: string;
 }
@@ -62,11 +85,8 @@ export interface ToolResultOutputProps {
   className?: string;
 }
 
-function getStatusLabel(status: ToolResultStatus) {
-  if (status === "running") return "Running";
-  if (status === "success") return "Completed";
-  if (status === "error") return "Failed";
-  return "Cancelled";
+function getStatusLabel(status: ToolResultStatus, labels: ToolResultLabels) {
+  return labels[status];
 }
 
 function getSwapKey(value: ReactNode, fallback: string) {
@@ -168,10 +188,12 @@ export function ToolResult({
   copyText,
   onCopy,
   onRetry,
+  labels,
   className,
   contentClassName,
 }: ToolResultProps) {
   const reduce = useReducedMotion() ?? false;
+  const t = { ...DEFAULT_LABELS, ...labels };
   const baseId = useId();
   const triggerId = `${baseId}-trigger`;
   const contentId = `${baseId}-content`;
@@ -186,7 +208,7 @@ export function ToolResult({
   const titleKey = getSwapKey(title, status);
   const metaKey = getSwapKey(meta, `${status}-meta`);
   const toolKey = getSwapKey(tool, `${status}-tool`);
-  const statusLabel = getStatusLabel(status);
+  const statusLabel = getStatusLabel(status, t);
 
   const setOpen = useCallback(
     (next: boolean) => {
@@ -323,7 +345,7 @@ export function ToolResult({
               <div className="flex items-center gap-0.5 px-2 pb-1.5">
               {canCopy ? (
                 <ToolResultAction
-                  label={copied ? "Copied" : "Copy result"}
+                  label={copied ? t.copied : t.copy}
                   onClick={handleCopy}
                 >
                   {copied ? (
@@ -334,7 +356,7 @@ export function ToolResult({
                 </ToolResultAction>
               ) : null}
               {onRetry ? (
-                <ToolResultAction label="Run again" onClick={onRetry}>
+                <ToolResultAction label={t.retry} onClick={onRetry}>
                   <RotateCcw className="size-3.5" />
                 </ToolResultAction>
               ) : null}

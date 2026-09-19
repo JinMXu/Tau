@@ -7,12 +7,26 @@ import type { PiUsageEntry } from "../pi";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-const NOW = new Date("2026-08-19T12:00:00").getTime();
+const NOW = Date.now();
 const DAY = 86_400_000;
+
+/** Local date key `offset` days before now. The component's trend chart only
+ *  covers the rolling last-30-days window, so the fixture must anchor its
+ *  dates to the real clock — hardcoded dates fell out of the window as the
+ *  calendar advanced and silently zeroed the trend series. Noon-anchored so
+ *  day subtraction can't drift across a DST boundary. */
+function dateKey(offsetDays: number): string {
+	const d = new Date();
+	d.setHours(12, 0, 0, 0);
+	d.setDate(d.getDate() - offsetDays);
+	const m = String(d.getMonth() + 1).padStart(2, "0");
+	const day = String(d.getDate()).padStart(2, "0");
+	return `${d.getFullYear()}-${m}-${day}`;
+}
 
 function entry(over: Partial<PiUsageEntry>): PiUsageEntry {
 	return {
-		date: "2026-08-19",
+		date: dateKey(0),
 		provider: "volcengine",
 		model: "deepseek-v4-pro",
 		project: "D:\\agents\\demo",
@@ -33,9 +47,9 @@ const FAKE: PiUsageEntry[] = [
 	entry({ ts: NOW - 2 * 3_600_000, total: 5000, model: "glm-5.2" }),
 	entry({ ts: NOW, total: 3000 }),
 	// yesterday + day before: builds a 3-day streak
-	entry({ date: "2026-08-18", ts: NOW - DAY, total: 8000, sessionPath: "D:\\sessions\\b.jsonl" }),
+	entry({ date: dateKey(1), ts: NOW - DAY, total: 8000, sessionPath: "D:\\sessions\\b.jsonl" }),
 	entry({
-		date: "2026-08-17",
+		date: dateKey(2),
 		ts: NOW - 2 * DAY,
 		total: 2000,
 		sessionPath: "D:\\sessions\\c.jsonl",

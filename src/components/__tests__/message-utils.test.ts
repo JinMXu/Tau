@@ -5,10 +5,12 @@ import {
 	computeLineDiff,
 	diffBlocksFromArgs,
 	parsedMessagesToMarkdown,
+	retryTextFor,
 	searchMessages,
 	splitOnQuery,
 	toolSummary,
 } from "../message-utils";
+import type { UiError } from "../../errors";
 import type { ChatMessage } from "../../chat-types";
 
 describe("toolSummary", () => {
@@ -205,5 +207,50 @@ describe("parsedMessagesToMarkdown", () => {
 			{ role: "assistant", timestamp: null, blocks: [{ kind: "text", text: "yo" }] },
 		]);
 		expect(md).toBe("**User**:\nhi\n\n---\n\n**Pi**:\nyo");
+	});
+});
+
+describe("retryTextFor", () => {
+	const err: UiError = {
+		severity: "error",
+		source: "llm",
+		titleKey: "x",
+		actions: [],
+		timestamp: 0,
+	};
+	const turn: ChatMessage[] = [
+		{ id: 1, role: "user", blocks: [{ kind: "text", text: "  run the tests " }], streaming: false },
+		{
+			id: 2,
+			role: "assistant",
+			blocks: [{ kind: "text", text: "half-written ans…" }],
+			streaming: false,
+			error: { ...err },
+		},
+	];
+
+	it("walks back to the user message for a failed assistant card", () => {
+		expect(retryTextFor(turn, turn[1])).toBe("run the tests");
+	});
+
+	it("uses the message itself for a failed user send", () => {
+		const failedUser: ChatMessage = { ...turn[0], error: { ...err } };
+		expect(retryTextFor([failedUser, turn[1]], failedUser)).toBe("run the tests");
+	});
+
+	it("returns null when no user message precedes the failure", () => {
+		expect(retryTextFor([turn[1]], turn[1])).toBeNull();
+		expect(retryTextFor([], turn[1])).toBeNull();
+	});
+
+	it("returns null when the user message has no text blocks", () => {
+		const imageOnly: ChatMessage = {
+			id: 3,
+			role: "user",
+			blocks: [],
+			streaming: false,
+			images: [{ mimeType: "image/png", data: "x" }],
+		};
+		expect(retryTextFor([imageOnly, turn[1]], turn[1])).toBeNull();
 	});
 });

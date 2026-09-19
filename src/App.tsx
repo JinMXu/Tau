@@ -75,7 +75,7 @@ import { TitleBar } from "./components/TitleBar";
 import { SearchOverlay } from "./components/SearchOverlay";
 import { SettingsPanel, type SettingsPage } from "./components/SettingsPanel";
 import { ArchivedPreview } from "./components/ArchivedPreview";
-import { chatMessageToMarkdown, parsedMessagesToMarkdown } from "./components/message-utils";
+import { chatMessageToMarkdown, parsedMessagesToMarkdown, retryTextFor } from "./components/message-utils";
 import { ExtensionDialog, type ExtensionRequest } from "./components/ExtensionDialog";
 import { TreePanel, type PiTreeData } from "./components/TreePanel";
 import { SessionInfoDialog } from "./components/SessionInfoDialog";
@@ -1865,16 +1865,28 @@ export default function App() {
 						replay: true,
 						timestamp: p.timestamp ?? undefined,
 						entryId: p.entryId ?? null,
+						// Rebuild the same UiError envelope the live stream carried:
+						// pi writes stopReason/errorMessage on the session entry, so
+						// a failed turn keeps its error card after a reload instead
+						// of rendering as a normal (silent) turn.
+						...(role === "assistant" &&
+						p.stopReason === "error" &&
+						!isUserAbortError(p.errorMessage ?? "")
+							? { error: buildLlmUiError(p.errorMessage ?? "error", Date.now()) }
+							: {}),
 						...(images.length > 0 ? { images } : {}),
 					});
 				}
 				clearStream();
 				setMessages(reuseRenderedMessages(items));
 			} catch {
+				// A session file that fails to parse (truncated JSONL, IO error)
+				// must not read as "this session has no messages" — surface it.
 				clearTranscript();
+				setError(t.chat.sessionLoadFailed);
 			}
 		},
-		[reuseRenderedMessages, clearStream, clearTranscript],
+		[reuseRenderedMessages, clearStream, clearTranscript, t.chat.sessionLoadFailed],
 	);
 
 	// Attach the UI to an already-running background channel: rebuild the
@@ -2980,11 +2992,10 @@ export default function App() {
 	const retryLastUserMessage = useCallback(
 		async (msg: ChatMessage) => {
 			if (!connected) return;
-			const text = msg.blocks
-				.filter((b): b is Extract<typeof b, { kind: "text" }> => b.kind === "text")
-				.map((b) => b.text)
-				.join("\n\n")
-				.trim();
+			// The error card sits on the FAILED message (assistant that errored
+			// mid-turn, or the user message whose send failed); the text to
+			// resend is the user message that opened the turn.
+			const text = retryTextFor(messagesRef.current, msg);
 			if (!text) return;
 			await submit(text, [], "normal");
 		},
