@@ -1244,7 +1244,12 @@ pub struct PiPackageEntry {
 pub struct PiSkillEntry {
 	name: String,
 	description: Option<String>,
+	/// "user" | "project" | "package" — which discovery root the skill came
+	/// from (mirrors pi's own source scopes).
 	location: String,
+	/// Absolute path of the skill's SKILL.md (or loose .md file), shown in the
+	/// settings list so user vs project roots are distinguishable at a glance.
+	path: Option<String>,
 }
 
 fn package_name_from_source(source: &str) -> Option<String> {
@@ -1398,6 +1403,7 @@ fn scan_skill_dir_at(dir: &Path, location: &str, out: &mut Vec<PiSkillEntry>, de
 					name,
 					description,
 					location: location.to_string(),
+					path: path.to_str().map(|s| s.to_string()),
 				});
 			} else if entry.file_name() != "node_modules" {
 				scan_skill_dir_at(&path, location, out, depth + 1);
@@ -1415,25 +1421,44 @@ fn scan_skill_dir_at(dir: &Path, location: &str, out: &mut Vec<PiSkillEntry>, de
 				name: format!("{name}.md"),
 				description: None,
 				location: location.to_string(),
+				path: path.to_str().map(|s| s.to_string()),
 			});
 		}
 	}
 }
 
-/// List skills available to pi: user skills under `~/.pi/agent/skills` plus
-/// skills shipped inside installed packages.
+/// List skills available to pi across every discovery root:
+///
+/// - user: `~/.pi/agent/skills` (pi's config dir) and `~/.agents/skills`
+///   (the cross-agent Agent Skills directory pi's trust manager treats as a
+///   global user resource)
+/// - project: `<workspace>/.pi/skills` and `<workspace>/.agents/skills`
+///   (pi scopes these to the session cwd; both are trust-gated)
+/// - package: `skills/` shipped inside installed pi packages
 ///
 /// Takes the package list as an argument so the frontend only needs to run
 /// `pi list` once instead of twice when opening the settings panel.
 #[tauri::command]
 pub async fn pi_installed_skills(
 	packages: Vec<PiPackageEntry>,
+	workspace: Option<String>,
 ) -> Result<Vec<PiSkillEntry>, String> {
 	run_blocking(move || {
 		let mut out: Vec<PiSkillEntry> = Vec::new();
 		let agent_dir = pi_agent_dir();
 		scan_skill_dir(&agent_dir.join("skills"), "user", &mut out);
-
+		if let Some(home) = pi::home_dir() {
+			scan_skill_dir(&home.join(".agents").join("skills"), "user", &mut out);
+		}
+		if let Some(ws) = workspace
+			.as_deref()
+			.map(str::trim)
+			.filter(|s| !s.is_empty())
+		{
+			let ws = PathBuf::from(ws);
+			scan_skill_dir(&ws.join(".pi").join("skills"), "project", &mut out);
+			scan_skill_dir(&ws.join(".agents").join("skills"), "project", &mut out);
+		}
 		for pkg in packages {
 			if let Some(installed) = pkg.installed_path {
 				let dir = PathBuf::from(&installed);

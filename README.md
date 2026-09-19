@@ -44,7 +44,7 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **Escape 中断** — 全局 Esc 键中断当前回合（输入框或对话框打开时不触发）。
 - **错误卡片与自动重试** — LLM / 网络 / 认证错误按类别渲染为可折叠错误卡（原始明细 + 建议 + 重试 / 压缩上下文 / 打开设置动作）；发送失败与工具失败同样在对应消息上可见；历史会话重开后失败轮次保留错误卡。可重试失败（超时 / 过载）自动指数退避重试，等待期显示「第 N / M 次 + 倒计时 + 错误预览」。错误卡上的「重试」会重发该轮的用户消息。
 - **消息级复制** — 每条消息 hover 出现操作按钮：分支（用户消息）、复制为 Markdown、复制纯文本。
-- **会话导出** — 会话菜单支持导出为 Markdown、原始 JSONL 或带样式的 HTML 文件（原生保存对话框，HTML 由 pi CLI 生成）。
+- **会话导出** — 会话菜单支持导出为 Markdown、原始 JSONL 或带样式的 HTML 文件（原生保存对话框，HTML 由内置运行时生成，无需安装 pi CLI）。
 
 ### 🧩 扩展与定制
 
@@ -52,7 +52,7 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **自定义 Agent 工具** — Composer 扳手按钮可勾选允许 Pi 使用的工具（read/write/edit/bash/grep/find/ls），下次连接会话时通过 `--tools` 生效。
 - **自定义系统提示词** — 设置页内置 Markdown 编辑器，自定义 Pi 的系统指令，下次连接会话时通过 `--system-prompt` 生效。
 - **聊天内 API Key 提示** — 发送消息时若所选 Provider 未配置 Key，直接在聊天内弹窗填写，无需跳转设置页。
-- **模型提供商配置** — 设置页动态读取 Pi 内置的全部模型提供商（约 40 个：Anthropic/OpenAI/Gemini/DeepSeek/Kimi/OpenRouter 等，含 `models.json` 自定义提供商），可逐个配置 API Key，读写 `~/.pi/agent/auth.json`，与 Pi CLI 共享凭据，OAuth 登录状态同样可见。
+- **模型提供商配置** — 设置页动态读取 Pi 内置的全部模型提供商（约 40 个：Anthropic/OpenAI/Gemini/DeepSeek/Kimi/OpenRouter 等，含 `models.json` 自定义提供商），可逐个配置 API Key，读写 `~/.pi/agent/auth.json`（内置运行时直接读取，若同时使用 Pi 的 TUI/CLI 则凭据互通），OAuth 登录状态同样可见，且登录流程内置（设备码 + 浏览器授权），无需终端。
 - **MCP 服务器管理** — 设置页「MCP 服务」合并展示 pi-mcp-adapter 各配置层（shared / .agents / pi，全局与项目）的服务器定义，标注来源层与传输类型；支持启停（镜像 `/mcp` 适配器语义，只读共享层通过覆盖实现）、在可写的全局 `~/.pi/agent/mcp.json` 或项目 `.mcp.json` 中新建/编辑/删除，表单与 JSON 双模式编辑。
 - **扩展 UI 对话框** — 处理 Pi 的 `extension_ui_request` 事件（select / confirm / input / notify），回传 `extension_ui_response`。
 

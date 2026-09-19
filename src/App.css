@@ -3794,6 +3794,31 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 	line-height: 1.5;
 }
 
+/* Extensions page tab switcher (skills / packages) — pill group. */
+.ext-tabs {
+	margin: var(--sp-3) 0 var(--sp-2);
+}
+
+.skill-path {
+	font-size: var(--fs-xs);
+	font-family: var(--font-mono);
+	color: var(--app-muted);
+	margin-top: 2px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	direction: rtl;
+	text-align: left;
+}
+
+.skill-group-count {
+	margin-left: var(--sp-2);
+	font-size: var(--fs-xs);
+	font-weight: 500;
+	color: var(--app-muted);
+	font-family: var(--font-mono);
+}
+
 .skill-location {
 	display: inline-block;
 	margin-top: var(--sp-1);
@@ -3810,6 +3835,11 @@ html[data-platform="macos"] .app.fullscreen .settings-back {
 .skill-location.package {
 	color: var(--link);
 	border-color: color-mix(in srgb, var(--link) 35%, transparent);
+}
+
+.skill-location.project {
+	color: var(--ok);
+	border-color: color-mix(in srgb, var(--ok) 35%, transparent);
 }
 
 /* featured packages */
@@ -5768,31 +5798,6 @@ html[data-platform="macos"] .app.fullscreen .shell.collapsed .chat-header-left {
 	align-items: center;
 }
 
-.oauth-help {
-	margin-top: 8px;
-	background: var(--input-bg);
-	border: 1px solid var(--menu-border);
-	border-radius: var(--r-sm);
-	padding: 8px 10px;
-	font-size: var(--fs-xs);
-	color: var(--text-2);
-}
-
-.oauth-help p {
-	margin: 0 0 6px;
-}
-
-.oauth-help-cmd {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	font-size: var(--fs-xs);
-	color: var(--link);
-}
-
-.oauth-help-arrow {
-	color: var(--text-3);
-}
 
 /* ---- llama dialog ---- */
 .llama-dialog {
@@ -5902,6 +5907,64 @@ html[data-platform="macos"] .app.fullscreen .shell.collapsed .chat-header-left {
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
+}
+
+/* ---- animated header-row action buttons (refresh / reload / check now) ----
+ * Ghost pill: transparent at rest, hover fills with --hover (the motion
+ * component animates backgroundColor; this class carries the resting look,
+ * sizing and the text/icon slots' swap geometry). */
+.icon-action-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	border: none;
+	background: transparent;
+	color: var(--app-muted);
+	font-size: var(--fs-xs);
+	padding: 4px 10px;
+	border-radius: 999px;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: color 0.15s ease;
+}
+
+.icon-action-btn:hover:not(:disabled) {
+	color: var(--text-1);
+}
+
+.icon-action-btn:disabled {
+	cursor: default;
+	opacity: 0.8;
+}
+
+.icon-action-btn:focus-visible {
+	outline: 2px solid var(--link);
+	outline-offset: 1px;
+}
+
+.icon-action-slot {
+	display: inline-grid;
+	place-items: center;
+	width: 14px;
+	height: 14px;
+}
+
+.icon-action-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	grid-area: 1 / 1;
+}
+
+.icon-action-text {
+	display: inline-block;
+	position: relative;
+	overflow: hidden;
+}
+
+.icon-action-label {
+	display: inline-block;
+	white-space: nowrap;
 }
 
 /* ---- external editor error hint (composer) ---- */

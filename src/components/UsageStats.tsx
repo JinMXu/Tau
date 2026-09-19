@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Language, MessageCatalog } from "../i18n";
 import { usageStats, type PiUsageEntry } from "../pi";
+import { IconActionButton } from "./motion/button";
+import { RefreshIcon } from "../icons";
 
 /** Series colors for the trend/donut charts (legible on both themes). */
 const MODEL_COLORS = ["#4c8dff", "#34c98e", "#f5a623", "#a67cf5", "#ef6a6a", "#3bbfd9"];
@@ -597,9 +599,13 @@ export function UsageStats({ t, lang }: { t: MessageCatalog; lang: Language }) {
 			</div>
 
 			<div className="usage-footer">
-				<button className="btn secondary usage-refresh" disabled={refreshing} onClick={load}>
+				<IconActionButton
+					icon={<RefreshIcon size={12} />}
+					busy={refreshing}
+					onClick={load}
+				>
 					{t.settings.usageRefresh}
-				</button>
+				</IconActionButton>
 			</div>
 		</div>
 	);

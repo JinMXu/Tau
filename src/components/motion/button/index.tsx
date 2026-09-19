@@ -11,3 +11,5 @@ export type { MetallicButtonProps } from "./metallic";
 export { MetallicButton } from "./metallic";
 export type { ButtonState, StatefulButtonProps } from "./stateful";
 export { StatefulButton } from "./stateful";
+export type { IconActionButtonProps } from "./icon-action";
+export { IconActionButton } from "./icon-action";

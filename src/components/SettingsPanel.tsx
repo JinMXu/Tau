@@ -34,9 +34,7 @@ import {
 	ArchiveIcon,
 	BarChartIcon,
 	BoltIcon,
-	CheckIcon,
 	ChevronLeftIcon,
-	CopyIcon,
 	EditIcon,
 	EyeIcon,
 	FolderIcon,
@@ -56,7 +54,7 @@ import type { AppSettings, ColorScale, Density, Theme } from "../settings";
 import { ALL_AGENT_TOOLS } from "../settings";
 import { PACKAGES_CATALOG, formatDownloads } from "../packages-catalog";
 import { cn } from "@/lib/utils";
-import { Button } from "./motion/button";
+import { Button, IconActionButton } from "./motion/button";
 import {
 	Select,
 	SelectContent,
@@ -169,10 +167,13 @@ function providerLabel(id: string): string {
 }
 
 // Session-scoped cache: packages + skills survive panel close/reopen so
-// re-entering settings doesn't re-run the pi CLI every time.
+// re-entering settings doesn't re-run the pi CLI every time. Skills are
+// workspace-scoped (project roots depend on it), so a cached scan is only
+// reused for the same workspace.
 let extensionCache: {
 	packages: PiPackageEntry[];
 	skills: PiSkillEntry[];
+	workspace: string | null;
 } | null = null;
 
 function Row({
@@ -195,6 +196,80 @@ function Row({
 			</div>
 			<div className="settings-control">{children}</div>
 		</div>
+	);
+}
+
+/**
+ * Installed-skills list for the extensions page: grouped by discovery root
+ * (user / project / package), filtered by the search box. Project paths are
+ * shown relative to the workspace, full paths on hover.
+ */
+function SkillsList({
+	skills,
+	skillQuery,
+	workspace,
+	t,
+}: {
+	skills: PiSkillEntry[];
+	skillQuery: string;
+	workspace: string | null;
+	t: MessageCatalog;
+}) {
+	const q = skillQuery.trim().toLowerCase();
+	const match = (s: PiSkillEntry) => !q || `${s.name} ${s.description ?? ""}`.toLowerCase().includes(q);
+	const groups = [
+		{ id: "user", label: t.settings.skillsUser, items: skills.filter((s) => s.location === "user") },
+		{
+			id: "project",
+			label: t.settings.skillsProject,
+			items: skills.filter((s) => s.location === "project"),
+		},
+		{
+			id: "package",
+			label: t.settings.skillsPackage,
+			items: skills.filter((s) => s.location === "package"),
+		},
+	];
+	const visible = groups.filter((g) => g.items.length > 0);
+	if (visible.length === 0) {
+		return <div className="settings-empty">{t.settings.skillsNoMatches}</div>;
+	}
+	const shorten = (p?: string | null) => {
+		if (!p) return "";
+		if (workspace) {
+			const norm = p.split("\\").join("/");
+			const wsNorm = workspace.split("\\").join("/").replace(/\/$/, "");
+			if (norm.toLowerCase().startsWith(`${wsNorm.toLowerCase()}/`)) {
+				return norm.slice(wsNorm.length + 1);
+			}
+		}
+		return p;
+	};
+	return (
+		<>
+			{visible.map((g) => (
+				<div key={g.id} className="skill-group">
+					<h4 className="settings-sub">
+						{g.label}
+						<span className="skill-group-count">{g.items.length}</span>
+					</h4>
+					<ul className="skill-list">
+						{g.items.filter(match).map((s) => (
+							<li key={`${s.location}-${s.name}`}>
+								<div className="skill-name">{s.name}</div>
+								{s.description && <div className="skill-desc">{s.description}</div>}
+								{s.path && (
+									<div className="skill-path" title={s.path}>
+										{shorten(s.path)}
+									</div>
+								)}
+								<span className={`skill-location ${s.location}`}>{s.location}</span>
+							</li>
+						))}
+					</ul>
+				</div>
+			))}
+		</>
 	);
 }
 
@@ -506,29 +581,13 @@ function ProviderRow({
 	const [editing, setEditing] = useState(false);
 	const [key, setKey] = useState("");
 	const [busy, setBusy] = useState(false);
-	/** Expanded inline panel; models / oauth-help are mutually exclusive and
-	 * both close when the Key editor opens. */
-	const [panel, setPanel] = useState<"models" | "help" | null>(null);
-	const [copiedCmd, setCopiedCmd] = useState(false);
+	/** Expanded inline panel; closes when the Key editor opens. */
+	const [panel, setPanel] = useState<"models" | null>(null);
 	const configured = Boolean(status?.hasKey);
-	const isOAuth = status?.kind === "oauth";
-	const copyTimerRef = useRef<number>(0);
-	useEffect(() => () => window.clearTimeout(copyTimerRef.current), []);
 
-	const togglePanel = (p: "models" | "help") => {
+	const togglePanel = (p: "models") => {
 		setEditing(false);
 		setPanel((cur) => (cur === p ? null : p));
-	};
-
-	const copyLoginCmd = async () => {
-		try {
-			await navigator.clipboard.writeText(`pi\n/login ${provider}`);
-			setCopiedCmd(true);
-			window.clearTimeout(copyTimerRef.current);
-			copyTimerRef.current = window.setTimeout(() => setCopiedCmd(false), 1500);
-		} catch {
-			/* ignore */
-		}
 	};
 
 	const save = async () => {
@@ -616,45 +675,17 @@ function ProviderRow({
 					>
 						{configured ? t.settings.apiKey : t.settings.saveKey}
 					</Btn>
-					{oauth && !isOAuth && (
-						<Btn small
-							
-							title={t.settings.oauthLoginHint}
-							onClick={onOAuthLogin}
-						>
-							{t.settings.oauthLogin}
-						</Btn>
-					)}
-					{isOAuth && (
-						<Btn small
-							
-							title={t.settings.oauthLoginHint}
-							onClick={() => togglePanel("help")}
-						>
+					{oauth && (
+						// Both signed-out and already-OAuth (re-login / account
+						// switch) go through Tau's built-in device-code flow —
+						// no pi CLI on the terminal needed.
+						<Btn small onClick={onOAuthLogin}>
 							{t.settings.oauthLogin}
 						</Btn>
 					)}
 				</div>
 			)}
-			{panel === "help" && (
-				<div className="oauth-help">
-					<p>{t.settings.oauthHelpBody.replace("{provider}", provider)}</p>
-					<div className="oauth-help-cmd mono">
-						<span>pi</span>
-						<span className="oauth-help-arrow">→</span>
-						<span>/login {provider}</span>
-						<button
-							className="icon-btn"
-							title={t.chat.copy}
-							aria-label={t.chat.copy}
-							onClick={() => void copyLoginCmd()}
-						>
-							{copiedCmd ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
-						</button>
-					</div>
-				</div>
-			)}
-			{panel === "models" && (
+				{panel === "models" && (
 				<ProviderModels
 					t={t}
 					provider={provider}
@@ -1024,10 +1055,14 @@ export function SettingsPanel({
 	const [mcpQuery, setMcpQuery] = useState("");
 	const mcpScope = mcpScopeSel ?? workspace ?? "";
 
-	const refreshMcpServers = useCallback(() => {
-		piMcpServers(mcpScope || null)
-			.then(setMcpServers)
-			.catch(() => setMcpServers([]));
+	// Async so the header refresh button can show its busy → done animation;
+	// callers that ignore the promise are unaffected.
+	const refreshMcpServers = useCallback(async () => {
+		try {
+			setMcpServers(await piMcpServers(mcpScope || null));
+		} catch {
+			setMcpServers([]);
+		}
 	}, [mcpScope]);
 	useEffect(() => {
 		refreshMcpServers();
@@ -1112,11 +1147,23 @@ export function SettingsPanel({
 
 	// ---- packages & skills ----
 	// Cache extension data for the app session so reopening the settings panel
-	// renders instantly instead of re-running `pi list` every time.
-	const [packages, setPackages] = useState<PiPackageEntry[]>(() => extensionCache?.packages ?? []);
-	const [skills, setSkills] = useState<PiSkillEntry[]>(() => extensionCache?.skills ?? []);
+	// renders instantly instead of re-running `pi list` every time. A cached
+	// skill scan is only valid for the project it ran against.
+	const [skillQuery, setSkillQuery] = useState("");
+	// Extensions page tab: installed skills vs package catalog.
+	const [extTab, setExtTab] = useState<"skills" | "packages">("skills");
+	// Project whose skills are listed; defaults to the open workspace.
+	const [skillProjectSel, setSkillProjectSel] = useState<string | null>(null);
+	const skillProject = skillProjectSel ?? workspace ?? null;
+	const cacheHit = extensionCache && extensionCache.workspace === skillProject;
+	const [packages, setPackages] = useState<PiPackageEntry[]>(
+		() => extensionCache?.packages ?? [],
+	);
+	const [skills, setSkills] = useState<PiSkillEntry[]>(() =>
+		cacheHit ? extensionCache?.skills ?? [] : [],
+	);
 	const [packagesLoading, setPackagesLoading] = useState(!extensionCache);
-	const [skillsLoading, setSkillsLoading] = useState(!extensionCache);
+	const [skillsLoading, setSkillsLoading] = useState(!cacheHit);
 	const [customSource, setCustomSource] = useState("");
 	const [busySource, setBusySource] = useState<string | null>(null);
 	// Removing an installed package is destructive and irreversible, so it
@@ -1125,18 +1172,21 @@ export function SettingsPanel({
 
 	const refreshPackages = useCallback(async () => {
 		// Show cached data instantly; refresh in the background on re-open.
+		// A skill-scan cache miss (project switch) only reloads skills.
 		if (!extensionCache) {
 			setPackagesLoading(true);
+			setSkillsLoading(true);
+		} else if (extensionCache.workspace !== skillProject) {
 			setSkillsLoading(true);
 		}
 		try {
 			// Fetch packages once and reuse them for the skills scan — running
 			// `pi list` twice per settings open is wasted time.
 			const pkgs = await piPackages();
-			const skillList = await piInstalledSkills(pkgs);
+			const skillList = await piInstalledSkills(pkgs, skillProject);
 			setPackages(pkgs);
 			setSkills(skillList);
-			extensionCache = { packages: pkgs, skills: skillList };
+			extensionCache = { packages: pkgs, skills: skillList, workspace: skillProject };
 		} catch {
 			if (!extensionCache) {
 				setPackages([]);
@@ -1146,7 +1196,7 @@ export function SettingsPanel({
 			setPackagesLoading(false);
 			setSkillsLoading(false);
 		}
-	}, []);
+	}, [skillProject]);
 	useEffect(() => {
 		refreshPackages();
 	}, [refreshPackages]);
@@ -1658,9 +1708,12 @@ export function SettingsPanel({
 							<div className="settings-section-title-row">
 								<h3>{t.settings.mcp}</h3>
 								<div className="settings-section-actions">
-									<button className="link-btn" onClick={refreshMcpServers}>
+									<IconActionButton
+										icon={<RefreshIcon size={12} />}
+										onClick={refreshMcpServers}
+									>
 										{t.sidebar.refresh}
-									</button>
+									</IconActionButton>
 									<Btn small
 										
 										onClick={() => {
@@ -1827,35 +1880,77 @@ export function SettingsPanel({
 							<div className="settings-section-title-row">
 								<h3>{t.settings.extensions}</h3>
 								<div className="settings-section-actions">
-									<button className="link-btn" onClick={onReload}>
-										<RefreshIcon size={12} />
-										<span>{t.settings.reload}</span>
-									</button>
-									<button className="link-btn" onClick={refreshPackages}>
+									<IconActionButton icon={<RefreshIcon size={12} />} onClick={onReload}>
+										{t.settings.reload}
+									</IconActionButton>
+									<IconActionButton icon={<RefreshIcon size={12} />} onClick={refreshPackages}>
 										{t.sidebar.refresh}
-									</button>
+									</IconActionButton>
 								</div>
 							</div>
 							<p className="settings-hint">{t.settings.extensionsHint}</p>
 
-							<h4 className="settings-sub">{t.settings.skills}</h4>
-							{skillsLoading ? (
-								<div className="settings-loading">{t.settings.loading}</div>
-							) : skills.length === 0 ? (
-								<div className="settings-empty">{t.settings.emptySkills}</div>
+							{/* ---- tab switcher: installed skills vs package catalog ---- */}
+							<div className="usage-toggle ext-tabs" role="tablist" aria-label={t.settings.extensions}>
+								<button
+									role="tab"
+									aria-selected={extTab === "skills"}
+									className={extTab === "skills" ? "active" : ""}
+									onClick={() => setExtTab("skills")}
+								>
+									{t.settings.skillsTab}
+								</button>
+								<button
+									role="tab"
+									aria-selected={extTab === "packages"}
+									className={extTab === "packages" ? "active" : ""}
+									onClick={() => setExtTab("packages")}
+								>
+									{t.settings.packagesTab}
+								</button>
+							</div>
+
+							{extTab === "skills" ? (
+								<>
+									<p className="settings-hint">{t.settings.skillsHint}</p>
+									{mcpScopeOptions.length > 0 && (
+										<div className="mcp-toolbar">
+											<ScopeSelect
+												value={skillProject ?? ""}
+												options={mcpScopeOptions}
+												allowEmpty={false}
+												t={t}
+												onChange={setSkillProjectSel}
+											/>
+											<input
+												className="mcp-search"
+												value={skillQuery}
+												placeholder={t.settings.searchSkills}
+												spellCheck={false}
+												onChange={(e) => setSkillQuery(e.target.value)}
+											/>
+										</div>
+									)}
+									{skillsLoading ? (
+										<div className="settings-loading">{t.settings.loading}</div>
+									) : skills.length === 0 ? (
+										<div className="settings-empty">{t.settings.emptySkills}</div>
+									) : (
+										<SkillsList
+											skills={skills}
+											skillQuery={skillQuery}
+											workspace={skillProject}
+											t={t}
+										/>
+									)}
+								</>
 							) : (
-								<ul className="skill-list">
-									{skills.map((s) => (
-										<li key={`${s.location}-${s.name}`}>
-											<div className="skill-name">{s.name}</div>
-											{s.description && <div className="skill-desc">{s.description}</div>}
-											<span className={`skill-location ${s.location}`}>{s.location}</span>
-										</li>
-									))}
-								</ul>
+								<></>
 							)}
 
-							<h4 className="settings-sub">{t.settings.packages}</h4>
+							{extTab === "packages" && (
+								<>
+									<h4 className="settings-sub">{t.settings.packages}</h4>
 							{packagesLoading ? (
 								<div className="settings-loading">{t.settings.loading}</div>
 							) : (
@@ -1964,9 +2059,11 @@ export function SettingsPanel({
 												>
 													{t.settings.remove}
 												</Btn>
-											</li>
-										))}
-									</ul>
+												</li>
+											))}
+										</ul>
+									</>
+								)}
 								</>
 							)}
 						</section>
@@ -1980,13 +2077,15 @@ export function SettingsPanel({
 							</Row>
 							<Row label={t.settings.updates} hint={t.settings.updatesHint}>
 								<div className="update-control">
-									<Btn
-										
-										disabled={checkingUpdates || !onCheckUpdates}
+									<IconActionButton
+										icon={<RefreshIcon size={12} />}
+										busy={checkingUpdates}
+										busyLabel={t.settings.checkingUpdates}
+										disabled={!onCheckUpdates}
 										onClick={() => onCheckUpdates?.()}
 									>
-										{checkingUpdates ? t.settings.checkingUpdates : t.settings.checkUpdates}
-									</Btn>
+										{t.settings.checkUpdates}
+									</IconActionButton>
 									{updateInfo &&
 										(updateInfo.available ? (
 											<span className="update-status available">

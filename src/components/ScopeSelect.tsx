@@ -19,6 +19,8 @@ export function ScopeSelect({
 	options,
 	disabled,
 	fullWidth,
+	allowEmpty = true,
+	emptyLabel,
 	t,
 	onChange,
 }: {
@@ -29,6 +31,11 @@ export function ScopeSelect({
 	disabled?: boolean;
 	/** Stretch the trigger to the container width (dialog layout). */
 	fullWidth?: boolean;
+	/** False hides the leading "" option — for pickers that must always name
+	 *  a concrete project (e.g. the skills page's project switcher). */
+	allowEmpty?: boolean;
+	/** Label for the "" option; defaults to the MCP "user scope" string. */
+	emptyLabel?: string;
 	t: MessageCatalog;
 	onChange: (value: string) => void;
 }) {
@@ -39,8 +46,9 @@ export function ScopeSelect({
 	const menuRef = useRef<HTMLDivElement>(null);
 	const listId = useId();
 
-	/** Flat option list in render order: user scope first, then workspaces. */
-	const values: string[] = ["", ...options];
+	/** Flat option list in render order: user scope first (when allowed),
+	 *  then workspaces. */
+	const values: string[] = [...(allowEmpty ? [""] : []), ...options];
 	const optionId = (i: number) => `${listId}-opt-${i}`;
 
 	const close = (refocus = true) => {
@@ -70,7 +78,7 @@ export function ScopeSelect({
 		return () => document.removeEventListener("mousedown", onDown);
 	}, [open]);
 
-	const label = value ? projectNameFromPath(value) : t.settings.mcpScopeUser;
+	const label = value ? projectNameFromPath(value) : (emptyLabel ?? t.settings.mcpScopeUser);
 
 	const pick = (v: string) => {
 		onChange(v);
@@ -137,6 +145,7 @@ export function ScopeSelect({
 					tabIndex={-1}
 					onKeyDown={onMenuKey}
 				>
+				{allowEmpty && (
 					<div
 						id={optionId(0)}
 						role="option"
@@ -147,15 +156,16 @@ export function ScopeSelect({
 						onClick={() => pick("")}
 						onMouseEnter={() => setActiveIdx(0)}
 					>
-						<span className="mcp-scope-item-name">{t.settings.mcpScopeUser}</span>
+						<span className="mcp-scope-item-name">{emptyLabel ?? t.settings.mcpScopeUser}</span>
 						{value === "" && <CheckIcon size={13} />}
 					</div>
-					{options.length > 0 && (
-						<>
-							<div className="mcp-scope-group">{t.settings.mcpScopeWorkspaces}</div>
-							{options.map((p, i) => {
-								const idx = i + 1;
-								return (
+				)}
+				{options.length > 0 && (
+					<>
+						<div className="mcp-scope-group">{t.settings.mcpScopeWorkspaces}</div>
+						{options.map((p, i) => {
+							const idx = allowEmpty ? i + 1 : i;
+							return (
 									<div
 										key={p}
 										id={optionId(idx)}

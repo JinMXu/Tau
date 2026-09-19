@@ -93,7 +93,10 @@ export interface PiPackageEntry {
 export interface PiSkillEntry {
 	name: string;
 	description: string | null;
+	/** "user" | "project" | "package" — which discovery root the skill came from. */
 	location: string;
+	/** Absolute path of the skill file (SKILL.md or loose .md). */
+	path?: string | null;
 }
 
 /** A slash command available via `prompt "/name …"` (pi `get_commands`). */
@@ -582,8 +585,13 @@ export async function piPackageRemove(source: string): Promise<void> {
 	return invoke("pi_package_remove", { source });
 }
 
-export async function piInstalledSkills(packages: PiPackageEntry[]): Promise<PiSkillEntry[]> {
-	return invoke("pi_installed_skills", { packages });
+/** List skills across every discovery root (user, project, package).
+ *  `workspace` enables the project roots (`<ws>/.pi/skills`, `<ws>/.agents/skills`). */
+export async function piInstalledSkills(
+	packages: PiPackageEntry[],
+	workspace?: string | null,
+): Promise<PiSkillEntry[]> {
+	return invoke("pi_installed_skills", { packages, workspace: workspace ?? null });
 }
 
 export async function piMoveSession(path: string, newProject: string): Promise<void> {
