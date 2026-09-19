@@ -7,23 +7,6 @@ import type { PiParsedMessage } from "../pi";
  * plain node environment.
  */
 
-/** Keys worth surfacing as the one-line summary of a tool call. */
-export const SUMMARY_KEYS = ["path", "file_path", "command", "pattern", "query", "url"];
-
-export function toolSummary(args: string): string | null {
-	try {
-		const parsed = JSON.parse(args) as Record<string, unknown>;
-		for (const key of SUMMARY_KEYS) {
-			const value = parsed[key];
-			if (typeof value === "string" && value.trim()) return value.trim();
-		}
-		return null;
-	} catch {
-		/* args may be partial while streaming */
-		return null;
-	}
-}
-
 export type DiffLine = { type: "ctx" | "del" | "add"; text: string };
 
 /** LCS line diff. Huge inputs degrade to whole-block old/new display. */

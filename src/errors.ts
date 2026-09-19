@@ -31,7 +31,7 @@ export interface UiError {
 }
 
 /** detail 展示截断上限（防巨错误文本进渲染树） */
-export const DETAIL_MAX_LENGTH = 4096;
+const DETAIL_MAX_LENGTH = 4096;
 
 /** 用户主动中断（abort）的错误消息判定：与 Percho 同源。 */
 export function isUserAbortError(errorMessage: string): boolean {
@@ -100,7 +100,7 @@ const LLM_ERROR_FALLBACK: LlmErrorClass = {
 	actions: ["retry", "copyDetail"],
 };
 
-export function classifyLlmError(errorMessage: string): LlmErrorClass {
+function classifyLlmError(errorMessage: string): LlmErrorClass {
 	for (const { pattern, cls } of LLM_ERROR_PATTERNS) {
 		if (pattern.test(errorMessage)) return cls;
 	}

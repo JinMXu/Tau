@@ -342,7 +342,7 @@ export function extractTodos(messages: ChatMessage[]): TodoItem[] {
 /** Tool call categories for the folded summary line (Percho-style). */
 export type ToolCategory = "read" | "edit" | "explore" | "search" | "bash" | "subagent" | "other";
 
-export function categoryOf(toolName: string): ToolCategory {
+function categoryOf(toolName: string): ToolCategory {
 	const key = toolName.toLowerCase();
 	if (key === "read") return "read";
 	if (key === "edit" || key === "write" || key.includes("apply") || key.includes("patch"))

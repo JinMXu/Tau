@@ -101,7 +101,7 @@ function extractText(content: unknown): string {
 }
 
 /** The message text of a user entry (for copy/fork). */
-export function entryUserText(entry: PiTreeEntry): string {
+function entryUserText(entry: PiTreeEntry): string {
 	if (entry.type !== "message" || entry.message?.role !== "user") return "";
 	return extractText(entry.message.content);
 }

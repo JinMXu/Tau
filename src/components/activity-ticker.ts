@@ -25,7 +25,7 @@ export interface ActivityTicker {
 	peek(): ActivityTickerSnapshot;
 }
 
-export const ACTIVITY_TICKER_DEFAULTS = {
+const ACTIVITY_TICKER_DEFAULTS = {
 	/** 每条活动的最短停留时长：保证可读，又不会在爆发时积压 */
 	minDwellMs: 350,
 };

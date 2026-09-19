@@ -19,7 +19,7 @@ const invoked: { cmd: string; args: unknown }[] = [];
 		currentWindow: { label: "main" },
 		currentWebview: { windowLabel: "main", label: "main" },
 	},
-	transformCallback(cb: Cb, _once?: boolean) {
+		transformCallback(cb: Cb) {
 		const id = ++cbSeq;
 		cbs.set(id, cb);
 		return id;

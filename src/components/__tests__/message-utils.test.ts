@@ -8,24 +8,9 @@ import {
 	retryTextFor,
 	searchMessages,
 	splitOnQuery,
-	toolSummary,
 } from "../message-utils";
 import type { UiError } from "../../errors";
 import type { ChatMessage } from "../../chat-types";
-
-describe("toolSummary", () => {
-	it("returns the first present summary key", () => {
-		expect(toolSummary(JSON.stringify({ path: "src/a.ts", command: "ls" }))).toBe("src/a.ts");
-		expect(toolSummary(JSON.stringify({ command: "git status" }))).toBe("git status");
-		expect(toolSummary(JSON.stringify({ pattern: "TODO" }))).toBe("TODO");
-	});
-
-	it("handles missing keys, empty values, and invalid JSON", () => {
-		expect(toolSummary(JSON.stringify({}))).toBeNull();
-		expect(toolSummary(JSON.stringify({ path: "  " }))).toBeNull();
-		expect(toolSummary("not json")).toBeNull();
-	});
-});
 
 describe("computeLineDiff", () => {
 	it("computes an LCS line diff", () => {

@@ -22,7 +22,7 @@ export type ToolBlockT = Extract<Block, { kind: "tool" }>;
 
 /** Percho summarizeArgs verbatim: command → filePath/path/file → url; while
  * args stream in as partial JSON, fall back to priority regex extraction. */
-export function summarizeArgs(args: string): string {
+function summarizeArgs(args: string): string {
 	if (!args || args === "{}") return "";
 	try {
 		const parsed = JSON.parse(args) as Record<string, unknown>;
@@ -43,7 +43,7 @@ export function summarizeArgs(args: string): string {
 	return trimmed.length < args.length ? `${trimmed}…` : trimmed;
 }
 
-export const displayName = (name: string) => name.charAt(0).toUpperCase() + name.slice(1);
+const displayName = (name: string) => name.charAt(0).toUpperCase() + name.slice(1);
 
 export const ToolCard = memo(function ToolCard({
 	block,

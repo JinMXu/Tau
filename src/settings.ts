@@ -88,7 +88,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 	autoRetryOnFailure: true,
 };
 
-export const SETTINGS_KEY = "pi-gui.settings.v5";
+const SETTINGS_KEY = "pi-gui.settings.v5";
 
 const ALL_TOOL_SET = new Set<string>(ALL_AGENT_TOOLS);
 
