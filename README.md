@@ -32,8 +32,8 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 
 ### 🖥️ 聊天体验
 
-- **流式 Markdown** — 助手回复实时渲染，支持 GFM 表格、引用、列表，rehype-highlight 代码高亮 + 一键复制。
-- **思考块与工具卡片** — 助手思考过程可折叠展示；工具调用按类型显示对应图标（终端/文件夹/文件/搜索/闪电），参数可展开；工具写入的文件一键打开预览。
+- **流式 Markdown** — markstream-react 增量渲染：助手回复经自适应速率控制器逐字平滑流出（不积压、不跳格），支持 GFM 表格、引用、列表；代码块只读编辑器高亮 + 一键复制，公式（KaTeX）与图表（Mermaid）按需加载；超长消息自动降级为纯文本直出。
+- **折叠工作组与工具卡片** — 助手的思考与连续工具调用折叠为一行类别汇总（「读取 1 个文件 · 编辑 2 个文件」），工作中实时滚动预览当前活动，展开可见完整参数与输出（高亮渲染）；每轮结束带计时 + 文件改动 footer（±行数，可展开文件列表并联动 diff 侧栏）；任务列表面板（`todo` 工具驱动）与子代理实时状态面板随会话内容自动出现。
 - **附件** — Composer 支持拖拽、粘贴、选择添加附件；图片以 base64 dataURL 发送，文本文件内容内联注入，大文件仅记录路径；可清理历史会话中的图片附件以节省空间。
 - **模型与思考级别** — 运行时切换 Provider/Model（按 Provider 分组的搜索菜单），选择思考级别。
 - **Steer / Follow-up** — 会话运行中发送消息时可选择「立即介入 steered」或「排队等待 follow-up」；排队消息支持立即发送、编辑、删除、拖拽排序，打断后可暂停/继续自动发送。
@@ -42,6 +42,7 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **Compact** — 一键压缩对话上下文。
 - **上下文用量显示** — 会话标题栏实时显示上下文窗口占用百分比（tooltip 含 tokens 明细与费用），阈值变色提醒。
 - **Escape 中断** — 全局 Esc 键中断当前回合（输入框或对话框打开时不触发）。
+- **错误卡片与自动重试** — LLM / 网络 / 认证错误按类别渲染为可折叠错误卡（原始明细 + 建议 + 重试 / 压缩上下文 / 打开设置动作）；发送失败与工具失败同样在对应消息上可见；历史会话重开后失败轮次保留错误卡。可重试失败（超时 / 过载）自动指数退避重试，等待期显示「第 N / M 次 + 倒计时 + 错误预览」。错误卡上的「重试」会重发该轮的用户消息。
 - **消息级复制** — 每条消息 hover 出现操作按钮：分支（用户消息）、复制为 Markdown、复制纯文本。
 - **会话导出** — 会话菜单支持导出为 Markdown、原始 JSONL 或带样式的 HTML 文件（原生保存对话框，HTML 由 pi CLI 生成）。
 
@@ -97,7 +98,7 @@ npm run dev
 # 类型检查 + 生产构建
 npm run build
 
-# 前端单元测试（vitest：message-utils / settings / i18n）
+# 前端单元测试（vitest：行派生与消息工具 / 流式渲染契约 / 折叠组 / 统计页等）
 npm test
 
 # Rust 单元测试
@@ -176,7 +177,8 @@ Tau 通过以下 JSON-RPC 命令与 Pi 通信：
 | --- | --- |
 | 桌面框架 | Tauri 2 |
 | 前端 | React 19 + TypeScript + Vite |
-| Markdown | react-markdown + rehype-highlight |
+| Markdown | markstream-react（流式增量渲染 + 代码块编辑器高亮，KaTeX / Mermaid 按需） |
+| UI 组件 | beUI 动效组件（AgentActivity / ToolResult / CenterMorphModal 等）+ motion |
 | 后端 | Rust（pi.rs 管理进程、JSONL、搜索、归档） |
 | Agent | Pi Coding Agent SDK（`session-host.mjs` 驱动 `AgentSession`；内置运行时，无需安装 pi） |
 | 状态 | localStorage + 会话 JSONL 直接读取 |
