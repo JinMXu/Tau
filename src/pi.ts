@@ -358,6 +358,11 @@ export async function revealSession(path: string): Promise<void> {
 	return invoke("pi_reveal_session", { path });
 }
 
+/** Open a project/workspace DIRECTORY in the system file manager. */
+export async function revealDir(path: string): Promise<void> {
+	return invoke("pi_reveal_dir", { path });
+}
+
 export async function openWorkspace(): Promise<string | null> {
 	return invoke("pi_open_workspace");
 }
@@ -652,15 +657,27 @@ export async function trustDefaultSet(value: string): Promise<void> {
 	return invoke("pi_trust_default_set", { value });
 }
 
-/** Loaded model ids from the llama.cpp router (GET /v1/models). */
-export async function llamaModels(url: string, apiKey: string): Promise<string[]> {
-	return invoke("pi_llama_models", { url, apiKey });
+/** Loaded model ids from the llama.cpp router (GET /v1/models). The router
+ *  key is stored backend-side (see llamaSetKey) and never passes through the
+ *  webview. */
+export async function llamaModels(url: string): Promise<string[]> {
+	return invoke("pi_llama_models", { url });
 }
 
-export async function llamaLoad(url: string, apiKey: string, name: string): Promise<void> {
-	return invoke("pi_llama_load", { url, apiKey, name });
+export async function llamaLoad(url: string, name: string): Promise<void> {
+	return invoke("pi_llama_load", { url, name });
 }
 
-export async function llamaUnload(url: string, apiKey: string, name: string): Promise<void> {
-	return invoke("pi_llama_unload", { url, apiKey, name });
+export async function llamaUnload(url: string, name: string): Promise<void> {
+	return invoke("pi_llama_unload", { url, name });
+}
+
+/** Store (or clear with null) the llama.cpp router key backend-side. */
+export async function llamaSetKey(key: string | null): Promise<void> {
+	return invoke("pi_llama_set_key", { key });
+}
+
+/** Whether a router key is stored backend-side (the value is never exposed). */
+export async function llamaHasKey(): Promise<boolean> {
+	return invoke("pi_llama_has_key");
 }

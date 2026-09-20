@@ -348,6 +348,15 @@ async fn export_diagnostics(app: AppHandle) -> Result<serde_json::Value, String>
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+	// Windows: keep the current directory out of the child-process search
+	// order. A per-user install directory is user-writable, and without this
+	// flag CreateProcess would happily pick up a same-named binary parked
+	// there (all fixed system tools additionally resolve via
+	// pi::system_command's absolute path).
+	#[cfg(windows)]
+	unsafe {
+		std::env::set_var("NoDefaultCurrentDirectoryInExePath", "1");
+	}
 	pi::register(tauri::Builder::default())
 		.plugin(tauri_plugin_opener::init())
 		.plugin(tauri_plugin_dialog::init())
@@ -365,7 +374,9 @@ pub fn run() {
 				"about" | "check-updates" | "session-info" | "tree" | "toggle-sidebar" => {
 					let windows = app.webview_windows();
 					if let Some(win) = windows.values().find(|w| w.is_focused().unwrap_or(false)) {
-						let _ = win.emit("menu://command", id);
+						// emit_to the focused window only: a broadcast would flip
+						// the sidebar state in every open window at once.
+						let _ = win.emit_to(win.label(), "menu://command", id);
 					}
 				}
 				_ => {}
@@ -524,6 +535,18 @@ pub fn run() {
 			}
 			tauri::RunEvent::Exit => {
 				runtime_log::log_info(app_handle, "app exiting");
+				// Last-resort child cleanup: the window Destroyed handlers kill
+				// each window's pi processes, but quit paths that never destroy
+				// the windows (and the SDK sidecar, which has no window) would
+				// otherwise leak node children.
+				let t0 = std::time::Instant::now();
+				let inner = app_handle.state::<crate::pi::PiState>().handle();
+				crate::pi::kill_all_processes(&inner);
+				crate::sidecar::shutdown();
+				runtime_log::log_info(
+					app_handle,
+					&format!("child cleanup took {}ms", t0.elapsed().as_millis()),
+				);
 			}
 			tauri::RunEvent::WindowEvent {
 				label,

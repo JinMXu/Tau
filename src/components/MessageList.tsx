@@ -148,13 +148,17 @@ function MessageImages({ images, t }: { images: MessageImage[]; t: MessageCatalo
 	useEffect(() => {
 		if (preview === null) return;
 		const onKey = (e: KeyboardEvent) => {
+			// Consume the event at document level so it never reaches App's
+			// window-level Escape handler — that one aborts the running turn,
+			// and closing the preview must not kill the agent's output.
+			e.stopPropagation();
 			if (e.key === "Escape") setPreview(null);
 			if (e.key === "ArrowRight") setPreview((v) => (v === null ? v : (v + 1) % images.length));
 			if (e.key === "ArrowLeft")
 				setPreview((v) => (v === null ? v : (v - 1 + images.length) % images.length));
 		};
-		window.addEventListener("keydown", onKey);
-		return () => window.removeEventListener("keydown", onKey);
+		document.addEventListener("keydown", onKey);
+		return () => document.removeEventListener("keydown", onKey);
 	}, [preview, images.length]);
 	return (
 		<>

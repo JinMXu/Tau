@@ -3,7 +3,7 @@ import "markstream-react/index.css";
 import { memo, useRef, type MouseEvent } from "react";
 import { useSyncExternalStore } from "react";
 import { useReducedMotion } from "motion/react";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { isSafeExternalUrl, openExternal } from "../lib/open-external";
 
 /**
  * Markdown 渲染：markstream-react（percho 同款）——增量解析 + 自适应速率的
@@ -92,9 +92,9 @@ function onMarkdownClick(event: MouseEvent<HTMLDivElement>) {
 	const anchor = (event.target as Element | null)?.closest?.("a[href]");
 	if (!anchor) return;
 	const href = anchor.getAttribute("href") ?? "";
-	if (/^(https?|mailto|tel):/i.test(href)) {
+	if (isSafeExternalUrl(href)) {
 		event.preventDefault();
-		void openUrl(href).catch(() => {
+		void openExternal(href).catch(() => {
 			/* opening externally is best-effort */
 		});
 	} else if (!href.startsWith("#")) {

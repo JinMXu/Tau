@@ -121,6 +121,9 @@ export const Sidebar = memo(function Sidebar({
 		if (!menuPath) return;
 		const onDown = () => setMenuPath(null);
 		const onKey = (e: KeyboardEvent) => {
+			// Consume Escape here (document level) so it never reaches App's
+			// window handler, which would abort the running turn.
+			e.stopPropagation();
 			if (e.key === "Escape") setMenuPath(null);
 		};
 		document.addEventListener("mousedown", onDown);
@@ -321,7 +324,9 @@ export const Sidebar = memo(function Sidebar({
 													<AnimatedSidebarMenuSubItem key={s.path}>
 														<div
 															className={`session-row ${
-																s.path === selectedPath ? "active" : ""
+																selectedPath != null && sameSessionPath(selectedPath, s.path)
+																	? "active"
+																	: ""
 															} ${dragPath === s.path ? "dragging" : ""} ${pinned ? "pinned" : ""} ${s.pending ? "pending" : ""}`}
 															draggable={!s.pending}
 															onDragStart={(e) => {

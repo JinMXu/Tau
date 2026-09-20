@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import type { MessageCatalog } from "../i18n";
 import {
 	oauthBegin,
@@ -8,6 +7,7 @@ import {
 	oauthStatus,
 	type OAuthFlowStatus,
 } from "../pi";
+import { openExternal } from "../lib/open-external";
 import { CheckIcon, CopyIcon, LoaderIcon } from "../icons";
 import { Modal } from "./Modal";
 
@@ -197,7 +197,10 @@ export function OAuthDialog({
 						<div className="oauth-url-row">
 							<span className="oauth-url mono">{authUrl}</span>
 							<div className="oauth-url-actions">
-								<button className="btn primary small" onClick={() => void openUrl(authUrl)}>
+								<button
+									className="btn primary small"
+									onClick={() => void openExternal(authUrl).catch(() => {})}
+								>
 									{t.settings.oauthOpenBrowser}
 								</button>
 								<button className="btn secondary small" onClick={() => void copy("url", authUrl)}>

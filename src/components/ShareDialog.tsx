@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { MessageCatalog } from "../i18n";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openExternal } from "../lib/open-external";
 import { CheckIcon, CopyIcon } from "../icons";
 import { Modal } from "./Modal";
 
@@ -38,7 +38,10 @@ export function ShareDialog({
 					{copied ? <CheckIcon size={13} /> : <CopyIcon size={13} />}
 					<span>{copied ? t.chat.copied : t.share.copy}</span>
 				</button>
-				<button className="btn primary" onClick={() => void openUrl(url).catch(() => {})}>
+				<button
+					className="btn primary"
+					onClick={() => void openExternal(url).catch(() => {})}
+				>
 					{t.share.open}
 				</button>
 			</div>

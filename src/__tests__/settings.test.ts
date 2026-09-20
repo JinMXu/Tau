@@ -47,13 +47,23 @@ describe("settings persistence", () => {
 			}),
 		);
 		const s = loadSettings();
-		expect(s.theme).toBe("neon"); // theme is free-form-ish, kept as-is
+		expect(s.theme).toBe(DEFAULT_SETTINGS.theme); // enum: "neon" is rejected
 		expect(s.language).toBe(DEFAULT_SETTINGS.language);
+		expect(s.fontSize).toBe(DEFAULT_SETTINGS.fontSize); // non-number rejected
 		expect(s.customTools).toEqual(["bash"]);
 		expect(s.chatFontFamily).toBe(DEFAULT_SETTINGS.chatFontFamily);
 		expect(s.chatContentWidth).toBe(DEFAULT_SETTINGS.chatContentWidth);
 		expect(s.chatLineSpacing).toBe(DEFAULT_SETTINGS.chatLineSpacing);
 		expect(s.sendDuringRunMode).toBe(DEFAULT_SETTINGS.sendDuringRunMode);
+	});
+
+	it("clamps fontSize to a sane range", () => {
+		localStorage.setItem(KEY, JSON.stringify({ fontSize: 999 }));
+		expect(loadSettings().fontSize).toBe(28);
+		localStorage.setItem(KEY, JSON.stringify({ fontSize: -3 }));
+		expect(loadSettings().fontSize).toBe(10);
+		localStorage.setItem(KEY, JSON.stringify({ fontSize: 16.4 }));
+		expect(loadSettings().fontSize).toBe(16);
 	});
 
 	it("falls back to defaults on corrupt JSON", () => {

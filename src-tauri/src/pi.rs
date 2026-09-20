@@ -307,6 +307,47 @@ pub(crate) fn no_console_window(cmd: &mut Command) -> &mut Command {
 	cmd
 }
 
+/// `Command` for a well-known system tool, resolved to its absolute system
+/// path when possible. Windows' search order includes the exe's directory and
+/// (unless NoDefaultCurrentDirectoryInExePath is set) the current directory,
+/// so a bare `Command::new("curl")` could be shadowed by a same-user binary
+/// parked next to the (per-user installable) app. Only fixed system tools go
+/// through here — user-installed tools (git, gh) stay on PATH.
+pub(crate) fn system_command(tool: &str) -> Command {
+	let absolute = if cfg!(windows) {
+		std::env::var_os("WINDIR").map(|w| {
+			PathBuf::from(w)
+				.join("System32")
+				.join(format!("{tool}.exe"))
+		})
+	} else {
+		match tool {
+			"open" => Some(PathBuf::from("/usr/bin/open")),
+			"xdg-open" => Some(PathBuf::from("/usr/bin/xdg-open")),
+			_ => None,
+		}
+	};
+	match absolute.filter(|p| p.is_file()) {
+		Some(p) => Command::new(p),
+		None => Command::new(tool),
+	}
+}
+
+/// Write `data` to `path`, restricted to the current user on Unix. Temp files
+/// carrying session drafts / shared sessions / request bodies must not fall
+/// out world-readable through the default umask.
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
+	let mut f =
+		File::create(path).map_err(|e| format!("failed to create {}: {e}", path.display()))?;
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+	}
+	f.write_all(data)
+		.map_err(|e| format!("failed to write {}: {e}", path.display()))
+}
+
 /// Maximum size of a single RPC event line we are willing to buffer. pi
 /// sends one JSON event per line; a huge tool result can make a single line
 /// tens of MB. BufRead::lines() would allocate that unboundedly — combined
@@ -314,6 +355,11 @@ pub(crate) fn no_console_window(cmd: &mut Command) -> &mut Command {
 /// window the crashes were reported in. Lines beyond the cap are dropped
 /// (the UI degrades gracefully; the process survives).
 const MAX_EVENT_LINE: usize = 64 * 1024 * 1024;
+
+/// CREATE_NO_WINDOW for spawns that don't go through `no_console_window`
+/// (windows-only; kept next to its use sites for readability).
+#[cfg(windows)]
+const CREATE_NO_WINDOW_KILL: u32 = 0x08000000;
 
 /// Env for the SDK session host (resources/agent-sidecar/session-host.mjs),
 /// assembled from the same launch options the old CLI flags carried. Pure so
@@ -606,6 +652,13 @@ impl PiProcess {
 			const CREATE_NO_WINDOW: u32 = 0x08000000;
 			cmd.creation_flags(CREATE_NO_WINDOW);
 		}
+		#[cfg(unix)]
+		{
+			use std::os::unix::process::CommandExt;
+			// Own process group: kill() can then take down the whole tree
+			// (bash/tool children pi spawned), not just the node process.
+			cmd.process_group(0);
+		}
 
 		let mut child = cmd
 			.spawn()
@@ -666,7 +719,14 @@ impl PiProcess {
 				// Envelope: tag every event with the session channel so a window
 				// running several sessions can route each event to its own UI.
 				let envelope = serde_json::json!({ "chan": chan_thread, "ev": payload });
-				if win_stdout.emit("pi://event", &envelope).is_err() {
+				// emit_to (not emit): `emit` broadcasts to EVERY webview, and
+				// chan ids are per-window counters (two windows both start at
+				// c1) — a broadcast would let window B apply window A's stream
+				// events to its own same-named channel.
+				if win_stdout
+					.emit_to(win_stdout.label(), "pi://event", &envelope)
+					.is_err()
+				{
 					emit_errors += 1;
 				}
 				streamed += 1;
@@ -694,6 +754,22 @@ impl PiProcess {
 			} else {
 				None
 			};
+			// The process is gone for good: release the session occupancy now.
+			// A stale `{child: None, session_file: Some}` entry would make every
+			// later pi_start / archive / compact on this session fail with
+			// "already open / stop the running session" until the app restarts.
+			// Only the fields are cleared (not the entry removed): a concurrent
+			// pi_start on the same channel key may have installed a fresh
+			// process while we were reaping, and removing the entry could
+			// clobber it.
+			if is_current {
+				if let Some(p) = guard.get_mut(&key_thread) {
+					if p.child.is_none() {
+						p.session_file = None;
+						p.workspace = None;
+					}
+				}
+			}
 			drop(guard);
 			// Reap the child OUTSIDE the lock (wait() blocks): dropping the
 			// Child handle without wait() would leave a naturally-exited pi as
@@ -719,7 +795,11 @@ impl PiProcess {
 					&app_stdout,
 					&format!("pi process exited (code={code}) stderr-last: {last_err}"),
 				);
-				let _ = win_stdout.emit("pi://exit", serde_json::json!({ "chan": chan_thread }));
+				let _ = win_stdout.emit_to(
+					win_stdout.label(),
+					"pi://exit",
+					serde_json::json!({ "chan": chan_thread }),
+				);
 			}
 		});
 
@@ -736,7 +816,9 @@ impl PiProcess {
 				}
 				// Channel-scoped emit: each channel's stderr is tagged so the
 				// webview can attribute diagnostics to the right session.
-				let _ = win_stderr.emit(
+				// emit_to keeps it in the owning window (see the stdout note).
+				let _ = win_stderr.emit_to(
+					win_stderr.label(),
 					"pi://stderr",
 					serde_json::json!({ "chan": chan_stderr, "line": line }),
 				);
@@ -763,14 +845,21 @@ impl PiProcess {
 			#[cfg(windows)]
 			{
 				use std::os::windows::process::CommandExt;
-				const CREATE_NO_WINDOW: u32 = 0x08000000;
-				let _ = Command::new("taskkill")
+				let mut taskkill = system_command("taskkill");
+				let _ = taskkill
 					.args(["/PID", &child.id().to_string(), "/T", "/F"])
 					.stdin(Stdio::null())
 					.stdout(Stdio::null())
 					.stderr(Stdio::null())
-					.creation_flags(CREATE_NO_WINDOW)
+					.creation_flags(CREATE_NO_WINDOW_KILL)
 					.status();
+			}
+			// Unix: the child was spawned with its own process group, so a
+			// negative pid signals the whole tree — `child.kill()` alone would
+			// orphan tool children (npm installs, dev servers, …).
+			#[cfg(unix)]
+			unsafe {
+				let _ = libc::kill(-(child.id() as i32), libc::SIGKILL);
 			}
 			let _ = child.kill();
 			let _ = child.wait();
@@ -868,25 +957,32 @@ pub(crate) fn kill_window_process_inner(
 	// Remove the entries under the lock (a destroyed window's processes are
 	// gone for good — this also keeps the map from growing without bound) and
 	// kill outside it: kill() waits for the child to exit and must not block
-	// other windows' RPC commands.
+	// other windows' RPC commands. lock_state recovers a poisoned mutex — an
+	// `.unwrap_or_default()` here would silently skip the kill and leak the
+	// window's pi processes.
 	let prefix = window_prefix(label);
-	let procs: Vec<PiProcess> = inner
-		.lock()
-		.ok()
-		.and_then(|mut map| {
-			let keys: Vec<String> = map
-				.keys()
-				.filter(|k| k.starts_with(&prefix))
-				.cloned()
-				.collect();
-			let removed: Vec<PiProcess> = keys.iter().filter_map(|k| map.remove(k)).collect();
-			if removed.is_empty() {
-				None
-			} else {
-				Some(removed)
-			}
-		})
-		.unwrap_or_default();
+	let procs: Vec<PiProcess> = {
+		let mut map = lock_state(inner);
+		let keys: Vec<String> = map
+			.keys()
+			.filter(|k| k.starts_with(&prefix))
+			.cloned()
+			.collect();
+		keys.iter().filter_map(|k| map.remove(k)).collect()
+	};
+	for mut p in procs {
+		p.kill();
+	}
+}
+
+/// Kill every pi process in the map (app-exit fallback). Window-destroy
+/// handlers normally do this per window; quit paths that skip window
+/// destruction (Cmd+Q edge cases) need a sweep of their own.
+pub(crate) fn kill_all_processes(inner: &Arc<Mutex<HashMap<String, PiProcess>>>) {
+	let procs: Vec<PiProcess> = {
+		let mut map = lock_state(inner);
+		map.drain().map(|(_, p)| p).collect()
+	};
 	for mut p in procs {
 		p.kill();
 	}
@@ -1162,6 +1258,22 @@ fn pi_start_inner(
 	chan: &str,
 ) -> Result<(), String> {
 	let info = probe_pi().ok_or("pi binary not found")?;
+	// Containment (same rule every other session command enforces): resume and
+	// fork targets must live inside the sessions directory. Without this, a
+	// compromised webview could point TAU_SESSION_FILE/TAU_FORK_OF at any
+	// parseable file and read its lines back as session "messages".
+	if let Some(sf) = session_file.as_deref() {
+		require_session_path(Path::new(sf))?;
+	}
+	if let Some(fo) = fork_of.as_deref() {
+		require_session_path(Path::new(fo))?;
+	}
+	// The workspace becomes the pi child's cwd: require an existing directory
+	// (canonicalized check only — the original spelling is what gets passed on,
+	// so pi's project naming stays byte-identical to previous versions).
+	if !Path::new(workspace).is_dir() {
+		return Err(format!("workspace is not a directory: {workspace}"));
+	}
 	let label = window.label().to_string();
 	let key = channel_key(&label, chan);
 	// Conflict check + detach this channel's previous process (if any) while
@@ -1257,7 +1369,7 @@ fn pi_start_inner(
 		// wins and ours is stopped below instead of being leaked. (The
 		// frontend hands out a fresh channel id per start, so this is
 		// belt-and-braces rather than a path the UI can reach today.)
-		if !map.get(&key).is_some_and(|p| p.child.is_some()) {
+		if map.get(&key).is_none_or(|p| p.child.is_none()) {
 			if let Some(p) = to_install.take() {
 				map.insert(key.clone(), p);
 			}
@@ -1341,7 +1453,7 @@ const ALLOWED_RPC_TYPES: &[&str] = &[
 ];
 
 #[tauri::command]
-fn pi_send(
+async fn pi_send(
 	window: WebviewWindow,
 	state: State<'_, PiState>,
 	command: Value,
@@ -1374,25 +1486,31 @@ fn pi_send(
 	// Take the stdin handle out of the map so the write doesn't hold the global
 	// process-map lock: a blocked write (pi busy, pipe buffer full) would
 	// otherwise stall every other window's RPC commands.
-	let mut stdin = {
+	let stdin = {
 		let mut map = lock_state(&state.inner);
 		let p = map.get_mut(&key).ok_or("pi is not running")?;
 		p.stdin.take().ok_or("pi is not running")?
 	};
 	let mut line = serde_json::to_string(&command).map_err(|e| e.to_string())?;
 	line.push('\n');
-	// This sync command runs on the main thread and the pipe write can block
-	// (pi not reading stdin). Log begin/end so a wedge here shows up as a
-	// "pi_send begin" with no matching "end" in tau.log.
+	// The pipe write can block for as long as pi stays busy without reading
+	// stdin (large prompts overflow the 64KB pipe buffer). On the blocking
+	// pool that at worst parks one worker thread; as a sync command it used to
+	// run on the MAIN thread and froze every window into "(Not Responding)".
 	let t0 = std::time::Instant::now();
 	crate::runtime_log::log_info(
 		window.app_handle(),
 		&format!("pi_send begin type={kind} window={label}"),
 	);
-	let result = stdin
-		.write_all(line.as_bytes())
-		.and_then(|_| stdin.flush())
-		.map_err(|e| format!("failed to write to pi stdin: {e}"));
+	let result = run_blocking(move || {
+		let mut stdin = stdin;
+		stdin
+			.write_all(line.as_bytes())
+			.and_then(|_| stdin.flush())
+			.map(|_| stdin)
+			.map_err(|e| format!("failed to write to pi stdin: {e}"))
+	})
+	.await;
 	{
 		let elapsed = t0.elapsed().as_millis();
 		// Fast writes are the norm; only log completions that were slow or
@@ -1408,14 +1526,22 @@ fn pi_send(
 		}
 	}
 	// Restore the handle (best-effort): only if the process wasn't replaced in
-	// the meantime (a replaced process already has its own stdin set).
-	let mut map = lock_state(&state.inner);
-	if let Some(p) = map.get_mut(&key) {
-		if p.stdin.is_none() {
-			p.stdin = Some(stdin);
+	// the meantime (a replaced process already has its own stdin set). A FAILED
+	// write means the pipe is dead (EPIPE) — dropping the handle instead of
+	// returning it makes the next attempt report the real state (the reader
+	// thread's exit cleanup) rather than failing the same way one more time.
+	match result {
+		Ok(stdin) => {
+			let mut map = lock_state(&state.inner);
+			if let Some(p) = map.get_mut(&key) {
+				if p.stdin.is_none() {
+					p.stdin = Some(stdin);
+				}
+			}
+			Ok(())
 		}
+		Err(e) => Err(e),
 	}
-	result
 }
 
 #[tauri::command]
@@ -1763,6 +1889,21 @@ async fn pi_search_sessions(
 	.await
 }
 
+/// Largest byte offset <= `i` that is a char boundary of `s`. Unicode case
+/// folding can change byte lengths (`İ` lowercases to two chars), so a match
+/// offset from the lowercased text can land mid-character in the original —
+/// slicing there would panic.
+fn snap_to_char_boundary(s: &str, i: usize) -> usize {
+	if i >= s.len() {
+		return s.len();
+	}
+	let mut i = i;
+	while i > 0 && !s.is_char_boundary(i) {
+		i -= 1;
+	}
+	i
+}
+
 /// Find the first line containing the query (case-insensitive) and return a
 /// short snippet of message text around it.
 fn search_snippet(path: &Path, query: &str) -> Option<String> {
@@ -1781,8 +1922,8 @@ fn search_snippet(path: &Path, query: &str) -> Option<String> {
 			let text = extract_block_text(v.pointer("/message/content")).unwrap_or_default();
 			let lower = text.to_lowercase();
 			if let Some(idx) = lower.find(query) {
-				let start = idx.saturating_sub(40);
-				let end = (idx + query.len() + 80).min(text.len());
+				let start = snap_to_char_boundary(&text, idx.saturating_sub(40));
+				let end = snap_to_char_boundary(&text, (idx + query.len() + 80).min(text.len()));
 				if start >= text.len() {
 					continue;
 				}
@@ -1948,7 +2089,7 @@ fn compact_session_images_inner(p: &Path) -> Result<serde_json::Value, String> {
 	let before = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
 	let tmp_path = p.with_extension(format!("jsonl.{}.tmp", unique_suffix()));
 	let mut removed = 0usize;
-	{
+	let write_result = (|| -> Result<(), String> {
 		let file = File::open(p).map_err(|e| format!("failed to read session: {e}"))?;
 		let mut reader = BufReader::new(file);
 		let mut writer = std::io::BufWriter::new(
@@ -2019,6 +2160,14 @@ fn compact_session_images_inner(p: &Path) -> Result<serde_json::Value, String> {
 		writer
 			.flush()
 			.map_err(|e| format!("failed to write session: {e}"))?;
+		Ok(())
+	})();
+	// Any error inside the rewrite leaves the tmp behind — remove it so the
+	// sessions directory doesn't accumulate orphaned *.tmp copies (they are
+	// invisible to the listing and can be hundreds of MB).
+	if let Err(e) = write_result {
+		let _ = std::fs::remove_file(&tmp_path);
+		return Err(e);
 	}
 	if removed == 0 {
 		let _ = std::fs::remove_file(&tmp_path);
@@ -2029,7 +2178,12 @@ fn compact_session_images_inner(p: &Path) -> Result<serde_json::Value, String> {
 			"after": before
 		}));
 	}
-	std::fs::rename(&tmp_path, p).map_err(|e| format!("failed to persist session: {e}"))?;
+	if let Err(e) = std::fs::rename(&tmp_path, p) {
+		// Don't leave the fully-written tmp behind: it would never be cleaned
+		// up (only *.jsonl files are listed) and can be hundreds of MB.
+		let _ = std::fs::remove_file(&tmp_path);
+		return Err(format!("failed to persist session: {e}"));
+	}
 	let after = std::fs::metadata(p).map(|m| m.len()).unwrap_or(before);
 	Ok(serde_json::json!({
 		"ok": true,
@@ -2045,51 +2199,84 @@ async fn pi_compact_session_images(
 	path: String,
 ) -> Result<serde_json::Value, String> {
 	let p = require_session_path(Path::new(&path))?;
-	if is_running_session(&state, &p) {
-		return Err("stop the running session before compacting it".into());
+	// Reserve the session for the duration of the rewrite (same mechanism as
+	// pi_start's placeholder): the is_running_session check alone leaves a
+	// window where pi_start can attach to the same file and append while the
+	// rewrite is mid-flight — pi keeps appending to the renamed (old) inode on
+	// Unix, corrupting the compaction result.
+	let full = p.clone();
+	let guard_key = format!("\u{1}compact\u{1}{}", full.display());
+	{
+		let mut map = lock_state(&state.inner);
+		if map.values().any(|proc| {
+			proc.session_file
+				.as_deref()
+				.is_some_and(|s| canonical_or(s) == full)
+		}) {
+			return Err("session is already open in another window".into());
+		}
+		map.insert(
+			guard_key.clone(),
+			PiProcess {
+				session_file: Some(full),
+				..Default::default()
+			},
+		);
 	}
-	run_blocking(move || compact_session_images_inner(&p)).await
+	let result = run_blocking(move || compact_session_images_inner(&p)).await;
+	{
+		let mut map = lock_state(&state.inner);
+		// Remove only our own placeholder; a concurrent start may have
+		// installed a live process under a different key, never this one.
+		if map.get(&guard_key).is_some_and(|proc| proc.child.is_none()) {
+			map.remove(&guard_key);
+		}
+	}
+	result
 }
 
 #[tauri::command]
-fn pi_list_archived_sessions() -> Result<Vec<PiArchivedSession>, String> {
-	let mut out = Vec::new();
-	for dir in [archive_dir(), trash_dir()] {
-		let Ok(entries) = std::fs::read_dir(&dir) else {
-			continue;
-		};
-		for entry in entries.flatten() {
-			let path = entry.path();
-			if path.extension().is_some_and(|ext| ext == "jsonl") {
-				let meta = entry.metadata().ok();
-				let file_name = path
-					.file_name()
-					.unwrap_or_default()
-					.to_string_lossy()
-					.into_owned();
-				let original = meta_original_path(&dir, &file_name).unwrap_or_default();
-				let scan = scan_session(&path, 200);
-				out.push(PiArchivedSession {
-					path: path.to_string_lossy().into_owned(),
-					original_path: original,
-					title: if scan.title.is_empty() {
-						file_stem(&path)
-					} else {
-						scan.title
-					},
-					project: scan.project,
-					mtime_ms: meta
-						.as_ref()
-						.and_then(|m| m.modified().ok())
-						.map(unix_ms)
-						.unwrap_or(0),
-					size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-				});
+async fn pi_list_archived_sessions() -> Result<Vec<PiArchivedSession>, String> {
+	run_blocking(|| {
+		let mut out = Vec::new();
+		for dir in [archive_dir(), trash_dir()] {
+			let Ok(entries) = std::fs::read_dir(&dir) else {
+				continue;
+			};
+			for entry in entries.flatten() {
+				let path = entry.path();
+				if path.extension().is_some_and(|ext| ext == "jsonl") {
+					let meta = entry.metadata().ok();
+					let file_name = path
+						.file_name()
+						.unwrap_or_default()
+						.to_string_lossy()
+						.into_owned();
+					let original = meta_original_path(&dir, &file_name).unwrap_or_default();
+					let scan = scan_session(&path, 200);
+					out.push(PiArchivedSession {
+						path: path.to_string_lossy().into_owned(),
+						original_path: original,
+						title: if scan.title.is_empty() {
+							file_stem(&path)
+						} else {
+							scan.title
+						},
+						project: scan.project,
+						mtime_ms: meta
+							.as_ref()
+							.and_then(|m| m.modified().ok())
+							.map(unix_ms)
+							.unwrap_or(0),
+						size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
+					});
+				}
 			}
 		}
-	}
-	out.sort_by_key(|x| std::cmp::Reverse(x.mtime_ms));
-	Ok(out)
+		out.sort_by_key(|x| std::cmp::Reverse(x.mtime_ms));
+		Ok(out)
+	})
+	.await
 }
 
 #[tauri::command]
@@ -2166,7 +2353,7 @@ fn pi_reveal_session(path: String) -> Result<(), String> {
 	{
 		use std::os::windows::process::CommandExt;
 		const CREATE_NO_WINDOW: u32 = 0x08000000;
-		let _ = Command::new("explorer")
+		let _ = system_command("explorer")
 			.arg(format!("/select,{}", path.display()))
 			.creation_flags(CREATE_NO_WINDOW)
 			.spawn();
@@ -2174,7 +2361,7 @@ fn pi_reveal_session(path: String) -> Result<(), String> {
 	}
 	#[cfg(target_os = "macos")]
 	{
-		let _ = Command::new("open")
+		let _ = system_command("open")
 			.args(["-R", &path.to_string_lossy()])
 			.spawn();
 		Ok(())
@@ -2182,7 +2369,39 @@ fn pi_reveal_session(path: String) -> Result<(), String> {
 	#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 	{
 		let parent = path.parent().unwrap_or(&path);
-		let _ = Command::new("xdg-open").arg(parent).spawn();
+		let _ = system_command("xdg-open").arg(parent).spawn();
+		Ok(())
+	}
+}
+
+/// Open a DIRECTORY in the system file manager (project folders, the sessions
+/// directory). The frontend's `opener` capability is URL-only (https/mailto),
+/// so folder reveals go through here instead of `open_path` — one less
+/// arbitrary-file-open primitive exposed to the webview.
+#[tauri::command]
+fn pi_reveal_dir(path: String) -> Result<(), String> {
+	let p = PathBuf::from(&path);
+	if !p.is_dir() {
+		return Err(format!("not a directory: {path}"));
+	}
+	#[cfg(target_os = "windows")]
+	{
+		use std::os::windows::process::CommandExt;
+		const CREATE_NO_WINDOW: u32 = 0x08000000;
+		let _ = system_command("explorer")
+			.arg(&p)
+			.creation_flags(CREATE_NO_WINDOW)
+			.spawn();
+		Ok(())
+	}
+	#[cfg(target_os = "macos")]
+	{
+		let _ = system_command("open").arg(&p).spawn();
+		Ok(())
+	}
+	#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+	{
+		let _ = system_command("xdg-open").arg(&p).spawn();
 		Ok(())
 	}
 }
@@ -2503,10 +2722,15 @@ async fn pi_share_session(session_path: String) -> Result<String, String> {
 			}
 			Ok(_) => {}
 		}
-		// 2. Export to a temp HTML file via the SDK sidecar.
+		// 2. Export to a temp HTML file via the SDK sidecar (owner-only on
+		// Unix: the export carries the whole session, secrets included).
 		let tmp = std::env::temp_dir().join(format!("tau-share-{}.html", unique_suffix()));
 		let _ = std::fs::remove_file(&tmp);
-		crate::sidecar::export_html(&path, &tmp).map_err(|e| format!("export failed: {e}"))?;
+		let export = crate::sidecar::export_html(&path, &tmp);
+		if let Err(e) = export {
+			let _ = std::fs::remove_file(&tmp);
+			return Err(format!("export failed: {e}"));
+		}
 		// 3. Create the private gist and read its html_url.
 		let gist = no_console_window(
 			Command::new("gh")
@@ -2908,9 +3132,15 @@ fn write_json_map(
 	let raw = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
 	// Atomic write (tmp + rename): a torn write would corrupt the JSON and
 	// silently drop trust decisions (pi itself also reads/writes these files).
-	let tmp = path.with_extension("json.tmp");
+	// Unique tmp suffix so concurrent writers (incl. the pi CLI touching the
+	// same files) can't collide, and a failed rename never leaves a stale tmp.
+	let tmp = path.with_extension(format!("json.{}.tmp", unique_suffix()));
 	std::fs::write(&tmp, raw).map_err(|e| format!("failed to write {}: {e}", tmp.display()))?;
-	std::fs::rename(&tmp, path).map_err(|e| format!("failed to persist {}: {e}", path.display()))
+	if let Err(e) = std::fs::rename(&tmp, path) {
+		let _ = std::fs::remove_file(&tmp);
+		return Err(format!("failed to persist {}: {e}", path.display()));
+	}
+	Ok(())
 }
 
 /// Nearest saved decision for a directory, walking up its parents (mirrors
@@ -2983,6 +3213,53 @@ fn pi_trust_default_set(value: String) -> Result<(), String> {
 // External editor (TUI Ctrl+G): write the draft to a temp file, open the
 // system editor, wait for it to close, and read the result back.
 // ===================================================================
+/// Wait for a spawned editor child to exit, giving up after `EDITOR_WAIT`.
+/// `open -W -a TextEdit` on macOS waits for the APP to quit (or returns
+/// immediately when TextEdit is already running — reading back an unedited
+/// draft); a plain `child.wait()` can therefore hang the command forever.
+/// On timeout the child is killed by pid so the blocking thread is not leaked.
+fn wait_editor_with_timeout(
+	mut child: Child,
+	timeout: Duration,
+) -> Result<std::process::ExitStatus, String> {
+	let pid = child.id();
+	let (tx, rx) = std::sync::mpsc::channel();
+	thread::spawn(move || {
+		let status = child.wait();
+		let _ = tx.send(status);
+	});
+	match rx.recv_timeout(timeout) {
+		Ok(Ok(status)) => Ok(status),
+		Ok(Err(e)) => Err(format!("failed to wait for editor: {e}")),
+		Err(_) => {
+			#[cfg(windows)]
+			{
+				use std::os::windows::process::CommandExt;
+				let mut taskkill = system_command("taskkill");
+				let _ = taskkill
+					.args(["/PID", &pid.to_string(), "/T", "/F"])
+					.stdin(Stdio::null())
+					.stdout(Stdio::null())
+					.stderr(Stdio::null())
+					.creation_flags(CREATE_NO_WINDOW_KILL)
+					.status();
+			}
+			#[cfg(not(windows))]
+			{
+				let _ = Command::new("/bin/kill")
+					.args(["-9", &pid.to_string()])
+					.status();
+			}
+			Err(format!(
+				"editor did not close within {}s — aborted (save the draft in the editor and paste it manually)",
+				timeout.as_secs()
+			))
+		}
+	}
+}
+
+const EDITOR_WAIT: Duration = Duration::from_secs(30 * 60);
+
 #[tauri::command]
 async fn pi_external_edit(text: Option<String>) -> Result<String, String> {
 	run_blocking(move || {
@@ -2994,7 +3271,9 @@ async fn pi_external_edit(text: Option<String>) -> Result<String, String> {
 			.unwrap_or(0);
 		let tmp =
 			std::env::temp_dir().join(format!("tau-editor-{}-{unique}.md", std::process::id()));
-		std::fs::write(&tmp, text.unwrap_or_default())
+		// The draft can hold anything the user typed — keep it owner-only on
+		// Unix instead of the default world-readable umask.
+		write_private(&tmp, text.unwrap_or_default().as_bytes())
 			.map_err(|e| format!("failed to write draft: {e}"))?;
 		let editor = std::env::var("VISUAL")
 			.or_else(|_| std::env::var("EDITOR"))
@@ -3006,23 +3285,32 @@ async fn pi_external_edit(text: Option<String>) -> Result<String, String> {
 			let program = parts.next().unwrap_or(ed.as_str());
 			let mut cmd = Command::new(program);
 			cmd.args(parts).arg(&tmp);
-			no_console_window(&mut cmd).status()
+			no_console_window(&mut cmd)
+				.spawn()
+				.map_err(|e| format!("failed to launch editor: {e}"))
 		} else {
 			#[cfg(target_os = "macos")]
 			{
-				Command::new("open")
-					.args(["-W", "-a", "TextEdit"])
-					.arg(&tmp)
-					.status()
+				let mut cmd = system_command("open");
+				cmd.args(["-W", "-a", "TextEdit"]).arg(&tmp);
+				cmd.spawn()
+					.map_err(|e| format!("failed to launch editor: {e}"))
 			}
 			#[cfg(not(target_os = "macos"))]
 			{
-				let mut cmd = Command::new(if cfg!(windows) { "notepad.exe" } else { "nano" });
+				let mut cmd = system_command(if cfg!(windows) { "notepad" } else { "nano" });
 				cmd.arg(&tmp);
 				#[cfg(windows)]
 				no_console_window(&mut cmd);
-				cmd.status()
+				cmd.spawn()
+					.map_err(|e| format!("failed to launch editor: {e}"))
 			}
+		};
+		// Wait on the blocking thread (this whole closure already runs on one)
+		// with a watchdog so a wedged editor can't hang the command forever.
+		let status = match status {
+			Ok(child) => wait_editor_with_timeout(child, EDITOR_WAIT),
+			Err(e) => Err(e),
 		};
 		let result = std::fs::read_to_string(&tmp);
 		let _ = std::fs::remove_file(&tmp);
@@ -3030,7 +3318,7 @@ async fn pi_external_edit(text: Option<String>) -> Result<String, String> {
 			(Ok(s), Ok(content)) if s.success() => Ok(content),
 			(Ok(s), Ok(_)) => Err(format!("editor exited with status {s}")),
 			(Ok(_), Err(e)) => Err(format!("failed to read draft back: {e}")),
-			(Err(e), _) => Err(format!("failed to launch editor: {e}")),
+			(Err(e), _) => Err(e),
 		}
 	})
 	.await
@@ -3041,7 +3329,7 @@ async fn pi_external_edit(text: Option<String>) -> Result<String, String> {
 // The webview CSP forbids direct fetches, so all calls go through here.
 // ===================================================================
 fn run_curl(args: &[String], timeout_secs: u32) -> Result<String, String> {
-	let mut cmd = Command::new("curl");
+	let mut cmd = system_command("curl");
 	cmd.args(["-s", "-m", &timeout_secs.to_string()])
 		.args(args)
 		.stdin(Stdio::null())
@@ -3065,6 +3353,13 @@ fn run_curl(args: &[String], timeout_secs: u32) -> Result<String, String> {
 	Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Remove a curl argument file (request body / auth header) after the call.
+fn cleanup_curl_file(path: &Option<PathBuf>) {
+	if let Some(p) = path {
+		let _ = std::fs::remove_file(p);
+	}
+}
+
 fn llama_curl_args(
 	url: &str,
 	api_key: &Option<String>,
@@ -3078,22 +3373,33 @@ fn llama_curl_args(
 		return Err("llama.cpp router URL must start with http:// or https://".into());
 	}
 	let mut args = Vec::new();
+	let mut header_file = None;
 	if let Some(k) = api_key.as_deref().filter(|k| !k.is_empty()) {
+		// The Bearer key goes through a `curl -H @file` argument file instead
+		// of the argv vector: command lines are readable by every same-user
+		// process, files are not (and the file is 0600 on Unix + deleted after
+		// the call).
+		let path = std::env::temp_dir().join(format!("tau-llama-h{}.hdr", unique_suffix()));
+		write_private(&path, format!("Authorization: Bearer {k}\n").as_bytes())?;
 		args.push("-H".to_string());
-		args.push(format!("Authorization: Bearer {k}"));
+		args.push(format!("@{}", path.display()));
+		header_file = Some(path);
 	}
 	// `--` terminates option parsing so the URL is always treated as a
 	// positional argument even if it contained a leading `-`.
 	args.push("--".to_string());
 	args.push(format!("{trimmed}{suffix}"));
-	Ok((args, None))
+	Ok((args, header_file))
 }
 
 #[tauri::command]
-async fn pi_llama_models(url: String, api_key: Option<String>) -> Result<Vec<String>, String> {
+async fn pi_llama_models(app: AppHandle, url: String) -> Result<Vec<String>, String> {
+	let api_key = crate::extras::stored_llama_key(&app);
 	run_blocking(move || {
-		let (args, _) = llama_curl_args(&url, &api_key, "/v1/models")?;
-		let body = run_curl(&args, 10)?;
+		let (args, header_file) = llama_curl_args(&url, &api_key, "/v1/models")?;
+		let result = run_curl(&args, 10);
+		cleanup_curl_file(&header_file);
+		let body = result?;
 		let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
 			format!(
 				"unexpected router response: {e} — {}",
@@ -3114,41 +3420,53 @@ async fn pi_llama_models(url: String, api_key: Option<String>) -> Result<Vec<Str
 	.await
 }
 
+/// (curl argv, request-body file to delete afterwards, auth-header file to
+/// delete afterwards)
+type LlamaCurlInvocation = (Vec<String>, Option<PathBuf>, Option<PathBuf>);
+
+fn llama_post_args(
+	url: &str,
+	api_key: &Option<String>,
+	suffix: &str,
+	name: &str,
+) -> Result<LlamaCurlInvocation, String> {
+	let (mut args, header_file) = llama_curl_args(url, api_key, suffix)?;
+	args.insert(0, "-X".to_string());
+	args.insert(1, "POST".to_string());
+	args.insert(2, "-H".to_string());
+	args.insert(3, "Content-Type: application/json".to_string());
+	let body = serde_json::json!({ "name": name }).to_string();
+	let tmp = std::env::temp_dir().join(format!("tau-llama-{}.json", unique_suffix()));
+	if let Err(e) = write_private(&tmp, body.as_bytes()) {
+		cleanup_curl_file(&header_file);
+		return Err(e);
+	}
+	let mut data_args = vec!["-d".to_string(), format!("@{}", tmp.display())];
+	data_args.append(&mut args);
+	Ok((data_args, Some(tmp), header_file))
+}
+
 #[tauri::command]
-async fn pi_llama_load(url: String, api_key: Option<String>, name: String) -> Result<(), String> {
+async fn pi_llama_load(app: AppHandle, url: String, name: String) -> Result<(), String> {
+	let api_key = crate::extras::stored_llama_key(&app);
 	run_blocking(move || {
-		let (mut args, _) = llama_curl_args(&url, &api_key, "/v1/load")?;
-		args.insert(0, "-X".to_string());
-		args.insert(1, "POST".to_string());
-		args.insert(2, "-H".to_string());
-		args.insert(3, "Content-Type: application/json".to_string());
-		let body = serde_json::json!({ "name": name }).to_string();
-		let tmp = std::env::temp_dir().join(format!("tau-llama-{}.json", unique_suffix()));
-		std::fs::write(&tmp, &body).map_err(|e| format!("failed to write request: {e}"))?;
-		let mut data_args = vec!["-d".to_string(), format!("@{}", tmp.display())];
-		data_args.append(&mut args);
-		let result = run_curl(&data_args, 300);
-		let _ = std::fs::remove_file(&tmp);
+		let (args, body_file, header_file) = llama_post_args(&url, &api_key, "/v1/load", &name)?;
+		let result = run_curl(&args, 300);
+		cleanup_curl_file(&body_file);
+		cleanup_curl_file(&header_file);
 		result.map(|_| ())
 	})
 	.await
 }
 
 #[tauri::command]
-async fn pi_llama_unload(url: String, api_key: Option<String>, name: String) -> Result<(), String> {
+async fn pi_llama_unload(app: AppHandle, url: String, name: String) -> Result<(), String> {
+	let api_key = crate::extras::stored_llama_key(&app);
 	run_blocking(move || {
-		let (mut args, _) = llama_curl_args(&url, &api_key, "/v1/unload")?;
-		args.insert(0, "-X".to_string());
-		args.insert(1, "POST".to_string());
-		args.insert(2, "-H".to_string());
-		args.insert(3, "Content-Type: application/json".to_string());
-		let body = serde_json::json!({ "name": name }).to_string();
-		let tmp = std::env::temp_dir().join(format!("tau-llama-{}.json", unique_suffix()));
-		std::fs::write(&tmp, &body).map_err(|e| format!("failed to write request: {e}"))?;
-		let mut data_args = vec!["-d".to_string(), format!("@{}", tmp.display())];
-		data_args.append(&mut args);
-		let result = run_curl(&data_args, 300);
-		let _ = std::fs::remove_file(&tmp);
+		let (args, body_file, header_file) = llama_post_args(&url, &api_key, "/v1/unload", &name)?;
+		let result = run_curl(&args, 300);
+		cleanup_curl_file(&body_file);
+		cleanup_curl_file(&header_file);
 		result.map(|_| ())
 	})
 	.await
@@ -3347,6 +3665,8 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			pi_llama_models,
 			pi_llama_load,
 			pi_llama_unload,
+			crate::extras::pi_llama_set_key,
+			crate::extras::pi_llama_has_key,
 			pi_usage_stats,
 			pi_compact_session_images,
 			crate::sidecar::sidecar_ping,
@@ -3366,6 +3686,7 @@ pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wr
 			pi_restore_session,
 			pi_purge_session,
 			pi_reveal_session,
+			pi_reveal_dir,
 			pi_subagent_runs,
 			crate::extras::pi_auth_status,
 			crate::extras::pi_auth_set_key,
@@ -3461,11 +3782,20 @@ mod tests {
 		{
 			use std::io::Write;
 			let mut f = File::create(&path).unwrap();
-			writeln!(f, "{}", r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-08-12T00:00:00.000Z","cwd":"C:/tmp"}"#).unwrap();
-			writeln!(f, "{}", r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-12T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#).unwrap();
-			writeln!(f, "{}", r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-12T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"reply"},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"ls"}}]}}"#).unwrap();
-			writeln!(f, "{}", r#"{"type":"message","id":"a2","parentId":"u1","timestamp":"2026-08-12T00:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"other branch"}]}}"#).unwrap();
-			writeln!(f, "{}", r#"{"type":"label","id":"l1","parentId":"a1","timestamp":"2026-08-12T00:00:04.000Z","targetId":"a1","label":"checkpoint"}"#).unwrap();
+			f.write_all(r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-08-12T00:00:00.000Z","cwd":"C:/tmp"}"#.as_bytes()).unwrap();
+			f.write_all(
+				b"
+",
+			)
+			.unwrap();
+			f.write_all(format!("{}
+", r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-12T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#).as_bytes()).unwrap();
+			f.write_all(format!("{}
+", r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-12T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"reply"},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"ls"}}]}}"#).as_bytes()).unwrap();
+			f.write_all(format!("{}
+", r#"{"type":"message","id":"a2","parentId":"u1","timestamp":"2026-08-12T00:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"other branch"}]}}"#).as_bytes()).unwrap();
+			f.write_all(format!("{}
+", r#"{"type":"label","id":"l1","parentId":"a1","timestamp":"2026-08-12T00:00:04.000Z","targetId":"a1","label":"checkpoint"}"#).as_bytes()).unwrap();
 		}
 		let out = read_tree_from_file(&path).unwrap();
 		let tree = out["tree"].as_array().unwrap();
@@ -3500,14 +3830,27 @@ mod tests {
 		{
 			use std::io::Write;
 			let mut f = File::create(&path).unwrap();
-			writeln!(f, "{}", r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-08-12T00:00:00.000Z","cwd":"C:/tmp"}"#).unwrap();
+			f.write_all(r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-08-12T00:00:00.000Z","cwd":"C:/tmp"}"#.as_bytes()).unwrap();
+			f.write_all(
+				b"
+",
+			)
+			.unwrap();
 			for i in 0..5000 {
 				let parent = if i == 0 {
 					"null".to_string()
 				} else {
 					format!(r#""n{}""#, i - 1)
 				};
-				writeln!(f, "{}", format!(r#"{{"type":"message","id":"n{i}","parentId":{parent},"timestamp":"2026-08-12T00:00:00.000Z","message":{{"role":"user","content":[{{"type":"text","text":"x"}}]}}}}"#)).unwrap();
+				let line = format!(
+					r#"{{"type":"message","id":"n{i}","parentId":{parent},"timestamp":"2026-08-12T00:00:00.000Z","message":{{"role":"user","content":[{{"type":"text","text":"x"}}]}}}}"#
+				);
+				f.write_all(line.as_bytes()).unwrap();
+				f.write_all(
+					b"
+",
+				)
+				.unwrap();
 			}
 		}
 		let out = read_tree_from_file(&path).unwrap();
@@ -3678,8 +4021,8 @@ mod tests {
 		// 全量遍历（归档/清理用）仍收集两个文件；嵌套判定交给 is_nested_session
 		let mut files = Vec::new();
 		session_files(&root, &mut files, 0);
-		assert!(files.iter().any(|p| *p == nested));
-		assert!(files.iter().any(|p| *p == branched));
+		assert!(files.contains(&nested));
+		assert!(files.contains(&branched));
 		assert!(is_nested_session(&root, &nested));
 		assert!(!is_nested_session(&root, &branched));
 		let _ = std::fs::remove_dir_all(&root);
@@ -3748,10 +4091,14 @@ mod tests {
 		std::fs::create_dir_all(&dir).unwrap();
 		let path = dir.join("usage.jsonl");
 		let mut file = File::create(&path).unwrap();
-		writeln!(file, "{}", r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-08-12T00:00:00.000Z","cwd":"D:\\proj"}"#).unwrap();
-		writeln!(file, "{}", r#"{"type":"message","id":"a1","timestamp":"2026-08-12T01:00:00.000Z","message":{"role":"assistant","provider":"deepseek","model":"deepseek-v4","usage":{"input":100,"output":50,"cacheRead":200,"reasoning":10,"totalTokens":360,"cost":{"total":0.001}}}}"#).unwrap();
-		writeln!(file, "{}", r#"{"type":"message","id":"a2","timestamp":"2026-08-13T01:00:00.000Z","message":{"role":"assistant","provider":"deepseek","model":"deepseek-v4","usage":{"input":10,"output":5,"cacheRead":0,"reasoning":0,"totalTokens":15,"cost":{"total":0.0001}}}}"#).unwrap();
-		writeln!(file, "{}", r#"{"type":"message","id":"u1","timestamp":"2026-08-13T02:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#).unwrap();
+		file.write_all(format!("{}
+", r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-08-12T00:00:00.000Z","cwd":"D:\\proj"}"#).as_bytes()).unwrap();
+		file.write_all(format!("{}
+", r#"{"type":"message","id":"a1","timestamp":"2026-08-12T01:00:00.000Z","message":{"role":"assistant","provider":"deepseek","model":"deepseek-v4","usage":{"input":100,"output":50,"cacheRead":200,"reasoning":10,"totalTokens":360,"cost":{"total":0.001}}}}"#).as_bytes()).unwrap();
+		file.write_all(format!("{}
+", r#"{"type":"message","id":"a2","timestamp":"2026-08-13T01:00:00.000Z","message":{"role":"assistant","provider":"deepseek","model":"deepseek-v4","usage":{"input":10,"output":5,"cacheRead":0,"reasoning":0,"totalTokens":15,"cost":{"total":0.0001}}}}"#).as_bytes()).unwrap();
+		file.write_all(format!("{}
+", r#"{"type":"message","id":"u1","timestamp":"2026-08-13T02:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}"#).as_bytes()).unwrap();
 
 		let mut out = Vec::new();
 		collect_usage(&dir, &mut out);
@@ -3787,6 +4134,26 @@ mod tests {
 			parse_iso_ms("2024-01-01T00:00:00.123Z"),
 			parse_iso_ms("2024-01-01T00:00:00.999Z")
 		);
+	}
+
+	#[test]
+	fn parses_iso_timestamps_with_timezone_offsets() {
+		// An explicit offset must be folded to UTC, not silently treated as Z
+		// (the old parser dropped everything after the seconds field).
+		assert_eq!(
+			parse_iso_ms("2026-08-12T08:00:00.000+08:00").unwrap(),
+			parse_iso_ms("2026-08-12T00:00:00.000Z").unwrap()
+		);
+		assert_eq!(
+			parse_iso_ms("2026-08-12T01:30:00-02:30").unwrap(),
+			parse_iso_ms("2026-08-12T04:00:00.000Z").unwrap()
+		);
+		assert_eq!(
+			parse_iso_ms("2026-08-12T12:00:00+0530").unwrap(),
+			parse_iso_ms("2026-08-12T06:30:00.000Z").unwrap()
+		);
+		// Garbage offsets are rejected rather than mis-parsed.
+		assert!(parse_iso_ms("2026-08-12T12:00:00+99:00").is_none());
 	}
 
 	#[test]
@@ -3846,8 +4213,10 @@ mod tests {
 		assert!(!is_running_session(&state, &session));
 		{
 			let mut map = state.inner.lock().unwrap();
-			let mut proc = PiProcess::default();
-			proc.session_file = Some(session.clone());
+			let proc = PiProcess {
+				session_file: Some(session.clone()),
+				..Default::default()
+			};
 			map.insert("main".to_string(), proc);
 		}
 		assert!(is_running_session(&state, &session));
@@ -4096,10 +4465,21 @@ mod e2e_tests {
 		{
 			let mut f = File::create(&session).unwrap();
 			let cwd = std::env::temp_dir().to_string_lossy().replace('\\', "/");
-			writeln!(f, "{}", format!(r#"{{"type":"session","version":3,"id":"s1","timestamp":"2026-08-12T00:00:00.000Z","cwd":"{cwd}"}}"#)).unwrap();
-			writeln!(f, "{}", r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-12T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Hello pi"}]}}"#).unwrap();
-			writeln!(f, "{}", r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-12T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me think"},{"type":"text","text":"Hi!"},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"ls -la"}}]}}"#).unwrap();
-			writeln!(f, "{}", r#"{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-08-12T00:00:03.000Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"bash","content":[{"type":"text","text":"total 48\ndrwxr-xr-x ..."}]}}"#).unwrap();
+			let line = format!(
+				r#"{{"type":"session","version":3,"id":"s1","timestamp":"2026-08-12T00:00:00.000Z","cwd":"{cwd}"}}"#
+			);
+			f.write_all(line.as_bytes()).unwrap();
+			f.write_all(
+				b"
+",
+			)
+			.unwrap();
+			f.write_all(format!("{}
+", r#"{"type":"message","id":"u1","parentId":null,"timestamp":"2026-08-12T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"Hello pi"}]}}"#).as_bytes()).unwrap();
+			f.write_all(format!("{}
+", r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-12T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"let me think"},{"type":"text","text":"Hi!"},{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"ls -la"}}]}}"#).as_bytes()).unwrap();
+			f.write_all(format!("{}
+", r#"{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-08-12T00:00:03.000Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"bash","content":[{"type":"text","text":"total 48\ndrwxr-xr-x ..."}]}}"#).as_bytes()).unwrap();
 		}
 		let Some(info) = probe_pi() else {
 			eprintln!("pi binary not found in PATH — skipping e2e test");
@@ -4137,8 +4517,7 @@ mod e2e_tests {
 			if line.trim().is_empty() {
 				continue;
 			}
-			let payload: Value =
-				serde_json::from_str(&line).unwrap_or_else(|_| Value::String(line));
+			let payload: Value = serde_json::from_str(&line).unwrap_or(Value::String(line));
 			if payload.get("type").and_then(|x| x.as_str()) != Some("response") {
 				continue;
 			}

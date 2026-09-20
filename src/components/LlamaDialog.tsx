@@ -4,17 +4,17 @@ import { llamaLoad, llamaModels, llamaUnload } from "../pi";
 import { LoaderIcon, RefreshIcon, TerminalIcon, TrashIcon } from "../icons";
 import { Modal } from "./Modal";
 
-/** `/llama` equivalent: manage models on a llama.cpp router server. */
+/** `/llama` equivalent: manage models on a llama.cpp router server. The
+ *  optional API key lives backend-side (Settings → llama row); only the
+ *  server URL is needed here. */
 export function LlamaDialog({
 	open,
 	url,
-	apiKey,
 	t,
 	onClose,
 }: {
 	open: boolean;
 	url: string;
-	apiKey: string;
 	t: MessageCatalog;
 	onClose: () => void;
 }) {
@@ -29,7 +29,7 @@ export function LlamaDialog({
 		setLoading(true);
 		setError(null);
 		try {
-			const ids = await llamaModels(url, apiKey);
+			const ids = await llamaModels(url);
 			setModels(ids);
 			setConnected(true);
 		} catch (e) {
@@ -39,7 +39,7 @@ export function LlamaDialog({
 		} finally {
 			setLoading(false);
 		}
-	}, [url, apiKey]);
+	}, [url]);
 
 	useEffect(() => {
 		if (open) {
@@ -56,7 +56,7 @@ export function LlamaDialog({
 		setBusyName(name);
 		setError(null);
 		try {
-			await llamaLoad(url, apiKey, name);
+			await llamaLoad(url, name);
 			setLoadName("");
 			await refresh();
 		} catch (e) {
@@ -71,7 +71,7 @@ export function LlamaDialog({
 		setBusyName(name);
 		setError(null);
 		try {
-			await llamaUnload(url, apiKey, name);
+			await llamaUnload(url, name);
 			await refresh();
 		} catch (e) {
 			setError(String(e));

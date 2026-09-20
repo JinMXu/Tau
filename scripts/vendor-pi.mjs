@@ -23,7 +23,9 @@
 // uses the system `tar`). Run from the repo root via `npm run vendor:pi`.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
+	copyFileSync,
 	createWriteStream,
 	chmodSync,
 	existsSync,
@@ -110,6 +112,30 @@ function manifestMatches() {
 	}
 }
 
+/// Verify `filePath` against the official nodejs.org SHASUMS256.txt for this
+/// release. This is the supply-chain anchor for the runtime we ship inside
+/// the installer — without it, a compromised nodejs.org response (or CDN)
+/// means arbitrary code execution on every user machine.
+async function verifyShasums(filePath, artifactName) {
+	const url = `https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt`;
+	log(`verifying ${artifactName} against ${url}`);
+	const res = await fetch(url, { redirect: "follow" });
+	if (!res.ok) die(`SHASUMS256.txt download failed: HTTP ${res.status}`);
+	const shasums = await res.text();
+	const expected = shasums
+		.split("\n")
+		.map((l) => l.trim().split(/\s+/))
+		.find((parts) => parts.length === 2 && parts[1] === artifactName)?.[0];
+	if (!expected) die(`${artifactName} not listed in SHASUMS256.txt for ${NODE_VERSION}`);
+	const actual = createHash("sha256").update(readFileSync(filePath)).digest("hex");
+	if (actual !== expected) {
+		die(
+			`SHA256 MISMATCH for ${artifactName}: expected ${expected}, got ${actual} — refusing to vendor a tampered runtime`,
+		);
+	}
+	log(`sha256 verified: ${actual.slice(0, 12)}…`);
+}
+
 async function downloadNode() {
 	mkdirSync(dirname(nodeExe), { recursive: true });
 	if (process.platform === "win32") {
@@ -119,6 +145,7 @@ async function downloadNode() {
 		if (!res.ok) die(`node download failed: HTTP ${res.status} (${url})`);
 		const out = createWriteStream(nodeExe);
 		await pipeline(Readable.fromWeb(res.body), out);
+		await verifyShasums(nodeExe, `win-x64/node.exe`);
 	} else {
 		const distName = `node-${NODE_VERSION}-${process.platform}-${process.arch}`;
 		const url = `https://nodejs.org/dist/${NODE_VERSION}/${distName}.tar.gz`;
@@ -130,6 +157,7 @@ async function downloadNode() {
 		mkdirSync(tmp, { recursive: true });
 		const tarball = resolve(tmp, "node.tar.gz");
 		await pipeline(Readable.fromWeb(res.body), createWriteStream(tarball));
+		await verifyShasums(tarball, `${distName}.tar.gz`);
 		const untar = spawnSync("tar", ["-xzf", tarball, "-C", tmp], { stdio: "inherit" });
 		if (untar.status !== 0) die(`tar extraction failed (exit ${untar.status})`);
 		renameSync(resolve(tmp, distName, "bin", "node"), nodeExe);
@@ -158,24 +186,55 @@ function assertNodeHasZstd() {
 	log(`node ${NODE_VERSION} supports zstd`);
 }
 
+// A committed lockfile pins the whole transitive dependency tree of the
+// vendored pi package: without it, every build resolves fresh sub-dependency
+// versions from the npm registry, so a hijacked upstream package ships inside
+// the next installer. The file carries the pi version it was generated for;
+// bumping PI_VERSION regenerates it (commit the result).
+const lockfilePath = resolve(root, "scripts", "pi-runtime-lock.json");
+
+function storedLockMatches() {
+	if (!existsSync(lockfilePath)) return false;
+	try {
+		const lock = JSON.parse(readFileSync(lockfilePath, "utf8"));
+		return (
+			lock.packages?.["node_modules/@earendil-works/pi-coding-agent"]?.version === PI_VERSION
+		);
+	} catch {
+		return false;
+	}
+}
+
 function installPi() {
-	log(`npm install @earendil-works/pi-coding-agent@${PI_VERSION} into ${dest}`);
+	log(`installing @earendil-works/pi-coding-agent@${PI_VERSION} into ${dest}`);
 	mkdirSync(dest, { recursive: true });
 	ensureLocalPackageJson();
 	const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-	const res = spawnSync(
-		npm,
-		[
-			"install",
-			"--omit=dev",
-			"--no-audit",
-			"--no-fund",
-			"--loglevel=error",
-			`@earendil-works/pi-coding-agent@${PI_VERSION}`,
-		],
-		{ cwd: dest, stdio: "inherit", shell: process.platform === "win32" },
-	);
-	if (res.status !== 0) die(`npm install exited with ${res.status}`);
+	const baseArgs = ["--omit=dev", "--no-audit", "--no-fund", "--loglevel=error"];
+	let res;
+	if (storedLockMatches()) {
+		// Pinned path: npm ci installs exactly the committed tree.
+		log("using committed pi-runtime-lock.json (npm ci)");
+		copyFileSync(lockfilePath, resolve(dest, "package-lock.json"));
+		res = spawnSync(npm, ["ci", ...baseArgs], {
+			cwd: dest,
+			stdio: "inherit",
+			shell: process.platform === "win32",
+		});
+	}
+	if (!res || res.status !== 0) {
+		if (res) log(`npm ci failed (exit ${res.status}) — falling back to npm install`);
+		res = spawnSync(
+			npm,
+			["install", ...baseArgs, `@earendil-works/pi-coding-agent@${PI_VERSION}`],
+			{ cwd: dest, stdio: "inherit", shell: process.platform === "win32" },
+		);
+		if (res.status !== 0) die(`npm install exited with ${res.status}`);
+		// First install (or pi version bump): snapshot the resolved tree so the
+		// next build is reproducible. Commit the updated lockfile.
+		copyFileSync(resolve(dest, "package-lock.json"), lockfilePath);
+		log(`wrote ${lockfilePath} — commit it to pin this dependency tree`);
+	}
 }
 
 if (manifestMatches() && !force) {

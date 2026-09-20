@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState, startTransition } fr
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { openPath } from "@tauri-apps/plugin-opener";
 import {
 	archiveSession as archiveSessionCmd,
 	authSetKey,
@@ -18,6 +17,7 @@ import {
 	gitCheckoutBranch,
 	gitCreateBranch,
 	importSession,
+	llamaSetKey,
 	listArchivedSessions,
 	listSessions,
 	newWindow,
@@ -27,6 +27,7 @@ import {
 	readSession,
 	readTree,
 	restoreSession,
+	revealDir,
 	revealSession,
 	send,
 	shareSession,
@@ -267,6 +268,10 @@ export default function App() {
 	const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 	const [renameState, setRenameState] = useState<RenameState | null>(null);
 	const { toasts, toast, dismiss } = useToasts();
+	// Mirror for mount-once listeners (the pi://* subscriptions) that must not
+	// re-subscribe when this callback's identity changes.
+	const toastRef = useRef(toast);
+	toastRef.current = toast;
 
 	// ---- extension UI: widgets / status / window title / editor prefill ----
 	const [extensionWidgets, setExtensionWidgets] = useState<
@@ -609,13 +614,32 @@ export default function App() {
 	]);
 
 	// Persist settings separately, debounced: typing in a settings editor
-	// (system prompt, append prompt, llama key) must not JSON-serialize the
-	// whole object — including the plaintext llama API key — to localStorage
-	// on every keystroke.
+	// (system prompt, append prompt) must not JSON-serialize the whole object
+	// to localStorage on every keystroke.
 	useEffect(() => {
 		const id = window.setTimeout(() => saveSettings(settings), 250);
 		return () => window.clearTimeout(id);
 	}, [settings]);
+
+	// One-time migration: the llama.cpp router key used to live in localStorage
+	// (plaintext inside the WebView2 profile). Move it to the backend store and
+	// scrub it from the persisted settings.
+	useEffect(() => {
+		const stored = settings.llamaApiKey;
+		if (!stored) return;
+		let cancelled = false;
+		void llamaSetKey(stored)
+			.then(() => {
+				if (!cancelled) setSettings((s) => ({ ...s, llamaApiKey: "" }));
+			})
+			.catch(() => {
+				/* keep the value; the next save attempt re-migrates */
+			});
+		return () => {
+			cancelled = true;
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- migration runs once on mount
+	}, []);
 
 	// Settings-page changes to the default send mode also update the live
 	// toggle (runtime composer switches only touch the state, not settings).
@@ -885,8 +909,13 @@ export default function App() {
 
 	const refreshStats = useCallback(
 		async (withPerf = false) => {
+			// Pin the channel for both the request and the result: a response
+			// arriving after the user switched sessions must not paint the old
+			// session's stats onto the new one.
+			const c = chanRef.current;
 			try {
-				const r = await handleResponse({ type: "get_session_stats" });
+				const r = await handleResponse({ type: "get_session_stats" }, { chan: c ?? undefined });
+				if (c !== chanRef.current) return;
 				const newStats = r.data as SessionStats;
 				if (withPerf && newStats.tokens) {
 					const tk = newStats.tokens;
@@ -1601,113 +1630,124 @@ export default function App() {
 				return;
 			}
 		},
-		[
-			deliverQueuedNext,
-			patchStream,
-			startStream,
-			commitStream,
-			refreshSessions,
-			refreshStats,
-			toast,
-			clearPendingDeltas,
-			scheduleDeltaFlush,
-			setChanWorking,
-			discoverNewSession,
-		],
-	);
+	[
+		deliverQueuedNext,
+		patchStream,
+		startStream,
+		commitStream,
+		refreshSessions,
+		refreshStats,
+		toast,
+		clearPendingDeltas,
+		scheduleDeltaFlush,
+		setChanWorking,
+		discoverNewSession,
+	],
+);
+// The Tauri listeners below must NOT re-subscribe when handleEvent changes
+// (it does, via deliverQueuedNext ← editingQueueId): every unsubscribe →
+// resubscribe round-trip drops the pi://event events in flight during it, and
+// a lost message_start/message_end pair makes the whole reply vanish. Route
+// through a ref instead: one subscription for the window's lifetime.
+const handleEventRef = useRef(handleEvent);
+useEffect(() => {
+	handleEventRef.current = handleEvent;
+}, [handleEvent]);
 
-	useEffect(() => {
-		const unlisteners: Promise<() => void>[] = [];
-		(async () => {
-			unlisteners.push(
-				listen<{ chan?: string; ev?: PiEvent }>("pi://event", (e) => {
-					// The backend wraps every pi event in a { chan, ev } envelope
-					// so concurrent sessions can be routed by channel.
-					const payload = e.payload;
-					if (payload && typeof payload === "object" && payload.chan && payload.ev) {
-						handleEvent(payload.ev, payload.chan);
-					}
-				}),
-				listen<{ chan?: string; line?: string }>("pi://stderr", (e) => {
-					const line = e.payload?.line;
-					// No UI surface for stderr anymore; keep the diagnostics reachable
-					// via devtools instead of a banner over the composer.
-					if (typeof line === "string") console.warn("[pi stderr]", line);
-				}),
-				listen<{ chan?: string }>("pi://exit", (e) => {
-					const c = e.payload?.chan ?? null;
-					const entry = c ? channelsRef.current.get(c) : undefined;
-					if (c) {
-						channelsRef.current.delete(c);
-						syncWorkingPaths();
-					}
-					if (!c || c === chanRef.current) {
-						// The displayed channel (or a legacy untagged exit) died.
-						chanRef.current = null;
-						setActiveChan(null);
-						setConnected(false);
-						setStreaming(false);
-						setTextStreaming(false);
-						setWorking(false);
-						setAutoRetry(null);
-						turnStartRef.current = null;
-						firstTokenRef.current = null;
-						msgGenStartRef.current = null;
-						totalGenTimeRef.current = 0;
-						prevOutputTokensRef.current = 0;
-						ttftHistoryRef.current = [];
-						setPendingSession(null);
-						// A short-lived pi (exits seconds after spawn) counts as an
-						// auto-connect failure so the exponential backoff actually
-						// engages; otherwise connect success resets the counter and
-						// every retry fires immediately — a measured 270 spawns in
-						// 15 minutes.
-						const aliveMs = Date.now() - piLastSpawnAtRef.current;
-						if (aliveMs < 15000) {
-							autoConnectStateRef.current.failures = Math.min(
-								autoConnectStateRef.current.failures + 1,
-								10,
-							);
-						}
-						void invoke("log_frontend", {
-							message: `[exit] pi died after ${aliveMs}ms (failures=${autoConnectStateRef.current.failures})`,
-						}).catch(() => {});
-						// The backend only emits this on real crashes (deliberate
-						// stops are flagged), so surface it; the auto-connect effect
-						// below will try to resume the session.
-						toast(tRef.current.app.piExited);
-					} else if (entry?.working) {
-						// A background session crashed mid-run: the user is not
-						// looking at it, but they should know it died.
-						toast(tRef.current.app.piExited);
-					}
-					// A background IDLE channel exiting (evicted to stay under the
-					// concurrency cap) exits silently — nothing was lost.
-				}),
-			);
-			try {
-				await binaryInfo();
-				setBinError(null);
-			} catch (e) {
-				setBinError(String(e));
-			}
-			await refreshSessions();
-			try {
-				const s = await status();
-				setConnected(s.running);
-				setWorkspace((prev) => prev ?? s.workspace);
-				if (s.sessionFile) {
-					sessionPathRef.current = s.sessionFile;
-					setSelectedSessionPath(s.sessionFile);
+useEffect(() => {
+	const unlisteners: Promise<() => void>[] = [];
+	(async () => {
+		unlisteners.push(
+			listen<{ chan?: string; ev?: PiEvent }>("pi://event", (e) => {
+				// The backend wraps every pi event in a { chan, ev } envelope
+				// so concurrent sessions can be routed by channel.
+				const payload = e.payload;
+				if (payload && typeof payload === "object" && payload.chan && payload.ev) {
+					handleEventRef.current(payload.ev, payload.chan);
 				}
-			} catch {
-				/* not running */
+			}),
+			listen<{ chan?: string; line?: string }>("pi://stderr", (e) => {
+				const line = e.payload?.line;
+				// No UI surface for stderr anymore; keep the diagnostics reachable
+				// via devtools instead of a banner over the composer.
+				if (typeof line === "string") console.warn("[pi stderr]", line);
+			}),
+			listen<{ chan?: string }>("pi://exit", (e) => {
+				const c = e.payload?.chan ?? null;
+				const entry = c ? channelsRef.current.get(c) : undefined;
+				if (c) {
+					channelsRef.current.delete(c);
+					syncWorkingPaths();
+				}
+				if (!c || c === chanRef.current) {
+					// The displayed channel (or a legacy untagged exit) died.
+					chanRef.current = null;
+					setActiveChan(null);
+					setConnected(false);
+					setStreaming(false);
+					setTextStreaming(false);
+					setWorking(false);
+					setAutoRetry(null);
+					turnStartRef.current = null;
+					firstTokenRef.current = null;
+					msgGenStartRef.current = null;
+					totalGenTimeRef.current = 0;
+					prevOutputTokensRef.current = 0;
+					ttftHistoryRef.current = [];
+					setPendingSession(null);
+					// A short-lived pi (exits seconds after spawn) counts as an
+					// auto-connect failure so the exponential backoff actually
+					// engages; otherwise connect success resets the counter and
+					// every retry fires immediately — a measured 270 spawns in
+					// 15 minutes.
+					const aliveMs = Date.now() - piLastSpawnAtRef.current;
+					if (aliveMs < 15000) {
+						autoConnectStateRef.current.failures = Math.min(
+							autoConnectStateRef.current.failures + 1,
+							10,
+						);
+					}
+					void invoke("log_frontend", {
+						message: `[exit] pi died after ${aliveMs}ms (failures=${autoConnectStateRef.current.failures})`,
+					}).catch(() => {});
+					// The backend only emits this on real crashes (deliberate
+					// stops are flagged), so surface it; the auto-connect effect
+					// below will try to resume the session.
+					toastRef.current(tRef.current.app.piExited);
+				} else if (entry?.working) {
+					// A background session crashed mid-run: the user is not
+					// looking at it, but they should know it died.
+					toastRef.current(tRef.current.app.piExited);
+				}
+				// A background IDLE channel exiting (evicted to stay under the
+				// concurrency cap) exits silently — nothing was lost.
+			}),
+		);
+		try {
+			await binaryInfo();
+			setBinError(null);
+		} catch (e) {
+			setBinError(String(e));
+		}
+		await refreshSessions();
+		try {
+			const s = await status();
+			setConnected(s.running);
+			setWorkspace((prev) => prev ?? s.workspace);
+			if (s.sessionFile) {
+				sessionPathRef.current = s.sessionFile;
+				setSelectedSessionPath(s.sessionFile);
 			}
-		})();
-		return () => {
-			unlisteners.forEach((p) => p.then((fn) => fn()));
-		};
-	}, [handleEvent, refreshSessions, toast, syncWorkingPaths]);
+		} catch {
+			/* not running */
+		}
+	})();
+	return () => {
+		unlisteners.forEach((p) => p.then((fn) => fn()));
+	};
+	// Mount-once: see the handleEventRef note above.
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
 
 	// Keep retrying while the runtime-missing banner is shown (the backend
 	// re-probes after its own backoff) so the banner clears itself once the
@@ -1957,7 +1997,10 @@ export default function App() {
 					// a history session never pops the dialog. The picker is only
 					// a fallback for sessions whose project is unknown.
 					if (!ws && !explicitWs && sessionFile) {
-						const known = sessions.find((s) => s.path === sessionFile);
+						// sameSessionPath: pi's RPC / the persisted lastSession can
+						// spell the path differently from the scan list on Windows
+						// (drive-letter case, separators) — strict === never matches.
+						const known = sessions.find((s) => sameSessionPath(s.path, sessionFile));
 						if (known?.project) {
 							ws = known.project;
 							setWorkspace(ws);
@@ -1973,7 +2016,7 @@ export default function App() {
 					// session's project overrides a stale workspace so the
 					// composer shows the directory pi actually runs in.
 					if (sessionFile && !explicitWs) {
-						const known = sessions.find((s) => s.path === sessionFile);
+						const known = sessions.find((s) => sameSessionPath(s.path, sessionFile));
 						if (known?.project && known.project !== ws) {
 							ws = known.project;
 							setWorkspace(ws);
@@ -2586,7 +2629,10 @@ export default function App() {
 				setError(String(e));
 			}
 		},
-		[messages, t, toast],
+		// `transcript` (not `messages`): the in-flight streaming message is part
+		// of the export/copy surface, and a stale closure used to export or copy
+		// without it.
+		[transcript, t, toast],
 	);
 
 	const exportSessionHtml = useCallback(async () => {
@@ -2667,13 +2713,15 @@ export default function App() {
 									...m,
 									streaming: false,
 									blocks: [
-										{
-											kind: "tool",
-											name: "bash",
-											args: `$ ${command}\n\n${output}${suffix}`,
-											result: true,
-											error: exitCode !== 0 ? true : undefined,
-										},
+											{
+												kind: "tool",
+												name: "bash",
+												args: `$ ${command}\n\n${output}${suffix}`,
+												result: true,
+												// A missing exitCode means the field wasn't in the
+												// response (older pi) — not a failure.
+												error: exitCode != null && exitCode !== 0 ? true : undefined,
+											},
 									],
 								}
 							: m,
@@ -2943,7 +2991,7 @@ export default function App() {
 		} catch {
 			return false;
 		}
-	}, [messages]);
+	}, [transcript]);
 
 	const copyMessage = useCallback((text: string) => {
 		// The MessageActions button already writes to the clipboard
@@ -3051,7 +3099,11 @@ export default function App() {
 				confirmLabel: t.app.delete,
 				onConfirm: async () => {
 					try {
-						const wasCurrent = sessionPathRef.current === path;
+						// Was this the DISPLAYED session? Compare via
+						// sameSessionPath: sessionPathRef carries the RPC spelling,
+						// the sidebar row carries the scan spelling.
+						const wasCurrent =
+							sessionPathRef.current != null && sameSessionPath(sessionPathRef.current, path);
 						if (wasCurrent) {
 							await disconnect();
 						}
@@ -3173,7 +3225,7 @@ export default function App() {
 
 	const handleRevealProject = useCallback(async (path: string) => {
 		try {
-			await openPath(path);
+			await revealDir(path);
 		} catch {
 			/* ignore */
 		}
@@ -3190,7 +3242,7 @@ export default function App() {
 				onConfirm: async () => {
 					const current = sessionPathRef.current;
 					const includesCurrent =
-						current != null && projectSessions.some((s) => s.path === current);
+						current != null && projectSessions.some((s) => sameSessionPath(s.path, current));
 					if (includesCurrent) {
 						await disconnect();
 					}
@@ -3501,7 +3553,7 @@ export default function App() {
 	const handleSearchSelect = useCallback(
 		async (path: string) => {
 			pushNav(path);
-			const s = sessions.find((x) => x.path === path);
+			const s = sessions.find((x) => sameSessionPath(x.path, path));
 			await connect({ sessionFile: s?.path ?? path });
 		},
 		[connect, sessions, pushNav],
@@ -3840,7 +3892,7 @@ export default function App() {
 
 	const openSessionDir = useCallback(async () => {
 		try {
-			await openPath(sessionDirRef.current);
+			await revealDir(sessionDirRef.current);
 		} catch {
 			/* ignore */
 		}
@@ -3855,14 +3907,15 @@ export default function App() {
 		}
 	}, [sessions]);
 
-	const selectedSession = useMemo(
-		() =>
-			sessions.find((s) => s.path === selectedSessionPath) ??
-			(sessionPathRef.current
-				? (sessions.find((s) => s.path === sessionPathRef.current) ?? null)
-				: null),
-		[sessions, selectedSessionPath],
-	);
+	const selectedSession = useMemo(() => {
+		// Local copy: callback bodies (find predicates) lose the narrowing of
+		// ref values.
+		const current = sessionPathRef.current;
+		return (
+			sessions.find((s) => sameSessionPath(s.path, selectedSessionPath ?? "")) ??
+			(current ? (sessions.find((s) => sameSessionPath(s.path, current)) ?? null) : null)
+		);
+	}, [sessions, selectedSessionPath]);
 
 	// Merge the optimistic new-task placeholder into the sidebar list, and
 	// treat it as the selected session until its real file is discovered.
@@ -4172,7 +4225,6 @@ export default function App() {
 			<LlamaDialog
 				open={llamaOpen}
 				url={settings.llamaServerUrl}
-				apiKey={settings.llamaApiKey}
 				t={t}
 				onClose={() => setLlamaOpen(false)}
 			/>

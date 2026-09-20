@@ -99,6 +99,9 @@ export function TitleBar({
 			}
 		}
 		function onKey(e: KeyboardEvent) {
+			// Consume Escape at document level so App's window handler (which
+			// aborts the running turn) never sees it.
+			e.stopPropagation();
 			if (e.key === "Escape") setOpenMenu(null);
 		}
 		document.addEventListener("mousedown", onDown);

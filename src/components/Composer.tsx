@@ -399,6 +399,7 @@ export function Composer({
 		autoSize();
 	}, [text, autoSize]);
 
+	const submittingRef = useRef(false);
 	const submit = useCallback(
 		async (behavior?: SendBehavior) => {
 			const trimmed = text.trim();
@@ -408,25 +409,35 @@ export function Composer({
 			// mid-stream, so the message must never go out unqueued).
 			if ((!trimmed && attachments.length === 0) || (!editingQueueId && !connected && !workspace))
 				return;
-			// App.submit resolves `false` when it rejects the send (no
-			// workspace, connect canceled, API-key dialog canceled) — keep the
-			// draft so the user's text is never silently destroyed.
-			const accepted = await onSubmit(
-				trimmed,
-				attachments,
-				behavior ?? "normal",
-				editingQueueId,
-			).catch(() => false);
-			if (!accepted) return;
-			// Prompt history: remember what was actually sent.
-			if (trimmed) {
-				setHistory((prev) => [trimmed, ...prev.filter((h) => h !== trimmed)].slice(0, 100));
+			// Re-entry guard: submit awaits several long steps (connect,
+			// API-key dialog, `!cmd` runs up to 10 minutes) before clearing the
+			// draft — without this, a second Enter during those awaits sends
+			// the same prompt twice.
+			if (submittingRef.current) return;
+			submittingRef.current = true;
+			try {
+				// App.submit resolves `false` when it rejects the send (no
+				// workspace, connect canceled, API-key dialog canceled) — keep the
+				// draft so the user's text is never silently destroyed.
+				const accepted = await onSubmit(
+					trimmed,
+					attachments,
+					behavior ?? "normal",
+					editingQueueId,
+				).catch(() => false);
+				if (!accepted) return;
+				// Prompt history: remember what was actually sent.
+				if (trimmed) {
+					setHistory((prev) => [trimmed, ...prev.filter((h) => h !== trimmed)].slice(0, 100));
+				}
+				historyIndexRef.current = -1;
+				setText("");
+				setAttachments([]);
+				requestAnimationFrame(autoSize);
+				textareaRef.current?.focus();
+			} finally {
+				submittingRef.current = false;
 			}
-			historyIndexRef.current = -1;
-			setText("");
-			setAttachments([]);
-			requestAnimationFrame(autoSize);
-			textareaRef.current?.focus();
 		},
 		[text, attachments, connected, workspace, onSubmit, autoSize, editingQueueId],
 	);
@@ -519,6 +530,11 @@ export function Composer({
 			const items = Array.from(e.clipboardData.items);
 			const images = items.filter((i) => i.type.startsWith("image/"));
 			if (images.length === 0) return;
+			// Mixed image + text clipboard (e.g. a screenshot copied alongside a
+			// caption): prefer the text — hijacking the paste to attach the
+			// image used to silently drop it.
+			const plain = e.clipboardData.getData("text/plain");
+			if (plain && plain.trim()) return;
 			e.preventDefault();
 			const files = images.map((i) => i.getAsFile()).filter((f): f is File => f !== null);
 			if (files.length) await addFiles(files);
@@ -1175,6 +1191,13 @@ export function Composer({
 						onScroll={syncHighlightScroll}
 						onPaste={handlePaste}
 						onKeyDown={(e) => {
+							// IME composition in flight (Enter confirms a candidate,
+							// arrows flip candidate pages, Escape cancels the
+							// composition): never let the menus, history nav or
+							// send logic intercept those keys — the default
+							// language is zh, so this is the common case, and the
+							// history branch would even overwrite the draft.
+							if (isComposing || e.nativeEvent.isComposing) return;
 							// `@` file-reference menu navigation (takes priority).
 							if (atOpen) {
 								if (e.key === "ArrowDown") {

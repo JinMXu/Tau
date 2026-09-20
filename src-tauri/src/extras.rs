@@ -6,6 +6,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use tauri::Manager;
 
 use crate::pi;
 
@@ -186,9 +187,26 @@ fn write_auth_map(map: &serde_json::Map<String, serde_json::Value>) -> Result<()
 		fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
 	}
 	let raw = serde_json::to_string_pretty(map).map_err(|e| e.to_string())?;
-	let tmp = path.with_extension("json.tmp");
+	// Unique tmp suffix: the pi CLI writes auth.json too, and a shared
+	// `auth.json.tmp` name would let two writers clobber each other's file.
+	let tmp = path.with_extension(format!("json.{}.tmp", pi::unique_suffix()));
 	fs::write(&tmp, raw).map_err(|e| format!("failed to write auth: {e}"))?;
-	fs::rename(tmp, path).map_err(|e| format!("failed to persist auth: {e}"))
+	if let Err(e) = fs::rename(&tmp, &path) {
+		let _ = fs::remove_file(&tmp);
+		return Err(format!("failed to persist auth: {e}"));
+	}
+	// auth.json holds plaintext API keys / OAuth tokens — keep it owner-only
+	// where the platform allows it (Windows ACLs follow the user profile).
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		if let Ok(metadata) = fs::metadata(&path) {
+			let mut perms = metadata.permissions();
+			perms.set_mode(0o600);
+			let _ = fs::set_permissions(&path, perms);
+		}
+	}
+	Ok(())
 }
 
 #[tauri::command]
@@ -250,6 +268,75 @@ pub fn pi_auth_remove(provider: String) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// llama.cpp router key (settings → /llama)
+//
+// Stored in Tau's OWN app-config directory, not in ~/.pi/agent: pi never
+// reads it, and the previous home (the webview's localStorage) wrote the
+// plaintext key into the WebView2 profile where any same-user process could
+// read it. The frontend only ever sees a has-key boolean.
+// ---------------------------------------------------------------------------
+
+static LLAMA_KEY_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn llama_key_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+	let dir = app
+		.path()
+		.app_config_dir()
+		.map_err(|e| format!("app config dir unavailable: {e}"))?;
+	Ok(dir.join("llama-auth.json"))
+}
+
+/// The stored router key, or None. Used by the `pi_llama_*` curl calls; the
+/// key never travels back to the webview.
+pub(crate) fn stored_llama_key(app: &tauri::AppHandle) -> Option<String> {
+	let path = llama_key_path(app).ok()?;
+	let raw = fs::read_to_string(path).ok()?;
+	let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+	let key = v.get("key")?.as_str()?.trim().to_string();
+	(!key.is_empty()).then_some(key)
+}
+
+/// Save (Some) or clear (None/empty) the llama.cpp router key.
+#[tauri::command]
+pub fn pi_llama_set_key(app: tauri::AppHandle, key: Option<String>) -> Result<(), String> {
+	let path = llama_key_path(&app)?;
+	let _guard = LLAMA_KEY_MUTEX
+		.lock()
+		.map_err(|e| format!("llama key lock poisoned: {e}"))?;
+	let key = key.map(|k| k.trim().to_string()).unwrap_or_default();
+	if key.is_empty() {
+		let _ = fs::remove_file(&path);
+		return Ok(());
+	}
+	if let Some(dir) = path.parent() {
+		fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+	}
+	let raw = serde_json::json!({ "key": key }).to_string();
+	let tmp = path.with_extension(format!("json.{}.tmp", pi::unique_suffix()));
+	fs::write(&tmp, raw).map_err(|e| format!("failed to write llama key: {e}"))?;
+	if let Err(e) = fs::rename(&tmp, &path) {
+		let _ = fs::remove_file(&tmp);
+		return Err(format!("failed to persist llama key: {e}"));
+	}
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::PermissionsExt;
+		if let Ok(metadata) = fs::metadata(&path) {
+			let mut perms = metadata.permissions();
+			perms.set_mode(0o600);
+			let _ = fs::set_permissions(&path, perms);
+		}
+	}
+	Ok(())
+}
+
+/// Whether a router key is stored (the value itself never leaves the backend).
+#[tauri::command]
+pub fn pi_llama_has_key(app: tauri::AppHandle) -> Result<bool, String> {
+	Ok(stored_llama_key(&app).is_some())
+}
+
+// ---------------------------------------------------------------------------
 // models.json custom provider management
 // ---------------------------------------------------------------------------
 
@@ -292,9 +379,15 @@ fn write_models_doc(doc: &serde_json::Map<String, serde_json::Value>) -> Result<
 		fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
 	}
 	let raw = serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?;
-	let tmp = path.with_extension("json.tmp");
+	// Unique tmp suffix (see write_auth_map): pi's own CLI also writes
+	// models.json, and a fixed tmp name would let two writers collide.
+	let tmp = path.with_extension(format!("json.{}.tmp", pi::unique_suffix()));
 	fs::write(&tmp, raw).map_err(|e| format!("failed to write models.json: {e}"))?;
-	fs::rename(tmp, path).map_err(|e| format!("failed to persist models.json: {e}"))
+	if let Err(e) = fs::rename(&tmp, &path) {
+		let _ = fs::remove_file(&tmp);
+		return Err(format!("failed to persist models.json: {e}"));
+	}
+	Ok(())
 }
 
 #[tauri::command]
@@ -1497,78 +1590,86 @@ pub async fn pi_move_session(
 		let file = fs::File::open(&path).map_err(|e| format!("failed to read session: {e}"))?;
 		let mut reader = BufReader::new(file);
 		let tmp = path.with_extension(format!("jsonl.{}.tmp", pi::unique_suffix()));
-		let mut writer = BufWriter::new(
-			fs::File::create(&tmp).map_err(|e| format!("failed to write session: {e}"))?,
-		);
-		let mut changed = false;
-		let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
-		loop {
-			buf.clear();
-			let mut limited = (&mut reader).take((pi::MAX_JSONL_LINE + 1) as u64);
-			let n = limited
-				.read_until(b'\n', &mut buf)
-				.map_err(|e| format!("failed to read session: {e}"))?;
-			if n == 0 {
-				break;
-			}
-			if n > pi::MAX_JSONL_LINE {
-				// Oversized line: keep it byte-for-byte, then drain the rest
-				// of the line.
-				writer
-					.write_all(&buf)
-					.map_err(|e| format!("failed to write session: {e}"))?;
-				loop {
-					buf.clear();
-					let mut sink = (&mut reader).take(64 * 1024);
-					let m = sink
-						.read_until(b'\n', &mut buf)
-						.map_err(|e| format!("failed to read session: {e}"))?;
-					if m == 0 || buf.last() == Some(&b'\n') {
-						break;
-					}
+		let write_result = (|| -> Result<(), String> {
+			let mut writer = BufWriter::new(
+				fs::File::create(&tmp).map_err(|e| format!("failed to write session: {e}"))?,
+			);
+			let mut changed = false;
+			let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+			loop {
+				buf.clear();
+				let mut limited = (&mut reader).take((pi::MAX_JSONL_LINE + 1) as u64);
+				let n = limited
+					.read_until(b'\n', &mut buf)
+					.map_err(|e| format!("failed to read session: {e}"))?;
+				if n == 0 {
+					break;
 				}
-				continue;
-			}
-			let mut line = buf.as_slice();
-			if line.last() == Some(&b'\n') {
-				line = &line[..line.len() - 1];
-			}
-			if line.last() == Some(&b'\r') {
-				line = &line[..line.len() - 1];
-			}
-			match serde_json::from_slice::<serde_json::Value>(line) {
-				Ok(mut v) => {
-					if v.get("type").and_then(|x| x.as_str()) == Some("session") {
-						v["cwd"] =
-							serde_json::Value::String(canonical.to_string_lossy().into_owned());
-						changed = true;
-					}
-					writer
-						.write_all(
-							serde_json::to_string(&v)
-								.map_err(|e| format!("failed to serialize session: {e}"))?
-								.as_bytes(),
-						)
-						.map_err(|e| format!("failed to write session: {e}"))?;
-					writer
-						.write_all(b"\n")
-						.map_err(|e| format!("failed to write session: {e}"))?;
-				}
-				Err(_) => {
+				if n > pi::MAX_JSONL_LINE {
+					// Oversized line: keep it byte-for-byte, then drain the rest
+					// of the line.
 					writer
 						.write_all(&buf)
 						.map_err(|e| format!("failed to write session: {e}"))?;
+					loop {
+						buf.clear();
+						let mut sink = (&mut reader).take(64 * 1024);
+						let m = sink
+							.read_until(b'\n', &mut buf)
+							.map_err(|e| format!("failed to read session: {e}"))?;
+						if m == 0 || buf.last() == Some(&b'\n') {
+							break;
+						}
+					}
+					continue;
+				}
+				let mut line = buf.as_slice();
+				if line.last() == Some(&b'\n') {
+					line = &line[..line.len() - 1];
+				}
+				if line.last() == Some(&b'\r') {
+					line = &line[..line.len() - 1];
+				}
+				match serde_json::from_slice::<serde_json::Value>(line) {
+					Ok(mut v) => {
+						if v.get("type").and_then(|x| x.as_str()) == Some("session") {
+							v["cwd"] =
+								serde_json::Value::String(canonical.to_string_lossy().into_owned());
+							changed = true;
+						}
+						writer
+							.write_all(
+								serde_json::to_string(&v)
+									.map_err(|e| format!("failed to serialize session: {e}"))?
+									.as_bytes(),
+							)
+							.map_err(|e| format!("failed to write session: {e}"))?;
+						writer
+							.write_all(b"\n")
+							.map_err(|e| format!("failed to write session: {e}"))?;
+					}
+					Err(_) => {
+						writer
+							.write_all(&buf)
+							.map_err(|e| format!("failed to write session: {e}"))?;
+					}
 				}
 			}
+			if !changed {
+				return Err("session header not found in file".into());
+			}
+			writer
+				.flush()
+				.map_err(|e| format!("failed to write session: {e}"))?;
+			fs::rename(&tmp, path).map_err(|e| format!("failed to persist session: {e}"))?;
+			Ok(())
+		})();
+		// A failed rewrite (missing header, disk error) must not leave the tmp
+		// copy behind — it is invisible to listings and can be hundreds of MB.
+		if write_result.is_err() {
+			let _ = fs::remove_file(&tmp);
 		}
-		if !changed {
-			return Err("session header not found in file".into());
-		}
-		writer
-			.flush()
-			.map_err(|e| format!("failed to write session: {e}"))?;
-		fs::rename(tmp, path).map_err(|e| format!("failed to persist session: {e}"))?;
-		Ok(())
+		write_result
 	})
 	.await
 }

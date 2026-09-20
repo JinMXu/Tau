@@ -82,10 +82,33 @@ pub(crate) fn parse_iso_ms(s: &str) -> Option<u64> {
 	if !(1..=days_in_month[(mo - 1) as usize]).contains(&d) {
 		return None;
 	}
+	// Optional timezone offset ("+08:00" / "-02:30" / "+0530") — split it off
+	// BEFORE the h:m:s split, because the offset itself contains ':'. A bare
+	// strip_suffix('Z') used to silently mis-parse offset timestamps, shifting
+	// cross-file ordering and per-day usage stats by hours.
+	let (time, offset_secs) = match time.find(['+', '-']) {
+		Some(pos) => {
+			let (t, off) = time.split_at(pos);
+			let sign = if off.starts_with('-') { -1 } else { 1 };
+			let digits = off.trim_start_matches(['+', '-']);
+			// Both "+08:00" and "+0530" spellings occur in the wild.
+			let (oh, om): (i64, i64) = match digits.split_once(':') {
+				Some((h, m)) => (h.parse().ok()?, m.parse().ok()?),
+				None if digits.len() == 4 => (digits[..2].parse().ok()?, digits[2..].parse().ok()?),
+				_ => return None,
+			};
+			if oh > 23 || om > 59 {
+				return None;
+			}
+			(t, sign * (oh * 3600 + om * 60))
+		}
+		None => (time, 0),
+	};
 	let mut tp = time.split(':');
 	let h: i64 = tp.next()?.parse().ok()?;
 	let mi: i64 = tp.next()?.parse().ok()?;
-	let sec: i64 = tp.next()?.split('.').next()?.parse().ok()?;
+	let sec_part = tp.next()?;
+	let sec: i64 = sec_part.split('.').next()?.parse().ok()?;
 	if !(0..=23).contains(&h) || !(0..=59).contains(&mi) || !(0..=60).contains(&sec) {
 		return None;
 	}
@@ -103,7 +126,11 @@ pub(crate) fn parse_iso_ms(s: &str) -> Option<u64> {
 	// after February in year y is folded into day_of_year above.
 	let y0 = y - 1;
 	let days = y0 * 365 + y0 / 4 - y0 / 100 + y0 / 400 + day_of_year;
-	let secs = days * 86400 + h * 3600 + mi * 60 + sec;
+	let secs = days * 86400 + h * 3600 + mi * 60 + sec - offset_secs;
+	if secs < 0 {
+		// An offset can pull a 1970-01-01 timestamp before the epoch.
+		return None;
+	}
 	// Sub-second precision is irrelevant here; epoch in ms.
 	Some((secs as u64).saturating_mul(1000))
 }

@@ -325,6 +325,17 @@ pub(crate) fn oauth_cancel_call(flow_id: &str) -> Result<(), String> {
 	Ok(())
 }
 
+/// Last-resort shutdown: kill the sidecar process (called from the app's
+/// Exit hook). Normal operation relies on the parent's pipes closing, but a
+/// parent killed hard can leave a node child that isn't reading stdin briefly
+/// alive — an explicit kill closes that window.
+pub(crate) fn shutdown() {
+	if let Some(mut conn) = lock(&CONN).take() {
+		let _ = conn.child.kill();
+		let _ = conn.child.wait();
+	}
+}
+
 /// Background warmup: spawn the sidecar and keep pinging until it answers.
 /// On first launch after an install, antivirus scans the whole vendored
 /// node_modules tree when node first reads it, which can hold the SDK

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import type { PiArchivedSession, UpdateInfo } from "../pi";
 import {
 	authRemove,
 	authSetKey,
 	authStatus,
 	exportDiagnostics,
+	llamaHasKey,
+	llamaSetKey,
 	piCustomProviders,
 	piInstalledSkills,
 	piMcpRemoveServer,
@@ -28,6 +29,7 @@ import {
 	type PiProviderModel,
 	type PiSkillEntry,
 } from "../pi";
+import { openExternal } from "../lib/open-external";
 import { formatDateTime, projectNameFromPath } from "../format";
 import type { MessageCatalog } from "../i18n";
 import {
@@ -699,6 +701,64 @@ function ProviderRow({
 	);
 }
 
+/** llama.cpp router key: lives backend-side (llama-auth.json in the app
+ *  config dir) so the plaintext key never enters localStorage. The input
+ *  shows a save hint once a key is stored; typing a new value and leaving
+ *  the field (or Enter) replaces it. */
+function LlamaKeyField({ t }: { t: MessageCatalog }) {
+	const [hasKey, setHasKey] = useState(false);
+	const [value, setValue] = useState("");
+	const [busy, setBusy] = useState(false);
+	useEffect(() => {
+		void llamaHasKey()
+			.then(setHasKey)
+			.catch(() => {});
+	}, []);
+	const save = async () => {
+		if (busy) return;
+		setBusy(true);
+		try {
+			await llamaSetKey(value.trim() ? value : null);
+			setHasKey(Boolean(value.trim()));
+			setValue("");
+		} catch {
+			/* persistence errors surface on the next llama call */
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<div className="llama-key-wrap">
+			<input
+				type="password"
+				className="llama-key-input mono"
+				value={value}
+				placeholder={hasKey ? t.keyDialog.saved : t.settings.llamaApiKeyPlaceholder}
+				spellCheck={false}
+				onChange={(e) => setValue(e.target.value)}
+				onKeyDown={(e) => {
+					if (e.key === "Enter") void save();
+				}}
+				onBlur={() => {
+					if (value.trim()) void save();
+				}}
+			/>
+			{hasKey && (
+				<button
+					className="link-btn"
+					onClick={() => {
+						void llamaSetKey(null)
+							.then(() => setHasKey(false))
+							.catch(() => {});
+					}}
+				>
+					{t.settings.clearKey}
+				</button>
+			)}
+		</div>
+	);
+}
+
 export function SettingsPanel({
 	t,
 	settings,
@@ -792,6 +852,9 @@ export function SettingsPanel({
 			}
 		};
 		const onKey = (e: KeyboardEvent) => {
+			// Consume Escape at document level so App's window handler (which
+			// aborts the running turn) never sees it.
+			e.stopPropagation();
 			if (e.key === "Escape") setArchivedMenu(null);
 		};
 		document.addEventListener("mousedown", onDown);
@@ -1538,14 +1601,7 @@ export function SettingsPanel({
 										spellCheck={false}
 										onChange={(e) => onChange({ ...settings, llamaServerUrl: e.target.value })}
 									/>
-									<input
-										type="password"
-										className="llama-key-input mono"
-										value={settings.llamaApiKey}
-										placeholder={t.settings.llamaApiKeyPlaceholder}
-										spellCheck={false}
-										onChange={(e) => onChange({ ...settings, llamaApiKey: e.target.value })}
-									/>
+									<LlamaKeyField t={t} />
 									<Btn onClick={onOpenLlama}>
 										<TerminalIcon size={13} />
 										<span>{t.settings.llamaManage}</span>
@@ -2090,14 +2146,14 @@ export function SettingsPanel({
 										(updateInfo.available ? (
 											<span className="update-status available">
 												{t.settings.updateAvailable}: {updateInfo.latest}
-												{updateInfo.url && (
-													<button
-														className="link-btn"
-														onClick={() => void openUrl(updateInfo.url).catch(() => {})}
-													>
-														{t.settings.downloadUpdate}
-													</button>
-												)}
+													{updateInfo.url && (
+														<button
+															className="link-btn"
+															onClick={() => void openExternal(updateInfo.url).catch(() => {})}
+														>
+															{t.settings.downloadUpdate}
+														</button>
+													)}
 											</span>
 										) : (
 											<span className="update-status">{t.settings.upToDate}</span>

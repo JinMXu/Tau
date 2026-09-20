@@ -23,6 +23,52 @@ fn log_path(app: &AppHandle) -> PathBuf {
 /// it without bound (the 15s heartbeat alone would add ~4 MB/month).
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
+/// Best-effort secret masking for log lines. tau.log goes verbatim into the
+/// diagnostics export, so a chatty provider error (they occasionally echo the
+/// Authorization header) must not carry credentials into a file the user
+/// shares. Deliberately pattern-based, not a secret store scan.
+fn redact(message: &str) -> String {
+	let mut out = message.to_string();
+	// Bearer tokens: "Bearer <token>" up to the next delimiter that cannot
+	// appear in a token.
+	while let Some(pos) = out.find("Bearer ") {
+		let start = pos + "Bearer ".len();
+		let end = out[start..]
+			.find(|c: char| {
+				!(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+' | '/' | '=' | '~'))
+			})
+			.map(|i| start + i)
+			.unwrap_or(out.len());
+		if end > start + 4 {
+			out.replace_range(start..end, "***");
+		} else {
+			break;
+		}
+	}
+	// OpenAI-style key prefixes (sk-, sk-ant-, sk-proj-, …).
+	for prefix in ["sk-ant-", "sk-proj-", "sk-"] {
+		let mut search_from = 0;
+		while let Some(rel) = out[search_from..].find(prefix) {
+			let start = search_from + rel;
+			let key_start = start + prefix.len();
+			let end = out[key_start..]
+				.find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-')))
+				.map(|i| key_start + i)
+				.unwrap_or(out.len());
+			if end > key_start + 4 {
+				out.replace_range(start..end, &format!("{}***", prefix.trim_end_matches('-')));
+				search_from = start + prefix.len() + 3;
+			} else {
+				search_from = key_start.max(search_from + 1);
+				if search_from >= out.len() {
+					break;
+				}
+			}
+		}
+	}
+	out
+}
+
 pub fn log(app: &AppHandle, level: &str, message: &str) {
 	let _guard = match LOG_MUTEX.lock() {
 		Ok(g) => g,
@@ -43,7 +89,7 @@ pub fn log(app: &AppHandle, level: &str, message: &str) {
 		.duration_since(UNIX_EPOCH)
 		.map(|d| d.as_millis())
 		.unwrap_or(0);
-	let line = format!("[{now}] [{level}] {message}\n");
+	let line = format!("[{now}] [{level}] {}\n", redact(message));
 	let _ = fs::OpenOptions::new()
 		.create(true)
 		.append(true)

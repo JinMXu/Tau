@@ -114,9 +114,37 @@ export function loadSettings(): AppSettings {
 			parsed.chatLineSpacing === "compact" || parsed.chatLineSpacing === "relaxed"
 				? parsed.chatLineSpacing
 				: DEFAULT_SETTINGS.chatLineSpacing;
+		// Enum / number fields were previously spread in unchecked — a corrupted
+		// or hand-edited localStorage entry could then break resolveTheme or the
+		// `fontSize px` CSS math. Whitelist everything non-string-validated.
+		const theme: Theme =
+			parsed.theme === "light" || parsed.theme === "dark" || parsed.theme === "system"
+				? parsed.theme
+				: DEFAULT_SETTINGS.theme;
+		const colorScale: ColorScale = (
+			["mist", "paper", "sand", "gray", "forest", "ocean"] as const
+		).includes(parsed.colorScale as ColorScale)
+			? (parsed.colorScale as ColorScale)
+			: DEFAULT_SETTINGS.colorScale;
+		const density: Density =
+			parsed.density === "compact" || parsed.density === "comfortable" || parsed.density === "relaxed"
+				? parsed.density
+				: DEFAULT_SETTINGS.density;
+		const fontSize =
+			typeof parsed.fontSize === "number" && Number.isFinite(parsed.fontSize)
+				? Math.min(28, Math.max(10, Math.round(parsed.fontSize)))
+				: DEFAULT_SETTINGS.fontSize;
 		return {
 			...DEFAULT_SETTINGS,
 			...parsed,
+			theme,
+			colorScale,
+			density,
+			fontSize,
+			thinkingLevel:
+				typeof parsed.thinkingLevel === "string" ? parsed.thinkingLevel : DEFAULT_SETTINGS.thinkingLevel,
+			systemPrompt:
+				typeof parsed.systemPrompt === "string" ? parsed.systemPrompt : DEFAULT_SETTINGS.systemPrompt,
 			language:
 				parsed.language === "en" || parsed.language === "zh"
 					? parsed.language
