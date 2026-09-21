@@ -12,7 +12,7 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Tauri 2](https://img.shields.io/badge/Tauri-2-24c8db)](https://tauri.app)
 [![React 19](https://img.shields.io/badge/React-19-61dafb)](https://react.dev)
-[![Rust](https://img.shields.io/badge/Rust-1.96+-orange)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/Rust-1.85+-orange)](https://www.rust-lang.org)
 
 </div>
 
@@ -23,11 +23,11 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 ### 💬 会话管理
 
 - **项目化会话** — 每个聊天会话绑定一个工作目录，Agent 在你的项目内读写文件、运行工具，切换项目时上下文跟随。
-- **会话标题与续接** — 自动从首条用户消息生成标题，支持重命名；选中已有会话通过 `--session` 续接，历史消息即时回放（带 history 徽标）。
-- **新建任务** — 一键开始新会话，支持 `--fork` 分支和 `--name` 自定义名称。
+- **会话标题与续接** — 自动从首条用户消息生成标题，支持重命名；选中已有会话即可续接（默认内置运行时经 `TAU_SESSION_FILE` 环境变量指定），历史消息即时回放（带 history 徽标）。
+- **新建任务** — 一键开始新会话，支持从已有会话分支（`TAU_FORK_OF`）与自定义名称（`TAU_SESSION_NAME`）。
 - **消息级分支** — 任意用户消息 hover 出现分支按钮，从该消息 fork 出新会话并自动切换。
 - **会话拖拽排序** — 侧边栏会话可拖拽重排，顺序持久化；会话行菜单支持一键移动到其他项目。
-- **归档 / 删除 / 恢复** — 软删除移入归档区，可随时恢复；彻底删除移入回收站，仍可手动 purge；归档管理页支持勾选多条批量恢复、只读预览与导出。
+- **归档 / 删除 / 恢复** — 软删除移入归档区，可随时恢复；彻底删除移入回收站，仍可手动 purge；归档管理页支持只读预览与导出。
 - **上次会话自动恢复** — 重启后自动恢复上次打开的会话。
 
 ### 🖥️ 聊天体验
@@ -42,15 +42,15 @@ Tau（τ = 2π）是 [Pi Coding Agent](https://github.com/earendil-works/pi) 的
 - **Compact** — 一键压缩对话上下文。
 - **上下文用量显示** — 会话标题栏实时显示上下文窗口占用百分比（tooltip 含 tokens 明细与费用），阈值变色提醒。
 - **Escape 中断** — 全局 Esc 键中断当前回合（输入框或对话框打开时不触发）。
-- **错误卡片与自动重试** — LLM / 网络 / 认证错误按类别渲染为可折叠错误卡（原始明细 + 建议 + 重试 / 压缩上下文 / 打开设置动作）；发送失败与工具失败同样在对应消息上可见；历史会话重开后失败轮次保留错误卡。可重试失败（超时 / 过载）自动指数退避重试，等待期显示「第 N / M 次 + 倒计时 + 错误预览」。错误卡上的「重试」会重发该轮的用户消息。
+- **错误卡片与自动重试** — LLM / 网络 / 认证错误按类别渲染为可折叠错误卡（原始明细 + 建议 + 重试 / 压缩上下文 / 打开设置动作）；发送失败与工具失败同样在对应消息上可见；历史会话重开后失败轮次保留错误卡。可重试失败（超时 / 过载）由 pi 自动指数退避重试，Tau 在等待期显示「第 N / M 次 + 倒计时 + 错误预览」。错误卡上的「重试」会重发该轮的用户消息。
 - **消息级复制** — 每条消息 hover 出现操作按钮：分支（用户消息）、复制为 Markdown、复制纯文本。
 - **会话导出** — 会话菜单支持导出为 Markdown、原始 JSONL 或带样式的 HTML 文件（原生保存对话框，HTML 由内置运行时生成，无需安装 pi CLI）。
 
 ### 🧩 扩展与定制
 
 - **扩展与 Skills 管理** — 内置精选 Pi 包目录（100 个，按下载量排序，支持搜索），一键安装/移除扩展、skills、提示词、主题；支持自定义包源（npm/git/本地路径）；列出已安装的 skills。
-- **自定义 Agent 工具** — Composer 扳手按钮可勾选允许 Pi 使用的工具（read/write/edit/bash/grep/find/ls），下次连接会话时通过 `--tools` 生效。
-- **自定义系统提示词** — 设置页内置 Markdown 编辑器，自定义 Pi 的系统指令，下次连接会话时通过 `--system-prompt` 生效。
+- **自定义 Agent 工具** — Composer 扳手按钮可勾选允许 Pi 使用的工具（read/write/edit/bash/grep/find/ls），下次连接会话时通过 `TAU_TOOLS` 环境变量生效。
+- **自定义系统提示词** — 设置页内置 Markdown 编辑器，自定义 Pi 的系统指令，下次连接会话时通过 `TAU_SYSTEM_PROMPT` 环境变量生效。
 - **聊天内 API Key 提示** — 发送消息时若所选 Provider 未配置 Key，直接在聊天内弹窗填写，无需跳转设置页。
 - **模型提供商配置** — 设置页动态读取 Pi 内置的全部模型提供商（约 40 个：Anthropic/OpenAI/Gemini/DeepSeek/Kimi/OpenRouter 等，含 `models.json` 自定义提供商），可逐个配置 API Key，读写 `~/.pi/agent/auth.json`（内置运行时直接读取，若同时使用 Pi 的 TUI/CLI 则凭据互通），OAuth 登录状态同样可见，且登录流程内置（设备码 + 浏览器授权），无需终端。
 - **MCP 服务器管理** — 设置页「MCP 服务」合并展示 pi-mcp-adapter 各配置层（shared / .agents / pi，全局与项目）的服务器定义，标注来源层与传输类型；支持启停（镜像 `/mcp` 适配器语义，只读共享层通过覆盖实现）、在可写的全局 `~/.pi/agent/mcp.json` 或项目 `.mcp.json` 中新建/编辑/删除，表单与 JSON 双模式编辑。
@@ -147,7 +147,7 @@ CI（GitHub Actions，`.github/workflows/ci.yml`）：push/PR 时自动运行 `t
 └──────────────────────────────────────────┘
 ```
 
-前端通过 Tauri 的 `invoke()` 调用 Rust 命令，Rust 负责 spawn 会话宿主进程并通过 stdin/stdout 转发 JSON-RPC 消息，同时直接读取会话 JSONL 文件实现历史回放、搜索和归档。会话宿主是 `resources/agent-sidecar/session-host.mjs`：由内置 Node 运行，基于 pi SDK（`AgentSessionRuntime` / `AgentSession`）实现与 `pi --mode rpc` 完全一致的 JSON-RPC 协议，**完全不依赖 pi CLI**。运行时只使用 vendored `pi-runtime/`（可用 `TAU_PI_RUNTIME` 覆盖），系统 PATH 上的 pi 不再被探测；过渡期内可设 `TAU_PI_RPC=cli` 回退到旧 CLI 路径。
+前端通过 Tauri 的 `invoke()` 调用 Rust 命令，Rust 负责 spawn 会话宿主进程并通过 stdin/stdout 转发 JSON-RPC 消息，同时直接读取会话 JSONL 文件实现历史回放、搜索和归档。会话宿主是 `resources/agent-sidecar/session-host.mjs`：由内置 Node 运行，基于 pi SDK（`AgentSessionRuntime` / `AgentSession`）实现与 `pi --mode rpc` 完全一致的 JSON-RPC 协议，**完全不依赖 pi CLI**。运行时只使用 vendored `pi-runtime/`（可用 `TAU_PI_RUNTIME` 覆盖），系统 PATH 上的 pi 不再被探测；过渡期内可设 `TAU_PI_RPC=cli` 回退到旧 CLI 路径（该回退路径仍通过 `--session` / `--fork` / `--name` / `--tools` / `--system-prompt` 等 flag 传参）。
 
 ### Pi RPC 命令
 
@@ -167,7 +167,7 @@ Tau 通过以下 JSON-RPC 命令与 Pi 通信：
 - **SDK 会话宿主**（`session-host.mjs`）— 会话主链路：每个聊天 channel 一个宿主进程，`import` vendored pi 包的 SDK 实现 RPC 协议服务端（移植自 pi 的 `rpc-mode.js`）。**pi 升级时需对照新版 `rpc-mode.js` diff 同步本文件**。
 - **SDK Sidecar**（`sidecar.rs` + `resources/agent-sidecar/sidecar.mjs`）— 由内置 node 直接 `import` vendored pi 包，Rust 通过 stdio JSONL 协议调用 SDK 能力（`parseSessionEntries` 结构化解析、HTML 导出、扩展包管理等），前端设置页「关于」可查看 Sidecar 状态。
 - **桌面工具扩展**（`tau-extension.mjs`）— 由会话宿主经 `additionalExtensionPaths` 加载，用 SDK 的 `registerTool` 注册 Tau 专属工具（首个为 `tau_open_in_editor`：在 VS Code/记事本中打开文件），让 agent 获得终端 CLI 不具备的桌面能力。
-- SDK 调用统一收口在 agent-sidecar 模块，pi 版本升级时只需适配一处；升级检查单：`vendor-pi.mjs`  bump 版本 → 对照新包 `rpc-mode.js` diff `session-host.mjs` → 跑 `scripts/spike/` 下三个验证脚本。
+- SDK 调用统一收口在 agent-sidecar 模块，pi 版本升级时只需适配一处；升级检查单：`vendor-pi.mjs`  bump 版本 → 对照新包 `rpc-mode.js` diff `session-host.mjs` → 跑 `scripts/spike/` 下四个验证脚本。
 
 ---
 
