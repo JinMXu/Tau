@@ -41,11 +41,24 @@ jobs:
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --lib
       # RustSec advisory database, so a vulnerable transitive crate surfaces on
-      # a PR instead of at the next release audit.
-      - name: cargo audit
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit --manifest-path src-tauri/Cargo.toml
+      # a PR instead of at the next release audit. The ignored entries all
+      # trace to tauri 2.x and have no fix short of the tauri 3 line:
+      #   RUSTSEC-2024-0429  glib unsoundness — Linux gtk stack only (gtk →
+      #                      muda → tauri); never compiled into the Windows or
+      #                      macOS binaries this project ships
+      #   RUSTSEC-2024-0370  proc-macro-error unmaintained — pulled by
+      #                      glib-macros, same Linux-only chain
+      #   RUSTSEC-2025-0075..0100  the unic-* family is unmaintained —
+      #                      urlpattern → tauri-utils → tauri, informational
+      # Drop each ignore when the tauri upgrade lands; a NEW advisory in any
+      # of these crates (or anywhere else) still fails this step.
+      - uses: taiki-e/install-action@cargo-audit
+      - run: >
+          cargo audit --file src-tauri/Cargo.lock
+          --ignore RUSTSEC-2024-0429 --ignore RUSTSEC-2024-0370
+          --ignore RUSTSEC-2025-0075 --ignore RUSTSEC-2025-0080
+          --ignore RUSTSEC-2025-0081 --ignore RUSTSEC-2025-0098
+          --ignore RUSTSEC-2025-0100
 
   protocol:
     name: Protocol (session-host RPC suite)
