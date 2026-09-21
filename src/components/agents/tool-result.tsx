@@ -83,6 +83,9 @@ export interface ToolResultOutputProps {
   children: string;
   language?: AgentCodeLanguage;
   className?: string;
+  /** Forwarded to AgentCode so a growing block renders plain text instead of
+   *  re-highlighting every streamed prefix. */
+  streaming?: boolean;
 }
 
 function getStatusLabel(status: ToolResultStatus, labels: ToolResultLabels) {
@@ -159,6 +162,7 @@ export function ToolResultOutput({
   children,
   language = "bash",
   className,
+  streaming = false,
 }: ToolResultOutputProps) {
   return (
     <AgentCode
@@ -168,6 +172,7 @@ export function ToolResultOutput({
         "whitespace-pre-wrap break-words text-foreground/80",
         className,
       )}
+      streaming={streaming}
     />
   );
 }

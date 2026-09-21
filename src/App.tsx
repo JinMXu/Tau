@@ -3,13 +3,10 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-	archiveSession as archiveSessionCmd,
 	authSetKey,
 	authStatus,
 	binaryInfo,
 	checkForUpdates,
-	compactSessionImages,
-	deleteSession as deleteSessionCmd,
 	exportChat,
 	exportHtml,
 	fetchSubagentRuns,
@@ -22,11 +19,8 @@ import {
 	listSessions,
 	newWindow,
 	openWorkspace,
-	piMoveSession,
-	purgeSession,
 	readSession,
 	readTree,
-	restoreSession,
 	revealDir,
 	revealSession,
 	send,
@@ -44,14 +38,19 @@ import {
 	type PiArchivedSession,
 	type PiCommand,
 	type PiEvent,
-	type PiParsedMessage,
 	type PiSessionInfo,
 	type SubagentRun,
 	type UpdateInfo,
 } from "./pi";
 import { getMessages } from "./i18n";
 import { stripAnsi } from "./lib/ansi";
-import { loadSettings, resolveTheme, saveSettings, type AppSettings } from "./settings";
+import {
+	loadSettings,
+	resolveTheme,
+	saveSettings,
+	type AgentToolName,
+	type AppSettings,
+} from "./settings";
 import type {
 	Attachment,
 	AutoRetryState,
@@ -70,13 +69,13 @@ import {
 import { AnimatedToastStack } from "./components/motion/animated-toast-stack";
 import { ChatArea } from "./components/ChatArea";
 import { ApiKeyDialog } from "./components/ApiKeyDialog";
-import { ConfirmDialog, type ConfirmState } from "./components/ConfirmDialog";
-import { RenameDialog, type RenameState } from "./components/RenameDialog";
+import { ConfirmDialog } from "./components/ConfirmDialog";
+import { RenameDialog } from "./components/RenameDialog";
 import { TitleBar } from "./components/TitleBar";
 import { SearchOverlay } from "./components/SearchOverlay";
-import { SettingsPanel, type SettingsPage } from "./components/SettingsPanel";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { ArchivedPreview } from "./components/ArchivedPreview";
-import { chatMessageToMarkdown, parsedMessagesToMarkdown, retryTextFor } from "./components/message-utils";
+import { chatMessageToMarkdown, retryTextFor } from "./components/message-utils";
 import { ExtensionDialog, type ExtensionRequest } from "./components/ExtensionDialog";
 import { TreePanel, type PiTreeData } from "./components/TreePanel";
 import { SessionInfoDialog } from "./components/SessionInfoDialog";
@@ -89,13 +88,14 @@ import type { ModelEntry } from "./components/Composer";
 // Tailwind entry: layered tailwind + preflight + App.css + shadcn token
 // bridge for the beUI components. See beui.css for the layer ordering.
 import "./beui.css";
-import { formatBytes, projectNameFromPath } from "./format";
 import { isMac, isWin, sameSessionPath } from "./platform";
 import { RESPONSE_TIMEOUTS, STORAGE_KEYS } from "./app-constants";
 import { keepStreamedText } from "./session-merge";
 import { flagCodec, stringSetCodec, usePersistedState } from "./hooks/use-persisted-state";
 import { useToasts } from "./hooks/use-toasts";
 import { useSessionNav } from "./hooks/use-session-nav";
+import { useDialogs } from "./hooks/use-dialogs";
+import { useSessionActions } from "./hooks/use-session-actions";
 
 let nextId = 1;
 
@@ -176,11 +176,6 @@ export default function App() {
 	);
 	const [error, setError] = useState<string | null>(null);
 	const [aborting, setAborting] = useState(false);
-	const [searchOpen, setSearchOpen] = useState(false);
-	const [settingsOpen, setSettingsOpen] = useState(false);
-	/** Settings page to open next; menu commands jump straight to About. The
-	 * panel is conditionally mounted, so it reads this once per open. */
-	const [settingsPage, setSettingsPage] = useState<SettingsPage | null>(null);
 	// Software update state is owned here (not in the panel) so the background
 	// startup check's result and the check-in-flight flag survive closing and
 	// reopening Settings.
@@ -250,12 +245,6 @@ export default function App() {
 		STORAGE_KEYS.sessionOrder,
 		[],
 	);
-	// Read-only preview of an archived session (messages + export).
-	const [archivedPreview, setArchivedPreview] = useState<{
-		path: string;
-		title: string;
-		messages: PiParsedMessage[];
-	} | null>(null);
 	const [pinnedSessions, setPinnedSessions] = usePersistedState<string[]>(STORAGE_KEYS.pinned, []);
 	const [composerFocusRequest, setComposerFocusRequest] = useState(0);
 	const [gitState, setGitState] = useState<GitBranchState | null>(null);
@@ -265,8 +254,48 @@ export default function App() {
 	// doesn't re-subscribe when the dialog changes). Used to cancel a pending
 	// request before it is overwritten by a newer one.
 	const extensionRequestRef = useRef<ExtensionRequest | null>(null);
-	const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
-	const [renameState, setRenameState] = useState<RenameState | null>(null);
+	// Every modal / overlay, plus the `anyOverlayOpen` flag the Escape guard
+	// reads. Lifted into useDialogs so adding a surface is a one-place change.
+	const dialogs = useDialogs(extensionRequest);
+	const {
+		searchOpen,
+		settingsOpen,
+		settingsPage,
+		treeOpen,
+		treeData,
+		sessionInfoOpen,
+		sessionInfoData,
+		hotkeysOpen,
+		scopedModelsOpen,
+		compactOpen,
+		shareUrl,
+		llamaOpen,
+		confirmState,
+		renameState,
+		archivedPreview,
+		apiKeyDialog,
+		anyOverlayOpen,
+		// Setters keep their historical names so the call sites below read the
+		// same as before the extraction.
+		setSearchOpen,
+		setSettingsOpen,
+		openSettings,
+		toggleSearch,
+		toggleSettings,
+		setTreeOpen,
+		setTreeData,
+		setSessionInfoOpen,
+		setSessionInfoData,
+		setHotkeysOpen,
+		setScopedModelsOpen,
+		setCompactOpen,
+		setShareUrl,
+		setLlamaOpen,
+		setConfirmState,
+		setRenameState,
+		setArchivedPreview,
+		setApiKeyDialog,
+	} = dialogs;
 	const { toasts, toast, dismiss } = useToasts();
 	// Mirror for mount-once listeners (the pi://* subscriptions) that must not
 	// re-subscribe when this callback's identity changes.
@@ -280,31 +309,12 @@ export default function App() {
 	const [extensionStatus, setExtensionStatus] = useState<Record<string, string>>({});
 	const [externalDraft, setExternalDraft] = useState<string | null>(null);
 
-	// ---- session tree (/tree equivalent) ----
-	const [treeOpen, setTreeOpen] = useState(false);
-	const [treeData, setTreeData] = useState<PiTreeData | null>(null);
-	// ---- /session details ----
-	const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
-	const [sessionInfoData, setSessionInfoData] = useState<{
-		state: Record<string, unknown>;
-		stats: SessionStats | null;
-	} | null>(null);
-	// ---- /hotkeys ----
-	const [hotkeysOpen, setHotkeysOpen] = useState(false);
-	// ---- /scoped-models ----
-	const [scopedModelsOpen, setScopedModelsOpen] = useState(false);
-	// ---- /compact with custom instructions ----
-	const [compactOpen, setCompactOpen] = useState(false);
-	// ---- /share result ----
-	const [shareUrl, setShareUrl] = useState<string | null>(null);
 	// ---- direct bash command (!cmd / !!cmd) streaming ----
 	const activeBashRef = useRef<{ id: string; messageId: number } | null>(null);
 	// ---- /reload (restart pi to reload extensions/skills/prompts) ----
 	// ---- /trust (project trust decisions) ----
 	const [trustDecision, setTrustDecision] = useState<boolean | null>(null);
 	const [trustDefault, setTrustDefault] = useState<string>("ask");
-	// ---- /llama ----
-	const [llamaOpen, setLlamaOpen] = useState(false);
 
 	// ---- follow-up / steering queue (managed locally, delivered one at a time) ----
 	const [queuedMessages, setQueuedMessages] = useState<QueuedChatMessage[]>([]);
@@ -368,7 +378,6 @@ export default function App() {
 
 	// ---- provider API-key gate (chat-time key dialog) ----
 	const [, setAuthProviders] = useState<AuthProviderStatus[]>([]);
-	const [apiKeyDialog, setApiKeyDialog] = useState<{ provider: string } | null>(null);
 	const apiKeyResolversRef = useRef<((saved: boolean) => void)[]>([]);
 
 	useEffect(() => {
@@ -2558,7 +2567,7 @@ useEffect(() => {
 		} catch (e) {
 			setError(String(e));
 		}
-	}, [connected, handleResponse]);
+	}, [connected, handleResponse, setSessionInfoData, setSessionInfoOpen, setError]);
 
 	// Ask the user for the selected provider's API key when it's missing,
 	// right in the chat. Returns true when sending may proceed.
@@ -2585,7 +2594,7 @@ useEffect(() => {
 			apiKeyResolversRef.current.push(resolve);
 			setApiKeyDialog({ provider });
 		});
-	}, [model]);
+	}, [model, setApiKeyDialog]);
 
 	const handleApiKeySave = useCallback(
 		async (provider: string, key: string) => {
@@ -2597,7 +2606,7 @@ useEffect(() => {
 			setApiKeyDialog(null);
 			toast(t.keyDialog.saved);
 		},
-		[t, toast],
+		[t, toast, setApiKeyDialog],
 	);
 
 	const handleApiKeyCancel = useCallback(() => {
@@ -2605,7 +2614,7 @@ useEffect(() => {
 		apiKeyResolversRef.current = [];
 		for (const r of resolvers) r(false);
 		setApiKeyDialog(null);
-	}, []);
+	}, [setApiKeyDialog]);
 
 	/** Committed transcript + the in-flight message: what the user sees (copy /
 	 *  export paths read this, everything else keeps the two apart). */
@@ -3063,65 +3072,43 @@ useEffect(() => {
 		[connected, refreshSessions],
 	);
 
-	const archiveCurrent = useCallback(async () => {
-		const path = sessionPathRef.current;
-		if (!path) return;
-		setConfirmState({
-			title: t.confirm.deleteTitle,
-			body: t.confirm.deleteBody,
-			confirmLabel: t.app.delete,
-			onConfirm: async () => {
-				try {
-					// Stop pi first: on Linux/macOS renaming a session file
-					// that pi still has open makes later appends land in the
-					// moved copy; on Windows the rename just fails.
-					await disconnect();
-					await archiveSessionCmd(path);
-					clearTranscript();
-					await refreshSessions();
-					// Reconnect to a fresh session so the composer stays usable
-					// as long as a workspace is selected.
-					if (workspace) void connect({ sessionFile: null });
-					toast(t.sidebar.archive);
-				} catch (e) {
-					setError(String(e));
-				}
-			},
-		});
-	}, [t, disconnect, refreshSessions, toast, workspace, connect]);
 
-	// Archive an arbitrary session from the sidebar row hover action.
-	const archiveSessionByPath = useCallback(
-		(path: string) => {
-			setConfirmState({
-				title: t.confirm.deleteTitle,
-				body: t.confirm.deleteBody,
-				confirmLabel: t.app.delete,
-				onConfirm: async () => {
-					try {
-						// Was this the DISPLAYED session? Compare via
-						// sameSessionPath: sessionPathRef carries the RPC spelling,
-						// the sidebar row carries the scan spelling.
-						const wasCurrent =
-							sessionPathRef.current != null && sameSessionPath(sessionPathRef.current, path);
-						if (wasCurrent) {
-							await disconnect();
-						}
-						await archiveSessionCmd(path);
-						if (wasCurrent) {
-							clearTranscript();
-						}
-						await refreshSessions();
-						if (wasCurrent && workspace) void connect({ sessionFile: null });
-						toast(t.sidebar.archive);
-					} catch (e) {
-						setError(String(e));
-					}
-				},
-			});
-		},
-		[t, disconnect, refreshSessions, toast, workspace, connect],
-	);
+	// ---- session lifecycle actions (archive / delete / purge / move / compact) ----
+	// Lifted into useSessionActions: these are pure functions of which sessions
+	// exist plus the connect/disconnect/refresh primitives, and were ~340 lines of
+	// near-identical confirm-then-act-then-refresh callbacks interleaved with the
+	// streaming machinery.
+	const {
+		archiveCurrent,
+		archiveSessionByPath,
+		deleteCurrent,
+		handleRestore,
+		handlePurge,
+		handlePurgeAll,
+		handlePurgeProject,
+		handleMoveSession,
+		handleCompactImages,
+		handleCompactArchived,
+		handleDeleteProject,
+		handleRevealProject,
+		openArchivedPreview,
+		exportArchivedPreview,
+	} = useSessionActions({
+		t,
+		workspace,
+		sessions,
+		archived,
+		sessionPathRef,
+		disconnect,
+		connect,
+		refreshSessions,
+		toast,
+		setError,
+		clearTranscript,
+		confirm: (state) => setConfirmState(state),
+		archivedPreview,
+		setArchivedPreview,
+	});
 
 	const togglePinSession = useCallback((path: string) => {
 		setPinnedSessions((prev) =>
@@ -3129,27 +3116,6 @@ useEffect(() => {
 		);
 	}, []);
 
-	const deleteCurrent = useCallback(async () => {
-		const path = sessionPathRef.current;
-		if (!path) return;
-		setConfirmState({
-			title: t.confirm.deleteTitle,
-			body: t.confirm.deleteBody,
-			confirmLabel: t.app.delete,
-			onConfirm: async () => {
-				try {
-					await disconnect();
-					await deleteSessionCmd(path);
-					clearTranscript();
-					await refreshSessions();
-					if (workspace) void connect({ sessionFile: null });
-					toast(t.app.delete);
-				} catch (e) {
-					setError(String(e));
-				}
-			},
-		});
-	}, [t, disconnect, refreshSessions, toast, workspace, connect]);
 
 	const revealCurrent = useCallback(async () => {
 		const path = sessionPathRef.current;
@@ -3161,248 +3127,6 @@ useEffect(() => {
 		}
 	}, []);
 
-	const handleRestore = useCallback(
-		async (path: string) => {
-			try {
-				await restoreSession(path);
-				await refreshSessions();
-				toast(t.sidebar.restore);
-			} catch (e) {
-				setError(String(e));
-			}
-		},
-		[refreshSessions, toast, t],
-	);
-
-	const handlePurge = useCallback(
-		(path: string) => {
-			setConfirmState({
-				title: t.confirm.purgeTitle,
-				body: t.confirm.purgeBody,
-				confirmLabel: t.app.delete,
-				onConfirm: async () => {
-					try {
-						await purgeSession(path);
-						await refreshSessions();
-						toast(t.app.delete);
-					} catch (e) {
-						setError(String(e));
-					}
-				},
-			});
-		},
-		[refreshSessions, toast, t],
-	);
-
-	// Read-only preview + export for archived sessions.
-	const openArchivedPreview = useCallback(async (path: string, title: string) => {
-		try {
-			const parsed = await readSession(path);
-			setArchivedPreview({ path, title, messages: parsed });
-		} catch (e) {
-			setError(String(e));
-		}
-	}, []);
-
-	const exportArchivedPreview = useCallback(
-		async (format: "markdown" | "jsonl" | "html") => {
-			const preview = archivedPreview;
-			if (!preview) return;
-			try {
-				if (format === "html") {
-					await exportHtml(preview.path);
-				} else if (format === "jsonl") {
-					await exportChat(preview.path, null, "jsonl");
-				} else {
-					await exportChat(preview.path, parsedMessagesToMarkdown(preview.messages), "markdown");
-				}
-			} catch (e) {
-				setError(String(e));
-			}
-		},
-		[archivedPreview],
-	);
-
-	const handleRevealProject = useCallback(async (path: string) => {
-		try {
-			await revealDir(path);
-		} catch {
-			/* ignore */
-		}
-	}, []);
-
-	const handleDeleteProject = useCallback(
-		(path: string) => {
-			const projectSessions = sessions.filter((s) => s.project === path);
-			if (projectSessions.length === 0) return;
-			setConfirmState({
-				title: t.confirm.deleteProjectTitle,
-				body: t.confirm.deleteProjectBody.replace("{count}", String(projectSessions.length)),
-				confirmLabel: t.app.delete,
-				onConfirm: async () => {
-					const current = sessionPathRef.current;
-					const includesCurrent =
-						current != null && projectSessions.some((s) => sameSessionPath(s.path, current));
-					if (includesCurrent) {
-						await disconnect();
-					}
-					for (const s of projectSessions) {
-						try {
-							await archiveSessionCmd(s.path);
-						} catch {
-							/* continue */
-						}
-					}
-					if (includesCurrent) {
-						clearTranscript();
-					}
-					await refreshSessions();
-					if (workspace) void connect({ sessionFile: null });
-					toast(t.sidebar.deleteProject);
-				},
-			});
-		},
-		[sessions, t, disconnect, refreshSessions, toast, workspace, connect],
-	);
-
-	const handlePurgeAll = useCallback(() => {
-		if (archived.length === 0) return;
-		setConfirmState({
-			title: t.confirm.purgeAllTitle,
-			body: t.confirm.purgeAllBody.replace("{count}", String(archived.length)),
-			confirmLabel: t.settings.deleteAllArchived,
-			onConfirm: async () => {
-				for (const a of archived) {
-					try {
-						await purgeSession(a.path);
-					} catch {
-						/* continue */
-					}
-				}
-				await refreshSessions();
-				toast(t.app.delete);
-			},
-		});
-	}, [archived, refreshSessions, toast, t]);
-
-	const handlePurgeProject = useCallback(
-		(project: string | null) => {
-			const targets = archived.filter((a) => a.project === project);
-			if (targets.length === 0) return;
-			const name = project ? projectNameFromPath(project) : t.settings.noProject;
-			setConfirmState({
-				title: t.confirm.purgeProjectTitle,
-				body: t.confirm.purgeProjectBody
-					.replace("{project}", name)
-					.replace("{count}", String(targets.length)),
-				confirmLabel: t.app.delete,
-				onConfirm: async () => {
-					for (const a of targets) {
-						try {
-							await purgeSession(a.path);
-						} catch {
-							/* continue */
-						}
-					}
-					await refreshSessions();
-					toast(t.app.delete);
-				},
-			});
-		},
-		[archived, refreshSessions, toast, t],
-	);
-
-	const handleMoveSession = useCallback(
-		async (path: string) => {
-			const dir = await openWorkspace();
-			if (!dir) return;
-			const wasCurrent = sessionPathRef.current === path;
-			try {
-				// Rewriting a JSONL that the running pi process may append to
-				// concurrently would corrupt it — stop the session first.
-				if (wasCurrent) {
-					await disconnect();
-				}
-				await piMoveSession(path, dir);
-				await refreshSessions();
-				if (wasCurrent) {
-					clearTranscript();
-					// Explicit workspace: the session header now points at the
-					// new project, but the (stale) cached session entry would
-					// steer connect back to the old directory.
-					await connect({ sessionFile: path, workspace: dir });
-				}
-				toast(t.chat.moved);
-			} catch (e) {
-				setError(String(e));
-			}
-		},
-		[refreshSessions, toast, t, disconnect, connect],
-	);
-
-	const handleCompactImages = useCallback(async () => {
-		const path = sessionPathRef.current;
-		if (!path) return;
-		setConfirmState({
-			title: t.confirm.compactImagesTitle,
-			body: t.confirm.compactImagesBody,
-			confirmLabel: t.app.confirm,
-			onConfirm: async () => {
-				try {
-					// The backend refuses to touch a session the running pi
-					// process may append to, so stop it first and reconnect
-					// afterwards.
-					await disconnect();
-					const r = await compactSessionImages(path);
-					await refreshSessions();
-					await connect({ sessionFile: path });
-					if (r.removed > 0) {
-						const saved = Math.max(0, r.before - r.after);
-						toast(
-							t.chat.imagesCompacted
-								.replace("{n}", String(r.removed))
-								.replace("{size}", formatBytes(saved)),
-						);
-					} else {
-						toast(t.chat.imagesCompactedNone);
-					}
-				} catch (e) {
-					setError(String(e));
-				}
-			},
-		});
-	}, [t, disconnect, refreshSessions, connect, toast]);
-
-	// Same operation for archived/trashed sessions (never running, so no
-	// disconnect/reconnect dance).
-	const handleCompactArchived = useCallback(
-		async (path: string) => {
-			setConfirmState({
-				title: t.confirm.compactImagesTitle,
-				body: t.confirm.compactImagesBodyArchived,
-				confirmLabel: t.app.confirm,
-				onConfirm: async () => {
-					try {
-						const r = await compactSessionImages(path);
-						await refreshSessions();
-						if (r.removed > 0) {
-							const saved = Math.max(0, r.before - r.after);
-							toast(
-								t.chat.imagesCompacted
-									.replace("{n}", String(r.removed))
-									.replace("{size}", formatBytes(saved)),
-							);
-						} else {
-							toast(t.chat.imagesCompactedNone);
-						}
-					} catch (e) {
-						setError(String(e));
-					}
-				},
-			});
-		},
-		[t, refreshSessions, toast],
-	);
 
 	const handleExtensionRespond = useCallback(
 		async (id: string, payload: Record<string, unknown>) => {
@@ -3505,7 +3229,7 @@ useEffect(() => {
 		} catch (e) {
 			setError(String(e));
 		}
-	}, [t]);
+	}, [t, setTreeData, setTreeOpen, setError]);
 
 	// ---- /session: fetch details for the info dialog ----
 	const openSessionInfo = useCallback(async () => {
@@ -3523,7 +3247,7 @@ useEffect(() => {
 		} catch (e) {
 			setError(String(e));
 		}
-	}, [connected, handleResponse]);
+	}, [connected, handleResponse, setSessionInfoData, setSessionInfoOpen, setError]);
 
 	// ---- /share: upload the session as a private GitHub gist ----
 	const share = useCallback(async () => {
@@ -3535,7 +3259,7 @@ useEffect(() => {
 		} catch (e) {
 			setError(String(e));
 		}
-	}, []);
+	}, [setShareUrl, setError]);
 
 	// ---- /import: import a JSONL session file ----
 	const importSessionCmd = useCallback(async () => {
@@ -3663,10 +3387,7 @@ useEffect(() => {
 
 	// Central opener: `page` picks the initial settings page (menu commands
 	// jump to About); null means the panel's default (General).
-	const openSettings = useCallback((page: SettingsPage | null = null) => {
-		setSettingsPage(page);
-		setSettingsOpen(true);
-	}, []);
+	// `openSettings` / `toggleSettings` come from useDialogs.
 
 	// Manual update check (Settings → About and the "Check for Updates…" menu
 	// item). Always forces a live GitHub query; the result lives in App state
@@ -3732,7 +3453,7 @@ useEffect(() => {
 		const hash = window.location.hash;
 		if (hash === "#settings") openSettings();
 		if (hash === "#search") setSearchOpen(true);
-	}, [openSettings]);
+	}, [openSettings, setSearchOpen]);
 
 	// Auto-connect / auto-resume: whenever the app is idle and a workspace is
 	// known, (re)connect to the current/last session (or a fresh one).
@@ -3759,44 +3480,17 @@ useEffect(() => {
 			if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
 				return;
 			}
-			if (
-				confirmState ||
-				renameState ||
-				apiKeyDialog ||
-				extensionRequest ||
-				searchOpen ||
-				archivedPreview ||
-				treeOpen ||
-				sessionInfoOpen ||
-				hotkeysOpen ||
-				scopedModelsOpen ||
-				compactOpen ||
-				shareUrl
-			) {
-				return;
-			}
+			// useDialogs owns every open surface, so one flag replaces the
+			// 12-way disjunction this used to be — adding a dialog can no longer
+			// silently make Escape abort the run instead of closing it.
+			if (anyOverlayOpen) return;
 			if (!workingRef.current || !connected) return;
 			e.preventDefault();
 			void abort();
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [
-		confirmState,
-		renameState,
-		apiKeyDialog,
-		extensionRequest,
-		searchOpen,
-		archivedPreview,
-		treeOpen,
-		sessionInfoOpen,
-		hotkeysOpen,
-		scopedModelsOpen,
-		compactOpen,
-		shareUrl,
-		connected,
-		abort,
-	]);
+	}, [anyOverlayOpen, connected, abort]);
 
 	// ---- keyboard shortcuts ----
 	useEffect(() => {
@@ -3813,7 +3507,7 @@ useEffect(() => {
 			const key = e.key.toLowerCase();
 			if (key === "k") {
 				e.preventDefault();
-				setSearchOpen((v) => !v);
+				toggleSearch();
 			} else if (key === "n") {
 				e.preventDefault();
 				if (e.shiftKey) {
@@ -3829,7 +3523,7 @@ useEffect(() => {
 				}
 			} else if (e.key === ",") {
 					e.preventDefault();
-					setSettingsOpen((v) => !v);
+					toggleSettings();
 				}
 				// Ctrl/⌘+B (toggle sidebar) is handled by AnimatedSidebarProvider —
 				// it owns the same shortcut, and binding it here too would toggle
@@ -3854,7 +3548,7 @@ useEffect(() => {
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [newTask, toggleSidebar, focusComposer, archiveCurrent, busy, toast, t, cycleModel, navGo]);
+	}, [newTask, toggleSidebar, focusComposer, archiveCurrent, busy, toast, t, cycleModel, navGo, toggleSearch]);
 
 	// ---- sidebar resize ----
 	const resizeRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -3935,6 +3629,59 @@ useEffect(() => {
 
 	const showTurnWait = working && !streaming && connected;
 
+	// ---- stable action handlers for the memoized children ----
+	// ChatArea and Sidebar are both memo()'d. An inline arrow in the JSX below
+	// hands them a fresh prop identity on EVERY App render — including the
+	// once-per-frame re-render a streamed delta causes (App keeps `stream` in
+	// state precisely so `messages` stays identity-stable across a run; see the
+	// StreamingState notes above). Unstable handlers here defeated that: the
+	// whole chat subtree — Composer included — re-rendered per token. Every
+	// function prop a memoized child receives is therefore a useCallback, and
+	// every array/object prop is a useMemo.
+	const extensionStatusList = useMemo(() => Object.values(extensionStatus), [extensionStatus]);
+	const settingsProjects = useMemo(
+		() =>
+			Array.from(new Set(sessions.map((s) => s.project).filter((p): p is string => !!p))).sort(),
+		[sessions],
+	);
+	const toggleProject = useCallback(
+		(key: string) => {
+			setExpandedProjects((prev) => {
+				const next = new Set(prev);
+				if (next.has(key)) next.delete(key);
+				else next.add(key);
+				return next;
+			});
+		},
+		[setExpandedProjects],
+	);
+	const openCompactDialog = useCallback(() => setCompactOpen(true), [setCompactOpen]);
+	const openHotkeysDialog = useCallback(() => setHotkeysOpen(true), [setHotkeysOpen]);
+	const openSearchOverlay = useCallback(() => setSearchOpen(true), [setSearchOpen]);
+	const openRenameDialog = useCallback(() => {
+		setRenameState({ title: t.chat.rename, initial: selectedSession?.title ?? "" });
+	}, [t.chat.rename, selectedSession, setRenameState]);
+	const cancelQueueEdit = useCallback(() => setEditingQueueId(null), []);
+	const consumeExternalDraft = useCallback(() => setExternalDraft(null), []);
+	const handleQueueSendNow = useCallback((id: string) => void queueSendNow(id), [queueSendNow]);
+	const handleQueueEdit = useCallback(
+		(item: QueuedChatMessage) => queueEdit(item.id),
+		[queueEdit],
+	);
+	const handleQueueDelete = useCallback((id: string) => queueDelete(id), [queueDelete]);
+	const handleQueueReorder = useCallback(
+		(activeId: string, overId: string) => queueReorder(activeId, overId),
+		[queueReorder],
+	);
+	const handleCustomToolsChange = useCallback((tools: AgentToolName[]) => {
+		setSettings((prev) => ({ ...prev, customTools: tools }));
+	}, []);
+	const handleNewTask = useCallback(() => void newTask(), [newTask]);
+	const handleNavBack = useCallback(() => void navGo(-1), [navGo]);
+	const handleNavForward = useCallback(() => void navGo(1), [navGo]);
+	const handleForkMessageClick = useCallback(() => void handleForkMessage(), [handleForkMessage]);
+	const handleCompactSession = useCallback(() => void compact(), [compact]);
+
 	const sidebarEl = (
 		<AnimatedSidebar
 			side="left"
@@ -3951,27 +3698,20 @@ useEffect(() => {
 				expandedProjects={expandedProjects}
 				sessionOrder={sessionOrder}
 				onReorderSession={setSessionOrder}
-				onToggleProject={(key) =>
-					setExpandedProjects((prev) => {
-						const next = new Set(prev);
-						if (next.has(key)) next.delete(key);
-						else next.add(key);
-						return next;
-					})
-				}
+				onToggleProject={toggleProject}
 				onSelectSession={openSession}
-				onBack={() => void navGo(-1)}
-				onForward={() => void navGo(1)}
+				onBack={handleNavBack}
+				onForward={handleNavForward}
 				canGoBack={canGoBack}
 				canGoForward={canGoForward}
 				pinnedSessions={pinnedSessions}
 				onTogglePin={togglePinSession}
 				onArchiveSession={archiveSessionByPath}
-				onNewTask={newTask}
+				onNewTask={handleNewTask}
 				onNewTaskInProject={newTaskInProject}
 				onOpenWorkspace={pickWorkspace}
-				onOpenSettings={() => openSettings()}
-				onOpenSearch={() => setSearchOpen(true)}
+				onOpenSettings={openSettings}
+				onOpenSearch={openSearchOverlay}
 				onMoveSession={handleMoveSession}
 				onRevealProject={handleRevealProject}
 				onDeleteProject={handleDeleteProject}
@@ -4042,13 +3782,11 @@ useEffect(() => {
 						onSubmit={submit}
 						onAbort={abort}
 						aborting={aborting}
-						onCompact={() => setCompactOpen(true)}
+						onCompact={openCompactDialog}
 						onCopy={copyConversation}
 						onExport={exportSession}
 						onExportHtml={exportSessionHtml}
-						onRename={() =>
-							setRenameState({ title: t.chat.rename, initial: selectedSession?.title ?? "" })
-						}
+						onRename={openRenameDialog}
 						onArchive={archiveCurrent}
 						onDelete={deleteCurrent}
 						onCompactImages={handleCompactImages}
@@ -4057,7 +3795,7 @@ useEffect(() => {
 						onSessionInfo={openSessionInfo}
 						onShare={share}
 						onImport={importSessionCmd}
-						onHotkeys={() => setHotkeysOpen(true)}
+						onHotkeys={openHotkeysDialog}
 						composerFocusRequest={composerFocusRequest}
 						showTurnWait={showTurnWait}
 						gitState={gitState}
@@ -4071,36 +3809,34 @@ useEffect(() => {
 						queuedMessages={queuedMessages}
 						queuePaused={queuePaused}
 						editingQueueId={editingQueueId}
-						onQueueSendNow={(id) => void queueSendNow(id)}
-						onQueueEdit={(item) => queueEdit(item.id)}
-						onQueueDelete={(id) => queueDelete(id)}
-						onQueueReorder={(a, b) => queueReorder(a, b)}
-						onQueueCancelEdit={() => setEditingQueueId(null)}
+						onQueueSendNow={handleQueueSendNow}
+						onQueueEdit={handleQueueEdit}
+						onQueueDelete={handleQueueDelete}
+						onQueueReorder={handleQueueReorder}
+						onQueueCancelEdit={cancelQueueEdit}
 						sidebarCollapsed={sidebarCollapsed}
 						onToggleSidebar={toggleSidebar}
-						onNewTask={() => void newTask()}
-						onBack={() => void navGo(-1)}
-						onForward={() => void navGo(1)}
+						onNewTask={handleNewTask}
+						onBack={handleNavBack}
+						onForward={handleNavForward}
 						canGoBack={canGoBack}
 						canGoForward={canGoForward}
 						customTools={settings.customTools}
-						onCustomToolsChange={(tools) =>
-							setSettings((prev) => ({ ...prev, customTools: tools }))
-						}
+						onCustomToolsChange={handleCustomToolsChange}
 						showContextUsage={settings.showContextUsage}
 						modelsLoading={modelsLoading}
 						commands={commands}
 						extensionWidgets={extensionWidgets}
-						extensionStatus={Object.values(extensionStatus)}
+						extensionStatus={extensionStatusList}
 						externalDraft={externalDraft}
-						onExternalDraftConsumed={() => setExternalDraft(null)}
+						onExternalDraftConsumed={consumeExternalDraft}
 						onCycleThinking={cycleThinkingLevel}
 						onCopyMessage={copyMessage}
 						onRecallMessage={recallMessage}
-						onForkMessage={() => void handleForkMessage()}
+						onForkMessage={handleForkMessageClick}
 						onRetryMessage={retryLastUserMessage}
-						onCompactSession={() => void compact()}
-						openSettings={() => openSettings()}
+						onCompactSession={handleCompactSession}
+						openSettings={openSettings}
 					/>
 				</div>
 				{settingsOpen && (
@@ -4130,9 +3866,7 @@ useEffect(() => {
 						trustDefault={trustDefault}
 						onSetProjectTrust={(d) => void setProjectTrust(d)}
 						onSetDefaultTrust={(v) => void setDefaultTrust(v)}
-						projects={Array.from(
-							new Set(sessions.map((s) => s.project).filter((p): p is string => !!p)),
-						).sort()}
+						projects={settingsProjects}
 						onCustomProvidersChanged={handleCustomProvidersChanged}
 					/>
 				)}

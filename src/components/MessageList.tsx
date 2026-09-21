@@ -1,9 +1,19 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	Fragment,
+	memo,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import type { AutoRetryState, Block, ChatMessage } from "../chat-types";
 import type { SubagentRun } from "../pi";
 import type { MessageCatalog } from "../i18n";
 import { BranchIcon, CheckIcon, CopyIcon, SparkleIcon, UndoIcon } from "../icons";
 import { Button } from "./motion/button";
+import { MessageBoundary } from "./MessageBoundary";
 import { ErrorNote } from "./ErrorNote";
 import { formatClockDuration } from "../format";
 import { splitOnQuery } from "./message-utils";
@@ -12,11 +22,13 @@ import { MetaGroup, TurnDiffRow } from "./MetaGroup";
 import { ThinkingOrb } from "thinking-orbs";
 import { PreviewTicker } from "./PreviewTicker";
 import {
-	attachToolResults,
+	attachWithPending,
 	buildChatRows,
 	deriveTurnChanges,
 	deriveTurnTimings,
+	extendAttachPass,
 	searchBypassIds,
+	type ChatRow,
 	type MessageItem,
 	type TurnChanges,
 } from "./chat-rows";
@@ -324,11 +336,13 @@ const MessageRow = memo(function MessageRow({
 	searchActiveMessageId?: number | null;
 	refCb: (id: number, el: HTMLDivElement | null) => void;
 	onCopy?: (text: string) => void;
-	onRecall?: () => void;
+	onRecall?: (msg: ChatMessage) => void;
 	canRecall: boolean;
 	canFork: boolean;
-	onFork?: () => void;
-	onRetry?: () => void;
+	/** Take the message so the row can build a stable handler internally (see
+	 *  the useCallbacks below) instead of receiving a fresh arrow per render. */
+	onFork?: (msg: ChatMessage) => void;
+	onRetry?: (msg: ChatMessage) => void;
 	onCompact?: () => void;
 	onOpenSettings?: () => void;
 }) {
@@ -345,6 +359,16 @@ const MessageRow = memo(function MessageRow({
 				<span key={j}>{p.text}</span>
 			),
 		);
+
+	// Handlers are built here, from the stable callback props, rather than as
+	// inline arrows at the call site: `m` keeps its identity while a stream runs
+	// (App only ever replaces the in-flight message), so these stay referentially
+	// stable for committed rows and MessageRow's memo actually hits. Inline
+	// arrows in MessageList gave every row a new onRecall/onFork/onRetry identity
+	// on each frame, re-rendering the whole transcript per token.
+	const handleRecall = useCallback(() => onRecall?.(m), [onRecall, m]);
+	const handleFork = useCallback(() => onFork?.(m), [onFork, m]);
+	const handleRetry = useCallback(() => onRetry?.(m), [onRetry, m]);
 
 	const blocks = m.blocks.map((b: Block, i: number) => {
 		if (item.consumed.has(i) || skip.has(i)) return null;
@@ -421,48 +445,77 @@ const MessageRow = memo(function MessageRow({
 				canRecall={m.role === "user" && canRecall}
 				canFork={canFork}
 				onCopy={onCopy}
-				onRecall={onRecall}
-				onFork={onFork}
+				onRecall={handleRecall}
+				onFork={handleFork}
 				t={t}
 			/>
 		) : null;
 
 	return (
-		// Plain elements, not beui's Message/MessageBubble: those are motion
-		// components whose layout measurement rewrites style attributes on
-		// every streaming re-render of the list — the transcript's perf
-		// contract (stream mutations never touch committed rows' DOM, guarded
-		// by stream-split.test) forbids that. The existing .message.user CSS
-		// already renders the tinted end-aligned user bubble.
-		<div
-			ref={(el) => refCb(m.id, el)}
-			className={`message ${m.role}${isSearchTarget ? " message-search-target" : ""}`}
-		>
-			{m.role === "user" && m.images && m.images.length > 0 && (
-				<MessageImages images={m.images} t={t} />
-			)}
-			{blocks}
-			{actions}
-			{/* Error cards render on ANY role that carries one: the assistant
-			    (LLM failure), the user message (send failure) and the bash tool
-			    message (direct-command failure). onRetry resends the turn's
-			    user text in every case (retryTextFor). */}
-			{last && m.error && typeof m.error !== "string" && (
-				<ErrorNote
-					error={m.error}
-					t={t}
-					onRetry={onRetry}
-					onCompact={onCompact}
-					onOpenSettings={onOpenSettings}
-				/>
-			)}
-			{last && typeof m.error === "string" && <div className="msg-error">error: {m.error}</div>}
-		</div>
+		// A throw inside one message's renderer (markstream / shiki / mermaid run
+		// on every streamed delta) must not take the whole app down — the root
+		// boundary would unmount the tree and lose the transcript. The boundary
+		// renders its children directly, so this adds no DOM node.
+		<MessageBoundary text={() => messageText(m)} t={t}>
+			{/* Plain elements, not beui's Message/MessageBubble: those are motion
+			    components whose layout measurement rewrites style attributes on
+			    every streaming re-render of the list — the transcript's perf
+			    contract (stream mutations never touch committed rows' DOM, guarded
+			    by stream-split.test) forbids that. The existing .message.user CSS
+			    already renders the tinted end-aligned user bubble. */}
+			<div
+				ref={(el) => refCb(m.id, el)}
+				className={`message ${m.role}${isSearchTarget ? " message-search-target" : ""}`}
+			>
+				{m.role === "user" && m.images && m.images.length > 0 && (
+					<MessageImages images={m.images} t={t} />
+				)}
+				{blocks}
+				{actions}
+				{/* Error cards render on ANY role that carries one: the assistant
+				    (LLM failure), the user message (send failure) and the bash tool
+				    message (direct-command failure). onRetry resends the turn's
+				    user text in every case (retryTextFor). */}
+				{last && m.error && typeof m.error !== "string" && (
+					<ErrorNote
+						error={m.error}
+						t={t}
+						onRetry={handleRetry}
+						onCompact={onCompact}
+						onOpenSettings={onOpenSettings}
+					/>
+				)}
+				{last && typeof m.error === "string" && <div className="msg-error">error: {m.error}</div>}
+			</div>
+		</MessageBoundary>
 	);
 });
 
-/** Live chip shown whenever the run is live but nothing is producing output
- * right now — the submit gap (first-token wait) and mid-run LLM waits / long
+// ---------------------------------------------------------------------------
+// Row windowing (virtualization)
+// ---------------------------------------------------------------------------
+
+/** Below this row count the list renders exactly as a plain map: no spacers, no
+ *  measurement, no window state. Typical sessions never pay for this. */
+const VIRTUALIZE_THRESHOLD = 150;
+/** Height assumed for a row that has not been measured yet. */
+const ROW_ESTIMATE_PX = 140;
+/** Rows kept rendered above and below the viewport. */
+const OVERSCAN = 6;
+/** Rows rendered before the first measurement/scroll lands (a session load
+ *  always starts at the bottom, so the tail is the right first view). */
+const INITIAL_ROWS = 60;
+
+interface RowWindow {
+	start: number;
+	end: number;
+	/** Height of the rows above the window (top spacer). */
+	topPad: number;
+	/** Height of the rows below the window (bottom spacer). */
+	bottomPad: number;
+}
+
+/** Live chip shown whenever the run is live but nothing is producing output * right now — the submit gap (first-token wait) and mid-run LLM waits / long
  * tool executions that used to read as dead air. Same visual as MetaGroup's
  * live header, so the hand-off is seamless. Announced politely (like the
  * auto-retry / subagent panels) so the first-token wait isn't silent for
@@ -585,6 +638,14 @@ export const MessageList = memo(function MessageList({
 }) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const msgElsRef = useRef(new Map<number, HTMLDivElement>());
+	// ---- row windowing state ----
+	/** Measured height per row key. Only rows that have been on screen are in
+	 *  here; everything else uses ROW_ESTIMATE_PX. */
+	const heightsRef = useRef(new Map<string, number>());
+	const [rowWindow, setRowWindow] = useState<RowWindow | null>(null);
+	/** offsets[window.start] as of the last commit — used to keep the viewport
+	 *  anchored when corrected heights shift the rows above the window. */
+	const prevTopRef = useRef<number | null>(null);
 	/**
 	 * What the transcript renders: the committed messages plus the in-flight
 	 * one. App keeps the two apart so `messages` (and therefore every item,
@@ -765,7 +826,17 @@ export const MessageList = memo(function MessageList({
 	}, []);
 
 	// ---- row derivation ----
-	const items = useMemo(() => attachToolResults(all), [all]);
+	// The committed transcript is identity-stable for the whole run (App keeps
+	// the in-flight message in `stream`), so the prefix pass is memoized on it
+	// and reused on every streamed frame; only the tail message is re-folded.
+	// A fresh attachToolResults(all) allocated new MessageItems for the whole
+	// transcript per delta, which gave every row new prop identities and made
+	// MessageRow's memo useless.
+	const committedPass = useMemo(() => attachWithPending(messages), [messages]);
+	const items = useMemo(
+		() => (stream ? extendAttachPass(committedPass, stream).items : committedPass.items),
+		[committedPass, stream],
+	);
 	const changes = useMemo(() => turnChanges ?? deriveTurnChanges(all), [turnChanges, all]);
 	const timings = useMemo(() => deriveTurnTimings(all), [all]);
 	// Percho's turn-entrance baseline: only a turn that newly appeared while
@@ -793,6 +864,162 @@ export const MessageList = memo(function MessageList({
 			}),
 		[items, working, streaming, all, searchQuery, changes, timings, enteringTurn],
 	);
+
+	// ---- which rows are on screen ----
+	const windowing = rows.length > VIRTUALIZE_THRESHOLD;
+
+	/** Prefix sums of measured/estimated heights; offs[i] = top of row i. */
+	const offsetsFor = useCallback(
+		(list: ChatRow[]): number[] => {
+			const offs = new Array<number>(list.length + 1);
+			offs[0] = 0;
+			for (let i = 0; i < list.length; i++) {
+				offs[i + 1] = offs[i] + (heightsRef.current.get(list[i].key) ?? ROW_ESTIMATE_PX);
+			}
+			return offs;
+		},
+		[],
+	);
+
+	/** Widen a window so the active in-session search hit is mounted — the
+	 *  scroll-into-view effect looks its element up in msgElsRef, and the user
+	 *  explicitly asked to go there. Widening only; it never narrows. */
+	const withActive = useCallback(
+		(w: RowWindow, list: ChatRow[], activeId: number | null): RowWindow => {
+			if (activeId == null) return w;
+			const idx = list.findIndex((r) => r.kind === "msg" && r.item.msg.id === activeId);
+			if (idx < 0) return w;
+			const start = Math.min(w.start, Math.max(0, idx - OVERSCAN));
+			const end = Math.max(w.end, Math.min(list.length, idx + OVERSCAN + 1));
+			const offs = offsetsFor(list);
+			return { start, end, topPad: offs[start], bottomPad: offs[list.length] - offs[end] };
+		},
+		[offsetsFor],
+	);
+
+	const computeWindow = useCallback(
+		(
+			list: ChatRow[],
+			scrollTop: number,
+			viewport: number,
+			activeId: number | null,
+		): RowWindow => {
+			const offs = offsetsFor(list);
+			// First row whose bottom edge sits at/below the viewport top.
+			let lo = 0;
+			let hi = list.length;
+			while (lo < hi) {
+				const mid = (lo + hi) >> 1;
+				if (offs[mid + 1] <= scrollTop) lo = mid + 1;
+				else hi = mid;
+			}
+			const start = Math.max(0, lo - OVERSCAN);
+			let end = lo;
+			while (end < list.length && offs[end] < scrollTop + viewport) end++;
+			end = Math.min(list.length, end + OVERSCAN);
+			return withActive({ start, end, topPad: offs[start], bottomPad: offs[list.length] - offs[end] }, list, activeId);
+		},
+		[offsetsFor, withActive],
+	);
+
+	const updateWindow = useCallback(() => {
+		const scroller = scrollRef.current?.parentElement;
+		if (!scroller) return;
+		const next = computeWindow(
+			rows,
+			scroller.scrollTop,
+			scroller.clientHeight,
+			searchActiveMessageId ?? null,
+		);
+		// Equality guard: heights converge, so this terminates instead of
+		// feeding back through measure → setWindow → render → measure.
+		setRowWindow((prev) =>
+			prev && prev.start === next.start && prev.end === next.end ? prev : next,
+		);
+	}, [computeWindow, rows, searchActiveMessageId]);
+
+	// Re-window on scroll, coalesced to one update per frame.
+	useEffect(() => {
+		if (!windowing) return;
+		const scroller = scrollRef.current?.parentElement;
+		if (!scroller) return;
+		let raf = 0;
+		const onScroll = () => {
+			if (raf) return;
+			raf = requestAnimationFrame(() => {
+				raf = 0;
+				updateWindow();
+			});
+		};
+		scroller.addEventListener("scroll", onScroll, { passive: true });
+		return () => {
+			if (raf) cancelAnimationFrame(raf);
+			scroller.removeEventListener("scroll", onScroll);
+		};
+	}, [windowing, updateWindow]);
+
+	// The effective window. `rowWindow` is null until the first scroll or
+	// measurement lands, so a pure fallback keeps the FIRST paint bounded too —
+	// a session load always lands at the bottom, so the tail is the right view.
+	// The active search hit is force-included here as well, not just in
+	// computeWindow, so it is mounted even before any scroll happens.
+	const win = useMemo<RowWindow | null>(() => {
+		if (!windowing) return null;
+		if (rowWindow) return rowWindow;
+		const offs = offsetsFor(rows);
+		const end = rows.length;
+		const start = Math.max(0, end - INITIAL_ROWS);
+		return withActive(
+			{ start, end, topPad: offs[start], bottomPad: offs[end] - offs[end] },
+			rows,
+			searchActiveMessageId ?? null,
+		);
+	}, [windowing, rowWindow, rows, offsetsFor, withActive, searchActiveMessageId]);
+	// Measure the rows that are actually mounted, keep the viewport anchored
+	// while the estimates converge, and re-window if the totals moved.
+	useLayoutEffect(() => {
+		if (!windowing || !win) return;
+		const container = scrollRef.current;
+		const scroller = container?.parentElement;
+		if (!container || !scroller) return;
+		let changed = false;
+		let idx = win.start;
+		for (const child of Array.from(container.children)) {
+			const el = child as HTMLElement;
+			// Spacers and the transient gap chip are not rows.
+			if (el.dataset.spacer !== undefined || el.dataset.gapChip !== undefined) continue;
+			const row = rows[idx];
+			if (!row) break;
+			const h = el.offsetHeight;
+			if (h > 0 && heightsRef.current.get(row.key) !== h) {
+				heightsRef.current.set(row.key, h);
+				changed = true;
+			}
+			idx++;
+		}
+		if (!changed) return;
+		const offs = offsetsFor(rows);
+		const nextTop = offs[win.start];
+		const delta = prevTopRef.current === null ? 0 : nextTop - prevTopRef.current;
+		prevTopRef.current = nextTop;
+		// Correcting heights ABOVE the window would slide the content the user is
+		// looking at; compensate. While following, follow() re-pins instead.
+		if (delta !== 0 && !stickRef.current) scroller.scrollTop += delta;
+		updateWindow();
+	}, [windowing, win, rows, offsetsFor, updateWindow]);
+
+	// Leaving the windowed regime (a short session, or a session switch) drops
+	// the measurements — they are keyed by row key and would otherwise leak
+	// across sessions.
+	useEffect(() => {
+		if (windowing) return;
+		heightsRef.current.clear();
+		prevTopRef.current = null;
+		setRowWindow(null);
+	}, [windowing]);
+
+	const visibleRows = win ? rows.slice(win.start, win.end) : rows;
+
 	// Live groups self-identify: chat-rows marks an entry `running` only when
 	// it is the last block of a message that is streaming right now, so the
 	// MetaGroup holding that entry (and only that one) lights up while the
@@ -848,10 +1075,24 @@ export const MessageList = memo(function MessageList({
 
 	return (
 		<div ref={scrollRef} className="messages">
-			{rows.map((row, i) => {
+			{/* Windowing spacers keep the scroll height (and therefore the
+			    scrollbar and any auto-scroll to the bottom) honest while only a
+			    slice of the rows is mounted. */}
+			{win && win.topPad > 0 && (
+				<div data-spacer="" aria-hidden="true" style={{ height: win.topPad }} />
+			)}
+			{visibleRows.map((row, vi) => {
+				const i = win ? win.start + vi : vi;
 				if (row.kind === "turn") {
+					// The gap chip sits immediately above the final turn footer, and
+					// only ever for the last row — see the fallback below for the
+					// case where the list ends on something else.
 					const gapChip =
-						gapLive && i === rows.length - 1 ? <GapLiveChip label={gapLabel} /> : null;
+						gapLive && i === rows.length - 1 ? (
+							<div data-gap-chip="">
+								<GapLiveChip label={gapLabel} />
+							</div>
+						) : null;
 					return (
 						<Fragment key={row.key}>
 							{gapChip}
@@ -890,24 +1131,19 @@ export const MessageList = memo(function MessageList({
 						searchActiveMessageId={searchActiveMessageId}
 						refCb={refCb}
 						onCopy={onCopyMessage}
-						onRecall={
-							row.item.msg.role === "user" ? () => onRecallMessage?.(row.item.msg) : undefined
-						}
+						onRecall={onRecallMessage}
 						canRecall={row.item.msg.id === lastUserMessageId}
 						canFork={row.item.msg.role === "assistant" && row.item.msg.id === turnFinalAssistantId}
-						onFork={
-							row.item.msg.role === "assistant" ? () => onForkMessage?.(row.item.msg) : undefined
-						}
-						onRetry={
-							row.item.msg.error && typeof row.item.msg.error !== "string"
-								? () => onRetryMessage?.(row.item.msg)
-								: undefined
-						}
+						onFork={onForkMessage}
+						onRetry={onRetryMessage}
 						onCompact={onCompact}
 						onOpenSettings={onOpenSettings}
 					/>
 				);
 			})}
+			{win && win.bottomPad > 0 && (
+				<div data-spacer="" aria-hidden="true" style={{ height: win.bottomPad }} />
+			)}
 			{/* Auto-retry backoff: the retry chip replaces the gap chip so the
 			 * wait stays legible instead of reading as the conversation's end. */}
 			{autoRetry && <AutoRetryChip state={autoRetry} t={t} />}

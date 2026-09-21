@@ -2,21 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
-
-/**
- * Report renderer-side failures to the Rust runtime log. Without this a
- * React render error unmounts the whole tree (blank window — users read it
- * as a crash) and an uncaught exception vanishes silently, leaving no
- * evidence for debugging.
- */
-function reportError(where: string, err: unknown) {
-	try {
-		const msg = err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
-		void invoke("log_frontend", { message: `${where}: ${msg}` }).catch(() => {});
-	} catch {
-		/* never let reporting itself crash */
-	}
-}
+import { reportFrontendError } from "./lib/report-error";
 
 class ErrorBoundary extends React.Component<
 	{ children: React.ReactNode },
@@ -29,7 +15,7 @@ class ErrorBoundary extends React.Component<
 	}
 
 	componentDidCatch(error: Error, info: React.ErrorInfo) {
-		reportError("react-boundary", `${error}\n${info.componentStack ?? ""}`);
+		reportFrontendError("react-boundary", `${error}\n${info.componentStack ?? ""}`);
 	}
 
 	render() {
@@ -85,8 +71,8 @@ class ErrorBoundary extends React.Component<
 
 // Global error / unhandled-rejection reporting so renderer crashes leave a
 // trail in tau.log instead of vanishing silently.
-window.addEventListener("error", (e) => reportError("window.onerror", e.error ?? e.message));
-window.addEventListener("unhandledrejection", (e) => reportError("unhandledrejection", e.reason));
+window.addEventListener("error", (e) => reportFrontendError("window.onerror", e.error ?? e.message));
+window.addEventListener("unhandledrejection", (e) => reportFrontendError("unhandledrejection", e.reason));
 // Distinguishes a real window close (fires beforeunload) from a webview
 // renderer crash (never fires — the process just dies).
 window.addEventListener("beforeunload", () => {

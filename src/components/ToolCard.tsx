@@ -93,7 +93,9 @@ export const ToolCard = memo(function ToolCard({
 					<div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
 						{t?.chat.toolArgs ?? "args"}
 					</div>
-					<ToolResultOutput language="json">{callArgs}</ToolResultOutput>
+					<ToolResultOutput language="json" streaming={running}>
+						{callArgs}
+					</ToolResultOutput>
 				</div>
 			) : null}
 			{output ? (
@@ -101,7 +103,9 @@ export const ToolCard = memo(function ToolCard({
 					<div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
 						{t?.chat.toolOutput ?? "output"}
 					</div>
-					<ToolResultOutput language="bash">{output}</ToolResultOutput>
+					<ToolResultOutput language="bash" streaming={running}>
+						{output}
+					</ToolResultOutput>
 				</div>
 			) : null}
 		</ToolResult>

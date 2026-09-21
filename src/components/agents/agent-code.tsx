@@ -30,6 +30,10 @@ export interface AgentCodeProps {
   code: string;
   language?: AgentCodeLanguage;
   className?: string;
+  /** True while this content is still growing (a tool call whose args are
+   *  streaming in, or a result being appended to). Highlighting is deferred
+   *  until it settles — see useAgentCodeTokens. */
+  streaming?: boolean;
 }
 
 export interface AgentCodeLineProps {
@@ -83,6 +87,7 @@ function tokenCacheKey(code: string, language: AgentCodeLanguage) {
 export function useAgentCodeTokens(
   code: string,
   language: AgentCodeLanguage,
+  streaming = false,
 ) {
   const key = tokenCacheKey(code, language);
   // Sync read at mount so a remounted block (search bypass, scroll window)
@@ -97,6 +102,12 @@ export function useAgentCodeTokens(
   } | null>(cached ? { key, code, language, lines: cached } : null);
 
   useEffect(() => {
+    // A growing tool call streams a new (longer) `code` on every delta frame,
+    // so every frame is a cache miss and schedules a full shiki highlight of
+    // the whole growing text — and each intermediate result evicts useful LRU
+    // entries. Render plain text while it grows, then highlight once when it
+    // settles.
+    if (streaming) return;
     const current = tokenCacheGet(key);
     if (current) {
       setResult({ key, code, language, lines: current });
@@ -128,10 +139,13 @@ export function useAgentCodeTokens(
     return () => {
       cancelled = true;
     };
-  }, [code, key, language]);
+  }, [code, key, language, streaming]);
 
   if (result?.key === key) return result.lines;
-  if (result?.language === language && code.startsWith(result.code)) {
+  // Reuse the previous highlight while the code only grew (a settled call
+  // whose output is being appended to). Skipped while streaming: returning
+  // tokens measured for a shorter string would mis-render the longer one.
+  if (!streaming && result?.language === language && code.startsWith(result.code)) {
     return result.lines;
   }
   return null;
@@ -168,8 +182,9 @@ export function AgentCode({
   code,
   language = "bash",
   className,
+  streaming = false,
 }: AgentCodeProps) {
-  const tokens = useAgentCodeTokens(code, language);
+  const tokens = useAgentCodeTokens(code, language, streaming);
   let offset = 0;
   const lines = code.split("\n").map((content) => {
     const line = { content, offset };

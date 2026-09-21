@@ -343,6 +343,15 @@ export const ChatArea = memo(function ChatArea({
 	const turnChanges = useMemo(() => deriveTurnChanges(liveMessages), [liveMessages]);
 	const [diffOpen, setDiffOpen] = useState(false);
 	const [diffScope, setDiffScope] = useState<DiffScope>("all");
+	// Split once per render instead of twice inline (above/below the composer).
+	const aboveEditorWidgets = useMemo(
+		() => Object.values(extensionWidgets).filter((w) => w.placement === "aboveEditor"),
+		[extensionWidgets],
+	);
+	const belowEditorWidgets = useMemo(
+		() => Object.values(extensionWidgets).filter((w) => w.placement === "belowEditor"),
+		[extensionWidgets],
+	);
 
 	// Ctrl+F opens/focuses the search bar; capture-phase Escape closes it
 	// before the global Escape-interrupt handler sees the key.
@@ -753,31 +762,27 @@ export const ChatArea = memo(function ChatArea({
 						{subagentRuns.length > 0 && <SubagentLivePanel runs={subagentRuns} t={t} />}
 					</div>
 					<TodoPanel todos={todos} agentActive={working} t={t} />
-					{Object.values(extensionWidgets)
-						.filter((w) => w.placement === "aboveEditor")
-						.map((w, i) => (
-							<div className="ext-widget" key={`above-${i}`}>
-								{w.lines.map((line, j) => (
-									<div className="ext-widget-line" key={j}>
-										{line}
-									</div>
-								))}
-							</div>
-						))}
+					{aboveEditorWidgets.map((w, i) => (
+						<div className="ext-widget" key={`above-${i}`}>
+							{w.lines.map((line, j) => (
+								<div className="ext-widget-line" key={j}>
+									{line}
+								</div>
+							))}
+						</div>
+					))}
 
 					{composerEl}
 
-					{Object.values(extensionWidgets)
-						.filter((w) => w.placement === "belowEditor")
-						.map((w, i) => (
-							<div className="ext-widget below" key={`below-${i}`}>
-								{w.lines.map((line, j) => (
-									<div className="ext-widget-line" key={j}>
-										{line}
-									</div>
-								))}
-							</div>
-						))}
+					{belowEditorWidgets.map((w, i) => (
+						<div className="ext-widget below" key={`below-${i}`}>
+							{w.lines.map((line, j) => (
+								<div className="ext-widget-line" key={j}>
+									{line}
+								</div>
+							))}
+						</div>
+					))}
 				</div>
 				<DiffSidebar
 					open={diffOpen}

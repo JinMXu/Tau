@@ -1,4 +1,5 @@
 import {
+	memo,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -204,7 +205,15 @@ function ContextUsageRing({ stats, t }: { stats: SessionStats; t: MessageCatalog
 	);
 }
 
-export function Composer({
+/**
+ * The composer is memoized: ChatArea re-renders on every streamed delta
+ * (App keeps the in-flight message in state), and without this the whole
+ * toolbar — model menu, branch/workspace menus, queue rows, `@`/slash
+ * completion — re-rendered per token even though none of its inputs changed.
+ * Callers must therefore pass stable handler identities (see App.tsx's
+ * "stable action handlers" block).
+ */
+export const Composer = memo(function Composer({
 	connected,
 	streaming,
 	working,
@@ -551,51 +560,106 @@ export function Composer({
 		[addFiles],
 	);
 
-	const selectedModel = models.find((m) => `${m.provider}/${m.id}` === model);
-	const availableThinkingLevels =
-		(selectedModel?.thinkingLevels?.length ? selectedModel.thinkingLevels : thinkingLevels) ?? [];
+	const selectedModel = useMemo(
+		() => models.find((m) => `${m.provider}/${m.id}` === model),
+		[models, model],
+	);
+	const availableThinkingLevels = useMemo(
+		() =>
+			(selectedModel?.thinkingLevels?.length ? selectedModel.thinkingLevels : thinkingLevels) ?? [],
+		[selectedModel, thinkingLevels],
+	);
 	const normalizedQuery = modelQuery.trim().toLowerCase();
-	const visibleModels = normalizedQuery
-		? models.filter((m) =>
-				`${m.provider} ${m.id} ${m.name ?? ""}`.toLowerCase().includes(normalizedQuery),
-			)
-		: models;
-	const providers = [...new Set(visibleModels.map((m) => m.provider))];
+	const visibleModels = useMemo(
+		() =>
+			normalizedQuery
+				? models.filter((m) =>
+						`${m.provider} ${m.id} ${m.name ?? ""}`.toLowerCase().includes(normalizedQuery),
+					)
+				: models,
+		[models, normalizedQuery],
+	);
+	const providers = useMemo(
+		() => [...new Set(visibleModels.map((m) => m.provider))],
+		[visibleModels],
+	);
 
 	const normalizedWorkspaceQuery = workspaceQuery.trim().toLowerCase();
-	const visibleWorkspaces = normalizedWorkspaceQuery
-		? workspaces.filter((w) =>
-				`${projectNameFromPath(w)} ${w}`.toLowerCase().includes(normalizedWorkspaceQuery),
-			)
-		: workspaces;
+	const visibleWorkspaces = useMemo(
+		() =>
+			normalizedWorkspaceQuery
+				? workspaces.filter((w) =>
+						`${projectNameFromPath(w)} ${w}`.toLowerCase().includes(normalizedWorkspaceQuery),
+					)
+				: workspaces,
+		[workspaces, normalizedWorkspaceQuery],
+	);
 
 	const normalizedBranchQuery = branchQuery.trim().toLowerCase();
-	const visibleBranches = gitState
-		? normalizedBranchQuery
-			? gitState.branches.filter((b) => b.toLowerCase().includes(normalizedBranchQuery))
-			: gitState.branches
-		: [];
+	const visibleBranches = useMemo(
+		() =>
+			gitState
+				? normalizedBranchQuery
+					? gitState.branches.filter((b) => b.toLowerCase().includes(normalizedBranchQuery))
+					: gitState.branches
+				: [],
+		[gitState, normalizedBranchQuery],
+	);
+
+	// Popover direction is read from the trigger's layout box, so it must not
+	// happen during render: a render-phase getBoundingClientRect() forces a
+	// synchronous layout on every Composer render — i.e. on every streamed
+	// delta frame, since ChatArea re-renders per token. It is measured when the
+	// menu opens instead, and refreshed on resize while a menu is open.
+	const [workspaceMenuSide, setWorkspaceMenuSide] = useState<"top" | "bottom">("top");
+	const [branchMenuSide, setBranchMenuSide] = useState<"top" | "bottom">("top");
+	const computeMenuSide = useCallback((el: HTMLElement | null): "top" | "bottom" => {
+		if (!el) return "top";
+		const rect = el.getBoundingClientRect();
+		const below = window.innerHeight - rect.bottom;
+		const above = rect.top;
+		return below >= 320 || above <= below ? "bottom" : "top";
+	}, []);
 
 	// Opening a menu resets its search and closes the other composer menus;
 	// outside-pointer / Escape dismissal is MorphPopover's job now.
-	const handleWorkspaceOpen = useCallback((open: boolean) => {
-		setWorkspaceMenuOpen(open);
-		if (open) {
-			setWorkspaceQuery("");
-			setBranchMenuOpen(false);
-			setBranchCreating(false);
-		}
-	}, []);
+	const handleWorkspaceOpen = useCallback(
+		(open: boolean) => {
+			setWorkspaceMenuOpen(open);
+			if (open) {
+				setWorkspaceQuery("");
+				setBranchMenuOpen(false);
+				setBranchCreating(false);
+				setWorkspaceMenuSide(computeMenuSide(workspaceMenuRef.current));
+			}
+		},
+		[computeMenuSide],
+	);
 
-	const handleBranchOpen = useCallback((open: boolean) => {
-		setBranchMenuOpen(open);
-		if (open) {
-			setBranchQuery("");
-			setWorkspaceMenuOpen(false);
-		} else {
-			setBranchCreating(false);
-		}
-	}, []);
+	const handleBranchOpen = useCallback(
+		(open: boolean) => {
+			setBranchMenuOpen(open);
+			if (open) {
+				setBranchQuery("");
+				setWorkspaceMenuOpen(false);
+				setBranchMenuSide(computeMenuSide(branchMenuRef.current));
+			} else {
+				setBranchCreating(false);
+			}
+		},
+		[computeMenuSide],
+	);
+
+	useEffect(() => {
+		if (!workspaceMenuOpen && !branchMenuOpen) return;
+		const update = () => {
+			if (workspaceMenuOpen) setWorkspaceMenuSide(computeMenuSide(workspaceMenuRef.current));
+			if (branchMenuOpen) setBranchMenuSide(computeMenuSide(branchMenuRef.current));
+		};
+		update();
+		window.addEventListener("resize", update);
+		return () => window.removeEventListener("resize", update);
+	}, [workspaceMenuOpen, branchMenuOpen, computeMenuSide]);
 
 	const handleThinkingOpen = useCallback((open: boolean) => {
 		setThinkingMenuOpen(open);
@@ -609,20 +673,6 @@ export function Composer({
 			setThinkingMenuOpen(false);
 		}
 	}, []);
-
-	// MorphPopover menus portal to the body and take their opening direction
-	// from `side`. The composer hugs the bottom of the window, so its toolbar
-	// menus always open upward; the context-row menus flip up when the strip
-	// below the chip (the composer itself) is too small to hold a menu.
-	const menuSideFor = (el: HTMLElement | null): "top" | "bottom" => {
-		if (!el) return "top";
-		const rect = el.getBoundingClientRect();
-		const below = window.innerHeight - rect.bottom;
-		const above = rect.top;
-		return below >= 320 || above <= below ? "bottom" : "top";
-	};
-	const workspaceMenuSide = menuSideFor(workspaceMenuRef.current);
-	const branchMenuSide = menuSideFor(branchMenuRef.current);
 
 	// Level ids come from Pi ("off" | "minimal" | "low" | ...); show a
 	// localized name when we know the id, otherwise fall back to the raw id.
@@ -643,25 +693,32 @@ export function Composer({
 	const slashMatch = text.match(/^\/(\S*)$/);
 	const slashQuery = slashMatch?.[1]?.toLowerCase() ?? "";
 	const slashOpen = Boolean(slashMatch) && commands.length > 0 && !slashDismissed;
-	const slashFiltered = slashOpen
-		? slashQuery
-			? commands.filter(
-					(c) =>
-						c.name.toLowerCase().includes(slashQuery) ||
-						c.description?.toLowerCase().includes(slashQuery),
-				)
-			: commands
-		: [];
+	const slashFiltered = useMemo(
+		() =>
+			slashOpen
+				? slashQuery
+					? commands.filter(
+							(c) =>
+								c.name.toLowerCase().includes(slashQuery) ||
+								c.description?.toLowerCase().includes(slashQuery),
+						)
+					: commands
+				: [],
+		[slashOpen, slashQuery, commands],
+	);
 	const activeSlash = slashFiltered[Math.min(slashIndex, slashFiltered.length - 1)] ?? null;
 
 	// Reset the selection when the query changes; re-open after dismissal
-	// once the draft no longer starts with `/`.
+	// once the draft no longer starts with `/`. `slashMatch` is a fresh array
+	// on every render (String.match allocates), so key the effect on the
+	// derived boolean — otherwise the effect re-runs on every render.
+	const slashActive = Boolean(slashMatch);
 	useEffect(() => {
 		setSlashIndex(0);
 	}, [slashQuery]);
 	useEffect(() => {
-		if (!slashMatch) setSlashDismissed(false);
-	}, [slashMatch]);
+		if (!slashActive) setSlashDismissed(false);
+	}, [slashActive]);
 
 	// Keep the highlighted command visible while navigating with ↑/↓.
 	const slashListRef = useRef<HTMLDivElement>(null);
@@ -1557,4 +1614,4 @@ export function Composer({
 			</div>
 		</div>
 	);
-}
+});

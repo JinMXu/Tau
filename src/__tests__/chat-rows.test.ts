@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { Block, ChatMessage } from "../chat-types";
 import {
 	attachToolResults,
+	attachWithPending,
+	extendAttachPass,
 	buildChatRows,
 	type MessageItem,
 	deriveTurnChanges,
@@ -415,5 +417,133 @@ describe("buildChatRows", () => {
 		expect(rows.every((r) => r.kind !== "group")).toBe(true);
 		const assistantRow = rows.find((r) => r.kind === "msg" && r.item.msg.role === "assistant");
 		expect(assistantRow && assistantRow.kind === "msg" && assistantRow.skip.size).toBe(0);
+	});
+});
+
+describe("extendAttachPass (streaming fast path)", () => {
+	it("matches a full re-pass for every streamed tail role", () => {
+		const committed = [
+			msg("user", [{ kind: "text", text: "go" }]),
+			msg("assistant", [
+				{
+					kind: "tool",
+					name: "edit",
+					args: JSON.stringify({ path: "a.ts", oldText: "x", newText: "y" }),
+				},
+				{ kind: "tool", name: "bash", args: JSON.stringify({ command: "ls" }) },
+			]),
+		];
+		const streamTails: ChatMessage[] = [
+			msg("assistant", [{ kind: "text", text: "partial" }], { streaming: true }),
+			msg("assistant", [{ kind: "tool", name: "read", args: '{"path":"b.ts"' }], {
+				streaming: true,
+			}),
+			msg("tool", [{ kind: "tool", name: "edit", args: "ok" }], { streaming: true }),
+			msg("tool", [{ kind: "tool", name: "bash", args: "out" }], { streaming: true }),
+			msg("user", [{ kind: "text", text: "next" }]),
+		];
+		for (const tail of streamTails) {
+			const pass = attachWithPending(committed);
+			const extended = extendAttachPass(pass, tail);
+			const full = attachToolResults([...committed, tail]);
+			expect(extended.items.map((i) => i.msg.id)).toEqual(full.map((i) => i.msg.id));
+			// Same attachment wiring: which calls got which result.
+			const shape = (list: MessageItem[]) =>
+				list.map((i) => [
+					i.msg.role,
+					[...i.attached.entries()].map(([idx, b]) => [idx, b.name, b.args]),
+					[...i.consumed],
+				]);
+			expect(shape(extended.items)).toEqual(shape(full));
+		}
+	});
+
+	it("does not consume the memoized prefix's pending slots", () => {
+		const committed = [
+			msg("user", [{ kind: "text", text: "go" }]),
+			msg("assistant", [{ kind: "tool", name: "edit", args: "{}" }]),
+		];
+		const pass = attachWithPending(committed);
+		const before = pass.pending.length;
+		// A tool-result tail shifts a slot off the front.
+		extendAttachPass(pass, msg("tool", [{ kind: "tool", name: "edit", args: "ok" }]));
+		expect(pass.pending).toHaveLength(before);
+		// Re-running on the same prefix still attaches correctly.
+		const again = extendAttachPass(pass, msg("tool", [{ kind: "tool", name: "edit", args: "ok" }]));
+		expect(again.items[1].attached.get(0)?.args).toBe("ok");
+	});
+
+	it("keeps committed MessageItem identities stable across deltas", () => {
+		const committed = [
+			msg("user", [{ kind: "text", text: "go" }]),
+			msg("assistant", [{ kind: "text", text: "answer" }]),
+		];
+		const pass = attachWithPending(committed);
+		const first = extendAttachPass(
+			pass,
+			msg("assistant", [{ kind: "text", text: "a" }], { streaming: true }),
+		);
+		const second = extendAttachPass(
+			pass,
+			msg("assistant", [{ kind: "text", text: "ab" }], { streaming: true }),
+		);
+		// Every committed item is the SAME object across both passes.
+		for (let i = 0; i < committed.length; i++) {
+			expect(second.items[i]).toBe(first.items[i]);
+		}
+		expect(second.items).toHaveLength(committed.length + 1);
+	});
+});
+
+describe("buildChatRows layout stability", () => {
+	const assistant = () =>
+		msg("assistant", [
+			{ kind: "thinking", text: "think" },
+			{ kind: "tool", name: "read", args: JSON.stringify({ path: "a.ts" }) },
+			{ kind: "text", text: "narration" },
+			{ kind: "tool", name: "bash", args: JSON.stringify({ command: "ls" }) },
+			{ kind: "text", text: "answer" },
+		]);
+
+	it("reuses skip/textAllow Set identities for an unchanged message", () => {
+		const messages = [msg("user", [{ kind: "text", text: "go" }]), assistant()];
+		const first = buildChatRows(attachToolResults(messages), { working: false, streaming: false });
+		const second = buildChatRows(attachToolResults(messages), { working: false, streaming: false });
+		const rowsOf = (rows: typeof first) =>
+			rows.filter((r): r is Extract<typeof r, { kind: "msg" }> => r.kind === "msg");
+		const a = rowsOf(first);
+		const b = rowsOf(second);
+		expect(a).toHaveLength(b.length);
+		for (let i = 0; i < a.length; i++) {
+			expect(b[i].skip).toBe(a[i].skip);
+			expect(b[i].textAllow).toBe(a[i].textAllow);
+		}
+	});
+
+	it("still produces a fresh layout when the message object changes", () => {
+		const messages = [msg("user", [{ kind: "text", text: "go" }]), assistant()];
+		const first = buildChatRows(attachToolResults(messages), { working: false, streaming: false });
+		// Same content, new object identity (what a streamed delta produces).
+		const mutated = [messages[0], assistant()];
+		const second = buildChatRows(attachToolResults(mutated), { working: false, streaming: false });
+		const rowsOf = (rows: typeof first) =>
+			rows.filter((r): r is Extract<typeof r, { kind: "msg" }> => r.kind === "msg");
+		expect(rowsOf(second)[1].skip).not.toBe(rowsOf(first)[1].skip);
+	});
+
+	it("text segmentation is unchanged by the layout cache", () => {
+		const messages = [msg("user", [{ kind: "text", text: "go" }]), assistant()];
+		const rows = buildChatRows(attachToolResults(messages), { working: false, streaming: false });
+		const textRows = rows.filter(
+			(r): r is Extract<typeof r, { kind: "msg" }> =>
+				r.kind === "msg" && r.item.msg.role === "assistant",
+		);
+		// [thinking, tool] → text "narration" → [tool] → text "answer"
+		expect(textRows).toHaveLength(2);
+		expect([...textRows[0].textAllow!]).toEqual([2]);
+		expect([...textRows[1].textAllow!]).toEqual([4]);
+		expect([...textRows[0].skip].sort()).toEqual([0, 1, 3]);
+		expect(textRows[1].last).toBe(true);
+		expect(textRows[0].last).toBe(false);
 	});
 });

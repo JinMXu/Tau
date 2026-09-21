@@ -1391,6 +1391,46 @@ html[data-platform="macos"] .collapsed-actions-bar {
 	color: var(--text-2);
 }
 
+/* Per-message render failure (MessageBoundary): one message degrades to plain
+   text instead of the whole app unmounting at the root boundary. */
+.markdown-error {
+	border: 1px solid var(--danger, #c0392b);
+	border-radius: var(--r-md, 8px);
+	padding: 10px 12px;
+	background: color-mix(in srgb, var(--danger, #c0392b) 6%, transparent);
+}
+
+.markdown-error-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	font-size: var(--fs-sm);
+	font-weight: 600;
+	color: var(--danger, #c0392b);
+}
+
+.markdown-error-retry {
+	font-size: var(--fs-xs, 11px);
+	font-weight: 500;
+	padding: 3px 10px;
+	border: 1px solid currentColor;
+	border-radius: var(--r-sm, 6px);
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+}
+
+.markdown-error-retry:hover {
+	background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.markdown-error .markdown-plain {
+	margin-top: 8px;
+	max-height: 40vh;
+	overflow: auto;
+}
+
 /* ---------------------------------------------------------------------------
  * Thinking + tool call rows — DeepSeek Harness disclosure rows: borderless
  * one-liners (icon + name + dot separator + summary), a sweeping shimmer

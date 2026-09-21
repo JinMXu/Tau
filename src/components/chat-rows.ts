@@ -181,29 +181,25 @@ function count(lines: NumDiffLine[], kind: "add" | "del"): number {
 	return n;
 }
 
-// Parsed file changes per (tool, args): deriveTurnChanges re-runs on every
-// streamed delta, and a committed call's args never change, so the bounded
-// cache turns the repeated JSON.parse + LCS work into map hits — only the
-// in-flight call re-parses while its args grow. Partial-args keys churn, so
-// the cache must stay bounded.
-const FILE_CHANGE_CACHE_MAX = 512;
-const fileChangeCache: Map<string, ReturnType<typeof fileChangeFromArgs>> = new Map();
+// Parsed file changes per tool CALL: deriveTurnChanges re-runs on every
+// streamed delta, and a committed call's args never change, so the cache turns
+// the repeated JSON.parse + LCS work into map hits — only the in-flight call
+// re-parses while its args grow.
+//
+// Keyed on the block OBJECT rather than a `name + args` string: blocks are
+// replaced immutably on every delta (flushDeltas / toolcall_end always build
+// fresh objects), so a committed block is a permanent hit. Building the old
+// string key cost O(total accumulated tool-arg bytes) per derive — i.e. once
+// per streamed frame, megabytes per second on a session with large edits.
+// A WeakMap needs no eviction: a block that stops being referenced is
+// collected together with its entry.
+const fileChangeCache = new WeakMap<ToolBlockT, ReturnType<typeof fileChangeFromArgs>>();
 
-function cachedFileChangeFromArgs(
-	name: string,
-	args: string,
-): ReturnType<typeof fileChangeFromArgs> {
-	const key = `${name}\u0000${args}`;
-	const hit = fileChangeCache.get(key);
+function cachedFileChangeFromArgs(block: ToolBlockT): ReturnType<typeof fileChangeFromArgs> {
+	const hit = fileChangeCache.get(block);
 	if (hit !== undefined) return hit;
-	const parsed = fileChangeFromArgs(name, args);
-	// Re-insert to refresh recency (Map iterates in insertion order).
-	fileChangeCache.delete(key);
-	fileChangeCache.set(key, parsed);
-	if (fileChangeCache.size > FILE_CHANGE_CACHE_MAX) {
-		const oldest = fileChangeCache.keys().next().value;
-		if (oldest !== undefined) fileChangeCache.delete(oldest);
-	}
+	const parsed = fileChangeFromArgs(block.name, block.args);
+	fileChangeCache.set(block, parsed);
 	return parsed;
 }
 
@@ -231,7 +227,7 @@ export function deriveTurnChanges(messages: ChatMessage[]): TurnChanges[] {
 		if (msg.role !== "assistant") continue;
 		for (const b of msg.blocks) {
 			if (b.kind !== "tool" || b.result) continue;
-			const change = cachedFileChangeFromArgs(b.name, b.args);
+			const change = cachedFileChangeFromArgs(b);
 			if (!change) continue;
 			let file = current.files.find((f) => f.path === change.path);
 			if (!file) {
@@ -300,6 +296,44 @@ export interface TodoItem {
 const TODO_STATUSES = new Set(["pending", "in_progress", "completed"]);
 
 /**
+ * One `todo` tool call's task list, or null when the call is not a todo tool /
+ * carries unparseable (partial, streaming) args. Cached on the block object —
+ * extractTodos re-runs on every streamed delta and a committed call's args
+ * never change, so the repeated JSON.parse becomes a map hit.
+ *
+ * null and [] mean different things: null = "not a todo call, skip", [] =
+ * "a todo call that cleared the list" (which still becomes the latest state).
+ */
+const todoCache = new WeakMap<ToolBlockT, TodoItem[] | null>();
+
+function todosFromBlock(block: ToolBlockT): TodoItem[] | null {
+	const cached = todoCache.get(block);
+	if (cached !== undefined) return cached;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(block.args);
+	} catch {
+		todoCache.set(block, null);
+		return null; // partial args while streaming
+	}
+	const todos = (parsed as { todos?: unknown } | null)?.todos;
+	if (!Array.isArray(todos)) {
+		todoCache.set(block, null);
+		return null;
+	}
+	const items: TodoItem[] = [];
+	for (const raw of todos) {
+		if (!raw || typeof raw !== "object") continue;
+		const rec = raw as Record<string, unknown>;
+		if (typeof rec.content !== "string" || rec.content.length === 0) continue;
+		if (typeof rec.status !== "string" || !TODO_STATUSES.has(rec.status)) continue;
+		items.push({ content: rec.content, status: rec.status as TodoItem["status"] });
+	}
+	todoCache.set(block, items);
+	return items;
+}
+
+/**
  * Latest valid `todo` tool call args → task list (full-replace protocol,
  * TodoWrite-style). Returns [] when the session never used the tool, so the
  * panel can hide itself. Accepts the common spellings ("todo", "todowrite",
@@ -313,22 +347,8 @@ export function extractTodos(messages: ChatMessage[]): TodoItem[] {
 			if (b.kind !== "tool" || b.result) continue;
 			const key = b.name.toLowerCase();
 			if (key !== "todo" && key !== "todowrite" && key !== "todo_write") continue;
-			let parsed: unknown;
-			try {
-				parsed = JSON.parse(b.args);
-			} catch {
-				continue; // partial args while streaming
-			}
-			const todos = (parsed as { todos?: unknown } | null)?.todos;
-			if (!Array.isArray(todos)) continue;
-			const items: TodoItem[] = [];
-			for (const raw of todos) {
-				if (!raw || typeof raw !== "object") continue;
-				const rec = raw as Record<string, unknown>;
-				if (typeof rec.content !== "string" || rec.content.length === 0) continue;
-				if (typeof rec.status !== "string" || !TODO_STATUSES.has(rec.status)) continue;
-				items.push({ content: rec.content, status: rec.status as TodoItem["status"] });
-			}
+			const items = todosFromBlock(b);
+			if (items === null) continue;
 			latest = items;
 		}
 	}
@@ -391,7 +411,20 @@ export function summarizeCategories(entries: GroupEntry[]): SummarySegment[] {
 
 /** Attachment pass (verbatim behaviour from the previous MessageList): attach
  * tool-result messages to the tool calls that produced them. */
-export function attachToolResults(messages: ChatMessage[]): MessageItem[] {
+
+/** One pass over a transcript, plus the tool calls still awaiting a result.
+ *  Splitting the two lets a caller reuse the prefix result when only the
+ *  in-flight message changed — see `extendAttachPass` and MessageList. */
+export interface AttachPass {
+	items: MessageItem[];
+	/** Tool calls whose result message has not been seen yet. */
+	pending: { item: MessageItem; index: number }[];
+}
+
+/** Attachment pass over a transcript. Exported for MessageList's incremental
+ *  streaming path: the committed prefix pass is memoized and only the in-flight
+ *  message is re-folded per delta. */
+export function attachWithPending(messages: ChatMessage[]): AttachPass {
 	const list: MessageItem[] = [];
 	let pending: { item: MessageItem; index: number }[] = [];
 	for (const msg of messages) {
@@ -423,8 +456,173 @@ export function attachToolResults(messages: ChatMessage[]): MessageItem[] {
 			});
 		}
 	}
-	return list;
+	return { items: list, pending };
 }
+
+export function attachToolResults(messages: ChatMessage[]): MessageItem[] {
+	return attachWithPending(messages).items;
+}
+
+/**
+ * Append the in-flight message to an already-computed prefix pass.
+ *
+ * The pass is a left fold with a single piece of carry-over state (`pending`),
+ * so the prefix result is unchanged when only the tail message differs. Reusing
+ * it keeps every committed `MessageItem` identity-stable across a stream, which
+ * is what makes MessageRow's memo actually hit — a fresh `attachToolResults`
+ * call allocated new items for the whole transcript on every delta.
+ */
+export function extendAttachPass(pass: AttachPass, stream: ChatMessage): AttachPass {
+	// Copy: shifting below must not consume the memoized prefix's slots.
+	let pending = [...pass.pending];
+	if (stream.role === "assistant") pending = [];
+	const item: MessageItem = {
+		msg: stream,
+		attached: new Map(),
+		attachedStreaming: new Map(),
+		consumed: new Set(),
+	};
+	if (stream.role === "tool") {
+		stream.blocks.forEach((b, i) => {
+			if (b.kind !== "tool") return;
+			const slot = pending.shift();
+			if (slot) {
+				slot.item.attached.set(slot.index, b);
+				slot.item.attachedStreaming.set(slot.index, stream.streaming);
+				item.consumed.add(i);
+			}
+		});
+		if (item.consumed.size < stream.blocks.length) {
+			return { items: [...pass.items, item], pending };
+		}
+		return { items: pass.items, pending };
+	}
+	const items = [...pass.items, item];
+	if (stream.role === "assistant") {
+		stream.blocks.forEach((b, i) => {
+			if (b.kind === "tool" && !b.result) pending.push({ item, index: i });
+		});
+	}
+	return { items, pending };
+}
+
+/**
+ * One assistant message's block layout: which indices fold into a meta group,
+ * and how the rest split into [meta, text] segments in stream order.
+ *
+ * Cached on the message object because it is a pure function of `msg.blocks`
+ * (plus the bypass flag) and `buildChatRows` re-runs on every streamed delta.
+ * Reusing the Sets is what lets MessageRow's memo hit: freshly allocated
+ * `skip`/`textAllow` Sets gave every row new prop identities on each frame, so
+ * the whole transcript re-rendered per token even though nothing in it moved.
+ *
+ * Only the cheap, neighbour-independent parts are cached — the GroupEntry
+ * objects carry the attached tool result and are rebuilt per pass.
+ */
+interface MessageLayout {
+	/** Whether this layout was computed for a search-bypassed message. The
+	 *  bypassed branch of buildChatRows renders every block inline and never
+	 *  reads a layout, so in practice this is always false — the flag exists so
+	 *  a future caller cannot silently reuse the wrong cached Sets. */
+	bypassed: boolean;
+	skip: Set<number>;
+	/** One entry per segment: its text block indices, then its meta indices. */
+	segments: { textIdx: number[]; meta: number[] }[];
+	/** `textAllow` per segment — cached for the same reason as `skip`. */
+	textAllow: Set<number>[];
+	/** Index of the last segment that has text (carries the cursor + error). */
+	lastTextSeg: number;
+}
+
+const layoutCache = new WeakMap<ChatMessage, MessageLayout>();
+
+function layoutFor(msg: ChatMessage, bypassed: boolean): MessageLayout {
+	const hit = layoutCache.get(msg);
+	if (hit && hit.bypassed === bypassed) return hit;
+	const skip = new Set<number>();
+	const segments: { textIdx: number[]; meta: number[] }[] = [];
+	let cur: { textIdx: number[]; meta: number[] } = { textIdx: [], meta: [] };
+	const pushSeg = () => {
+		if (cur.textIdx.length > 0 || cur.meta.length > 0) segments.push(cur);
+	};
+	msg.blocks.forEach((b, i) => {
+		if (b.kind === "text") {
+			// A text block closes the current meta segment…
+			if (cur.meta.length > 0) {
+				pushSeg();
+				cur = { textIdx: [], meta: [] };
+			}
+			cur.textIdx.push(i);
+			return;
+		}
+		skip.add(i);
+		// …and a meta block after text opens a NEW segment (stream order).
+		if (cur.textIdx.length > 0) {
+			pushSeg();
+			cur = { textIdx: [], meta: [] };
+		}
+		cur.meta.push(i);
+	});
+	pushSeg();
+	let lastTextSeg = -1;
+	segments.forEach((seg, si) => {
+		if (seg.textIdx.length > 0) lastTextSeg = si;
+	});
+	const layout: MessageLayout = {
+		bypassed,
+		skip,
+		segments,
+		textAllow: segments.map((seg) => new Set(seg.textIdx)),
+		lastTextSeg,
+	};
+	layoutCache.set(msg, layout);
+	return layout;
+}
+
+/** Build one meta-group entry (rebuilt per pass: it carries the tool result,
+ *  which comes from the following message and so cannot be cached on the call). */
+function groupEntryFor(msg: ChatMessage, i: number, item: MessageItem): GroupEntry {
+	const b = msg.blocks[i];
+	if (b.kind === "thinking") {
+		return {
+			kind: "thinking",
+			msgId: msg.id,
+			blockIndex: i,
+			text: b.text,
+			result: null,
+			resultStreaming: false,
+			running: msg.streaming && i === msg.blocks.length - 1,
+		};
+	}
+	// layoutFor only ever records non-text blocks as meta, so this is a tool
+	// call; the guard keeps the type honest rather than asserting.
+	if (b.kind !== "tool") {
+		return {
+			kind: "thinking",
+			msgId: msg.id,
+			blockIndex: i,
+			text: "",
+			result: null,
+			resultStreaming: false,
+			running: false,
+		};
+	}
+	const resultStreaming = item.attachedStreaming.get(i) ?? false;
+	return {
+		kind: "tool",
+		msgId: msg.id,
+		blockIndex: i,
+		block: b,
+		result: b.result ? b : (item.attached.get(i) ?? null),
+		resultStreaming,
+		running: (msg.streaming && i === msg.blocks.length - 1) || resultStreaming,
+	};
+}
+
+/** Shared empty `skip` for rows that fold nothing (user / orphan tool rows).
+ *  Never mutated by any consumer, so sharing it keeps those rows' prop
+ *  identities stable across the per-delta rebuilds. */
+const EMPTY_SKIP: Set<number> = new Set();
 
 /**
  * Build the render rows. `bypassIds` marks messages that must render all
@@ -490,7 +688,7 @@ export function buildChatRows(
 			// mismatch can no longer swallow a footer).
 			if (turnCount > 0) pushTurnRow(turnCount - 1, false, true);
 			turnCount++;
-			rows.push({ kind: "msg", key: `m${msg.id}`, item, skip: new Set(), last: true });
+			rows.push({ kind: "msg", key: `m${msg.id}`, item, skip: EMPTY_SKIP, last: true });
 			continue;
 		}
 		if (msg.role === "tool") {
@@ -498,7 +696,7 @@ export function buildChatRows(
 			// consumed tool messages were dropped by attachToolResults, so
 			// reaching here means the result chain broke.
 			flushGroup();
-			rows.push({ kind: "msg", key: `m${msg.id}`, item, skip: new Set(), last: true });
+			rows.push({ kind: "msg", key: `m${msg.id}`, item, skip: EMPTY_SKIP, last: true });
 			continue;
 		}
 		// assistant message — split into segments at text blocks so the render
@@ -508,63 +706,18 @@ export function buildChatRows(
 		// row (if any text).
 		if (bypass.has(msg.id)) {
 			flushGroup();
-			rows.push({ kind: "msg", key: `m${msg.id}`, item, skip: new Set(), last: true });
+			rows.push({ kind: "msg", key: `m${msg.id}`, item, skip: EMPTY_SKIP, last: true });
 			continue;
 		}
-		const skip = new Set<number>();
-		const segments: { entries: GroupEntry[]; textIdx: number[] }[] = [];
-		let cur: { entries: GroupEntry[]; textIdx: number[] } = { entries: [], textIdx: [] };
-		const pushSeg = () => {
-			if (cur.entries.length > 0 || cur.textIdx.length > 0) segments.push(cur);
-		};
-		msg.blocks.forEach((b, i) => {
-			if (b.kind === "text") {
-				// A text block closes the current meta segment…
-				if (cur.entries.length > 0) {
-					pushSeg();
-					cur = { entries: [], textIdx: [] };
-				}
-				cur.textIdx.push(i);
-				return;
-			}
-			skip.add(i);
-			// …and a meta block after text opens a NEW segment (stream order).
-			if (cur.textIdx.length > 0) {
-				pushSeg();
-				cur = { entries: [], textIdx: [] };
-			}
-			if (b.kind === "thinking") {
-				cur.entries.push({
-					kind: "thinking",
-					msgId: msg.id,
-					blockIndex: i,
-					text: b.text,
-					result: null,
-					resultStreaming: false,
-					running: msg.streaming && i === msg.blocks.length - 1,
-				});
-				return;
-			}
-			// tool call
-			cur.entries.push({
-				kind: "tool",
-				msgId: msg.id,
-				blockIndex: i,
-				block: b,
-				result: b.result ? b : (item.attached.get(i) ?? null),
-				resultStreaming: item.attachedStreaming.get(i) ?? false,
-				running:
-					(msg.streaming && i === msg.blocks.length - 1) ||
-					(item.attachedStreaming.get(i) ?? false),
-			});
-		});
-		pushSeg();
-		// The cursor + error belong to the message's LAST TEXT row (a trailing
-		// meta group renders after it; its live orb is the activity signal).
-		let lastTextSeg = -1;
-		segments.forEach((seg, si) => {
-			if (seg.textIdx.length > 0) lastTextSeg = si;
-		});
+		// The bypassed branch above already returned for bypass.has(msg.id), so
+		// the cached (non-bypassed) layout is the one to use here.
+		const layout = layoutFor(msg, bypass.has(msg.id));
+		const skip = layout.skip;
+		const segments = layout.segments.map((seg) => ({
+			entries: seg.meta.map((i) => groupEntryFor(msg, i, item)),
+			textIdx: seg.textIdx,
+		}));
+		const lastTextSeg = layout.lastTextSeg;
 		segments.forEach((seg, si) => {
 			if (seg.entries.length > 0) {
 				// Accumulate into the open group instead of emitting one group
@@ -594,7 +747,7 @@ export function buildChatRows(
 					key: `m${msg.id}-${si}`,
 					item,
 					skip,
-					textAllow: new Set(seg.textIdx),
+					textAllow: layout.textAllow[si],
 					last: si === lastTextSeg,
 				});
 			}

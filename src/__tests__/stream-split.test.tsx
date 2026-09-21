@@ -22,6 +22,7 @@ let render: (
 	messages: ChatMessage[],
 	stream: ChatMessage | null,
 	streaming?: boolean,
+	extra?: { searchQuery?: string; searchActiveMessageId?: number | null },
 ) => Promise<void>;
 let container: HTMLElement;
 
@@ -33,10 +34,14 @@ async function mount() {
 		messages,
 		stream,
 		streaming,
+		searchQuery,
+		searchActiveMessageId,
 	}: {
 		messages: ChatMessage[];
 		stream: ChatMessage | null;
 		streaming: boolean;
+		searchQuery?: string;
+		searchActiveMessageId?: number | null;
 	}) => (
 		<div className="chat-scroll">
 			<MessageList
@@ -45,13 +50,23 @@ async function mount() {
 				streaming={streaming}
 				working={streaming}
 				textStreaming={streaming}
+				searchQuery={searchQuery}
+				searchActiveMessageId={searchActiveMessageId}
 				t={t}
 			/>
 		</div>
 	);
-	render = async (messages, stream, streaming = stream !== null) => {
+	render = async (messages, stream, streaming = stream !== null, extra) => {
 		await act(async () => {
-			root.render(<Host messages={messages} stream={stream} streaming={streaming} />);
+			root.render(
+				<Host
+					messages={messages}
+					stream={stream}
+					streaming={streaming}
+					searchQuery={extra?.searchQuery}
+					searchActiveMessageId={extra?.searchActiveMessageId}
+				/>,
+			);
 		});
 	};
 }
@@ -162,5 +177,117 @@ describe("stream / committed split", () => {
 		);
 		expect(rows().length).toBe(1);
 		expect(container.textContent).toContain("a.ts");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Row windowing (virtualization) — only engages above VIRTUALIZE_THRESHOLD.
+// ---------------------------------------------------------------------------
+
+/** A transcript long enough to cross the 150-row threshold. */
+function longTranscript(turns: number): ChatMessage[] {
+	const out: ChatMessage[] = [];
+	for (let i = 0; i < turns; i++) {
+		out.push({
+			id: i * 2 + 1,
+			role: "user",
+			blocks: [{ kind: "text", text: `question ${i}` }],
+			streaming: false,
+			timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+		});
+		out.push({
+			id: i * 2 + 2,
+			role: "assistant",
+			blocks: [{ kind: "text", text: `answer ${i}` }],
+			streaming: false,
+			timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, i) + 500).toISOString(),
+		});
+	}
+	return out;
+}
+
+const spacerHeights = () =>
+	Array.from(container.querySelectorAll<HTMLElement>("[data-spacer]")).map((el) =>
+		Number.parseFloat(el.style.height),
+	);
+
+describe("row windowing", () => {
+	it("does not window below the threshold: no spacers, every row mounted", async () => {
+		await mount();
+		const messages = longTranscript(20); // 40 rows
+		await render(messages, null, false);
+		expect(spacerHeights()).toEqual([]);
+		expect(rows().length).toBe(40);
+	});
+
+	it("mounts a bounded window with honest spacers above the threshold", async () => {
+		await mount();
+		const messages = longTranscript(120); // 240 rows
+		await render(messages, null, false);
+		expect(messages.length).toBeGreaterThan(150);
+
+		// The window is the tail, so the bottom pad is 0 and only the top spacer
+		// is emitted — the total padded height must still account for every row
+		// that is not mounted, or the scrollbar lies about the transcript length.
+		const pads = spacerHeights();
+		expect(pads.length).toBeGreaterThanOrEqual(1);
+		const totalPad = pads.reduce((a, b) => a + b, 0);
+		expect(totalPad).toBeGreaterThan(0);
+
+		const mounted = rows().length;
+		expect(mounted).toBeGreaterThan(0);
+		expect(mounted).toBeLessThan(messages.length);
+		// The initial view is the tail: a session load lands at the bottom.
+		expect(container.textContent).toContain("answer 119");
+		expect(container.textContent).not.toContain("question 0");
+	});
+
+	it("keeps the streaming tail mounted while windowed", async () => {
+		await mount();
+		const messages = longTranscript(120);
+		await render(messages, null, false);
+		// The tail window starts on `question 100`'s row.
+		expect(container.textContent).toContain("question 100");
+		const before = rows();
+		const lastBefore = before[before.length - 1];
+
+		await render(
+			messages,
+			{
+				id: 99999,
+				role: "assistant",
+				blocks: [{ kind: "text", text: "live tail" }],
+				streaming: true,
+				timestamp: new Date().toISOString(),
+			},
+			true,
+		);
+		// The window slid by exactly one row to make room for the in-flight
+		// message: `question 100` scrolled out of the mounted slice, so the tail
+		// is what got the slot — the stream is never blanked while following.
+		expect(container.textContent).not.toContain("question 100");
+		expect(container.textContent).toContain("answer 100");
+		const after = rows();
+		// Still a bounded slice, and its last row is the new tail (a different
+		// DOM node than the previous last row).
+		expect(after.length).toBeLessThan(messages.length);
+		expect(after[after.length - 1]).not.toBe(lastBefore);
+		// markstream-react does not emit text synchronously under happy-dom, so
+		// assert on the renderer being mounted rather than on its text.
+		expect(after[after.length - 1].querySelector(".markdown-host")).toBeTruthy();
+	});
+
+	it("force-includes the active search target even when it is far off-screen", async () => {
+		await mount();
+		const messages = longTranscript(120);
+		// The active hit is an early message, far above the initial tail window.
+		await render(messages, null, false, {
+			searchQuery: "question 3",
+			searchActiveMessageId: messages[6].id,
+		});
+		expect(container.textContent).toContain("question 3");
+		// Still bounded — the force-include widens the window, it does not
+		// disable windowing.
+		expect(rows().length).toBeLessThan(messages.length);
 	});
 });
