@@ -46,3 +46,17 @@ jobs:
         run: |
           cargo install cargo-audit --locked
           cargo audit --manifest-path src-tauri/Cargo.toml
+
+  protocol:
+    name: Protocol (session-host RPC suite)
+    # The suite spawns the vendored runtime, so vendor:pi must run first —
+    # without it every test skips, which is exactly how the sidecar e2e tests
+    # came to never execute in CI.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run vendor:pi
+      - run: npm run test:protocol
