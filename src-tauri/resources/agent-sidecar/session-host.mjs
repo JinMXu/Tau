@@ -821,7 +821,12 @@ const handleInputLine = async (line) => {
 		}
 		await checkShutdownRequested();
 	} catch (commandError) {
-		output(error(parsed.id, parsed.type, commandError instanceof Error ? commandError.message : String(commandError)));
+		// Optional chaining: a bare `null` line makes handleCommand throw, and
+		// dereferencing `parsed.id` here threw a SECOND time — escaping as an
+		// unhandledRejection whose process-level handler exits(1), killing the
+		// session over one malformed line. Answer with an id-less error like
+		// every other malformed shape and keep serving.
+		output(error(parsed?.id, parsed?.type, commandError instanceof Error ? commandError.message : String(commandError)));
 		await waitForBackpressure();
 	}
 };
