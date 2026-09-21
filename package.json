@@ -22,7 +22,7 @@
     "katex": "^0.18.7",
     "lucide-react": "^1.47.0",
     "markstream-react": "^0.0.55",
-    "mermaid": "^11.17.2",
+    "mermaid": "^12.0.0",
     "monaco-editor": "^0.55.1",
     "motion": "^13.4.0",
     "react": "^19.1.0",
