@@ -5,9 +5,9 @@ use std::{
 	path::{Path, PathBuf},
 	process::{Child, ChildStdin, Command, Stdio},
 	sync::atomic::{AtomicBool, Ordering},
-	sync::{Arc, Mutex},
+	sync::{Arc, LazyLock, Mutex},
 	thread,
-	time::{Duration, Instant},
+	time::{Duration, Instant, SystemTime},
 };
 
 use serde::{Deserialize, Serialize};
@@ -18,8 +18,8 @@ use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 // rest of the crate keeps referring to `pi::…` as before.
 pub(crate) use crate::pi_session::MAX_JSONL_LINE;
 use crate::pi_session::{
-	extract_block_text, read_session_messages, scan_session, session_values, usage_from_file,
-	LimitedLines, PiParsedMessage, PiUsageEntry,
+	extract_block_text, read_entries_at, read_session_messages, scan_session, session_entry_index,
+	session_values, usage_from_file, EntryRef, LimitedLines, PiParsedMessage, PiUsageEntry,
 };
 
 /// One independent pi RPC process per session channel; channels are keyed
@@ -95,7 +95,7 @@ pub struct PiBinaryInfo {
 	pub(crate) builtin: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PiSessionInfo {
 	path: String,
@@ -1143,6 +1143,27 @@ fn is_nested_session(sessions_root: &Path, path: &Path) -> bool {
 		.unwrap_or(false)
 }
 
+/// Session scan results keyed by (mtime, size). `collect_sessions` reads the
+/// first 400 lines of every session file, and both the sidebar list and ⌘K
+/// search call it on every keystroke pause — while only the files pi is
+/// currently appending to actually change between calls. Stat metadata is
+/// the change key (an append always moves the size; a rewrite moves the
+/// mtime), so a hit turns a full re-scan into an O(changed files) walk.
+/// Entries for files that no longer exist are pruned on every pass, which
+/// bounds the map by the live session count.
+struct ScanCacheEntry {
+	modified: Option<SystemTime>,
+	size: u64,
+	info: PiSessionInfo,
+}
+
+static SCAN_CACHE: LazyLock<Mutex<HashMap<PathBuf, ScanCacheEntry>>> =
+	LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn scan_cache() -> std::sync::MutexGuard<'static, HashMap<PathBuf, ScanCacheEntry>> {
+	SCAN_CACHE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn collect_sessions(dir: &Path, out: &mut Vec<PiSessionInfo>) {
 	let mut files = Vec::new();
 	session_files(dir, &mut files, 0);
@@ -1151,8 +1172,19 @@ fn collect_sessions(dir: &Path, out: &mut Vec<PiSessionInfo>) {
 	files.retain(|p| !is_nested_session(dir, p));
 	let infos = par_map(files, |path| {
 		let meta = std::fs::metadata(path).ok();
+		let modified = meta.as_ref().and_then(|m| m.modified().ok());
+		let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+		// Fast path: unchanged since the last scan — reuse without opening.
+		{
+			let cache = scan_cache();
+			if let Some(hit) = cache.get(path) {
+				if hit.size == size && hit.modified == modified {
+					return Some(hit.info.clone());
+				}
+			}
+		}
 		let scan = scan_session(path, 400);
-		Some(PiSessionInfo {
+		let info = PiSessionInfo {
 			path: path.to_string_lossy().into_owned(),
 			name: file_stem(path),
 			project: scan.project,
@@ -1164,14 +1196,30 @@ fn collect_sessions(dir: &Path, out: &mut Vec<PiSessionInfo>) {
 			model: scan.model,
 			created_at: scan.created_at,
 			message_count: scan.message_count,
-			mtime_ms: meta
-				.as_ref()
-				.and_then(|m| m.modified().ok())
-				.map(unix_ms)
-				.unwrap_or(0),
-			size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
-		})
+			mtime_ms: modified.map(unix_ms).unwrap_or(0),
+			size,
+		};
+		let mut cache = scan_cache();
+		cache.insert(
+			path.to_path_buf(),
+			ScanCacheEntry {
+				modified,
+				size,
+				info: info.clone(),
+			},
+		);
+		Some(info)
 	});
+	// Drop entries whose file disappeared, so an app that creates and deletes
+	// sessions all day doesn't grow the map without bound. Scoped to this
+	// directory: a scan of another root (imports) must not evict the entries
+	// the sidebar list just warmed.
+	let live: std::collections::HashSet<PathBuf> = infos
+		.iter()
+		.flatten()
+		.map(|i| PathBuf::from(&i.path))
+		.collect();
+	scan_cache().retain(|k, _| !k.starts_with(dir) || live.contains(k));
 	out.extend(infos.into_iter().flatten());
 }
 
@@ -1718,16 +1766,12 @@ fn clean_session_path(p: PathBuf) -> PathBuf {
 
 fn fork_session_at(src: &Path, entry_id: Option<&str>) -> Result<PiForkResult, String> {
 	use std::collections::HashMap;
-	let values = session_values(src, None).map_err(|e| format!("failed to open session: {e}"))?;
-	let mut header: Option<serde_json::Value> = None;
-	let mut entries: Vec<serde_json::Value> = Vec::new();
-	for v in values {
-		if v.get("type").and_then(|x| x.as_str()) == Some("session") {
-			header = Some(v);
-		} else {
-			entries.push(v);
-		}
-	}
+	// Two passes: index the entries (id / parent / byte offset — a few dozen
+	// bytes each), then re-read only the chain's lines. The previous single
+	// pass parsed every entry into a Vec<Value> — several times the file size
+	// in RAM on a long session — just to walk one parent chain.
+	let (header, index) =
+		session_entry_index(src).map_err(|e| format!("failed to open session: {e}"))?;
 	let header = header.ok_or("session file has no header entry")?;
 	let cwd = header
 		.get("cwd")
@@ -1741,45 +1785,50 @@ fn fork_session_at(src: &Path, entry_id: Option<&str>) -> Result<PiForkResult, S
 	// 未指定条目 → 取文件末尾条目（pi 线性追加，最后一行即当前分支叶）
 	let target_id: String = match entry_id {
 		Some(id) => id.to_string(),
-		None => entries
+		None => index
 			.last()
-			.and_then(|e| e.get("id").and_then(|x| x.as_str()))
-			.ok_or("session has no entries")?
-			.to_string(),
+			.map(|e| e.id.clone())
+			.ok_or("session has no entries")?,
 	};
 
-	let by_id: HashMap<&str, &serde_json::Value> = entries
-		.iter()
-		.filter_map(|e| e.get("id").and_then(|x| x.as_str()).map(|s| (s, e)))
-		.collect();
-	if !by_id.contains_key(target_id.as_str()) {
+	let by_id: HashMap<&str, &EntryRef> = index.iter().map(|e| (e.id.as_str(), e)).collect();
+	let Some(target) = by_id.get(target_id.as_str()) else {
 		return Err(format!("entry {target_id} not found in session"));
-	}
+	};
 	// 沿 parentId 走到根（leaf→root），再反转为 root→leaf
-	let mut chain: Vec<&serde_json::Value> = Vec::new();
-	let mut cur: Option<&str> = Some(target_id.as_str());
+	let mut chain: Vec<&EntryRef> = Vec::new();
+	let mut cur = Some(*target);
 	let mut guard = 0usize;
-	while let Some(id) = cur {
-		let e = by_id
-			.get(id)
-			.ok_or_else(|| format!("broken parent chain at {id}"))?;
+	while let Some(e) = cur {
 		chain.push(e);
-		cur = e.get("parentId").and_then(|x| x.as_str());
+		match e.parent_id.as_deref() {
+			Some(p) => {
+				// A parent that isn't in the file is a broken chain, not a root.
+				let Some(parent) = by_id.get(p) else {
+					return Err(format!("broken parent chain at {p}"));
+				};
+				cur = Some(*parent);
+			}
+			None => cur = None,
+		}
 		guard += 1;
-		if guard > entries.len() + 1 {
+		if guard > index.len() + 1 {
 			return Err("parent chain loop detected".into());
 		}
 	}
 	chain.reverse();
+	// 第二遍：只重读链上的行（label 条目依旧丢弃并重接 parentId，pi 同款处理）
+	let offsets: Vec<u64> = chain.iter().map(|e| e.offset).collect();
+	let values =
+		read_entries_at(src, &offsets).map_err(|e| format!("failed to re-read session: {e}"))?;
 	// 去掉 label 条目并重接 parentId（pi 同款处理，避免孤儿子树）
-	let mut out_entries: Vec<serde_json::Value> = Vec::with_capacity(chain.len());
+	let mut out_entries: Vec<serde_json::Value> = Vec::with_capacity(values.len());
 	let mut prev_id: Option<String> = None;
-	for e in chain {
-		if e.get("type").and_then(|x| x.as_str()) == Some("label") {
+	for mut entry in values {
+		if entry.get("type").and_then(|x| x.as_str()) == Some("label") {
 			continue;
 		}
-		let mut copy = e.clone();
-		if let Some(obj) = copy.as_object_mut() {
+		if let Some(obj) = entry.as_object_mut() {
 			obj.insert(
 				"parentId".into(),
 				match &prev_id {
@@ -1788,11 +1837,11 @@ fn fork_session_at(src: &Path, entry_id: Option<&str>) -> Result<PiForkResult, S
 				},
 			);
 		}
-		prev_id = copy
+		prev_id = entry
 			.get("id")
 			.and_then(|x| x.as_str())
 			.map(|s| s.to_string());
-		out_entries.push(copy);
+		out_entries.push(entry);
 	}
 
 	// 新文件：pi 命名约定 {fileTimestamp}_{sessionId}.jsonl（同一会话目录）
@@ -3769,6 +3818,58 @@ mod tests {
 		assert_eq!(lines[3]["id"], "e3");
 		// 非法条目报错
 		assert!(fork_session_at(&path, Some("nope")).is_err());
+		let _ = std::fs::remove_file(&res.session_file);
+		let _ = std::fs::remove_file(&path);
+	}
+
+	#[test]
+	fn forks_session_at_middle_entry_past_an_oversized_line() {
+		// Exercises the two-pass fork read: a middle-entry chain must re-read
+		// only its own lines, and a line discarded for exceeding MAX_JSONL_LINE
+		// must not shift the offsets of the entries after it.
+		let dir = std::env::temp_dir().join(format!("pi-gui-test-{}", std::process::id()));
+		std::fs::create_dir_all(&dir).unwrap();
+		let path = dir.join("tau-fork-mid.jsonl");
+		let oversized = format!(
+			r#"{{"type":"message","id":"e9","parentId":"e2","pad":"{}"}}"#,
+			"x".repeat(crate::pi_session::MAX_JSONL_LINE + 64)
+		);
+		{
+			use std::io::Write;
+			let mut f = File::create(&path).unwrap();
+			writeln!(f, r#"{{"type":"session","version":3,"id":"sess-1","timestamp":"2026-01-01T00:00:00.000Z","cwd":"D:/x"}}"#).unwrap();
+			writeln!(f, r#"{{"type":"model_change","id":"e1","parentId":null,"timestamp":"2026-01-01T00:00:01Z","provider":"p","modelId":"m"}}"#).unwrap();
+			writeln!(f, r#"{{"type":"message","id":"e2","parentId":"e1","timestamp":"2026-01-01T00:00:02Z","message":{{"role":"user","content":[{{"type":"text","text":"hi"}}]}}}}"#).unwrap();
+			writeln!(f, "{oversized}").unwrap();
+			writeln!(f, r#"{{"type":"message","id":"e3","parentId":"e2","timestamp":"2026-01-01T00:00:04Z","message":{{"role":"assistant","content":[{{"type":"text","text":"hello"}}]}}}}"#).unwrap();
+		}
+		// Fork at a MIDDLE entry: the chain is e1 → e2 and stops there.
+		let res =
+			fork_session_at(&path, Some("e2")).expect("fork at a middle entry should succeed");
+		let content = std::fs::read_to_string(&res.session_file).unwrap();
+		let lines: Vec<serde_json::Value> = content
+			.lines()
+			.map(|l| serde_json::from_str(l).unwrap())
+			.collect();
+		assert_eq!(lines.len(), 3, "header + e1 + e2");
+		assert_eq!(lines[1]["id"], "e1");
+		assert!(lines[1]["parentId"].is_null());
+		assert_eq!(lines[2]["id"], "e2");
+		assert_eq!(lines[2]["parentId"], "e1");
+		// Leaf fork still walks past the discarded line all the way to e3 —
+		// this is what breaks if the oversized line's bytes were miscounted.
+		let res = fork_session_at(&path, None).expect("fork at the leaf should succeed");
+		let content = std::fs::read_to_string(&res.session_file).unwrap();
+		let lines: Vec<serde_json::Value> = content
+			.lines()
+			.map(|l| serde_json::from_str(l).unwrap())
+			.collect();
+		assert_eq!(lines.len(), 4, "header + e1 + e2 + e3");
+		assert_eq!(lines[3]["id"], "e3");
+		assert_eq!(lines[3]["parentId"], "e2");
+		// The oversized entry is valid JSON but never entered the index: the
+		// line cap dropped it, exactly as it is dropped everywhere else.
+		assert!(fork_session_at(&path, Some("e9")).is_err());
 		let _ = std::fs::remove_file(&res.session_file);
 		let _ = std::fs::remove_file(&path);
 	}

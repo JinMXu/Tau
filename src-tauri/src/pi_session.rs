@@ -7,7 +7,7 @@
 //! deliberately free of Tauri state so it can be read (and tested) on its own.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -147,6 +147,9 @@ pub(crate) struct LimitedLines<R> {
 	reader: R,
 	max: usize,
 	buf: Vec<u8>,
+	/// Bytes consumed from the reader so far — the basis of the per-line
+	/// offsets `next_with_offset` reports (see `session_entry_index`).
+	consumed: u64,
 }
 
 impl<R> LimitedLines<R> {
@@ -155,20 +158,24 @@ impl<R> LimitedLines<R> {
 			reader,
 			max,
 			buf: Vec::with_capacity(8 * 1024),
+			consumed: 0,
 		}
 	}
 }
 
-impl<R: BufRead> Iterator for LimitedLines<R> {
-	type Item = std::io::Result<String>;
-
-	fn next(&mut self) -> Option<Self::Item> {
+impl<R: BufRead> LimitedLines<R> {
+	/// Shared core: read one yielded line plus the byte offset of its first
+	/// byte in the stream. The offset is captured before the read that
+	/// succeeds, so lines discarded as oversized don't shift it.
+	fn read_line(&mut self) -> Option<(u64, std::io::Result<String>)> {
 		loop {
 			self.buf.clear();
+			let start = self.consumed;
 			let mut limited = (&mut self.reader).take((self.max + 1) as u64);
 			match limited.read_until(b'\n', &mut self.buf) {
 				Ok(0) => return None,
 				Ok(n) if n > self.max => {
+					self.consumed += n as u64;
 					// Discard the remainder of the oversized line so the next
 					// iteration stays aligned on a line boundary.
 					loop {
@@ -176,24 +183,44 @@ impl<R: BufRead> Iterator for LimitedLines<R> {
 						let mut sink = (&mut self.reader).take(64 * 1024);
 						match sink.read_until(b'\n', &mut self.buf) {
 							Ok(0) => break,
-							Ok(_) if self.buf.last() == Some(&b'\n') => break,
-							Ok(_) => {}
+							Ok(m) => {
+								self.consumed += m as u64;
+								if self.buf.last() == Some(&b'\n') {
+									break;
+								}
+							}
 							Err(_) => break,
 						}
 					}
 				}
-				Ok(_) => {
+				Ok(n) => {
+					self.consumed += n as u64;
 					if self.buf.last() == Some(&b'\n') {
 						self.buf.pop();
 					}
 					if self.buf.last() == Some(&b'\r') {
 						self.buf.pop();
 					}
-					return Some(Ok(String::from_utf8_lossy(&self.buf).into_owned()));
+					return Some((start, Ok(String::from_utf8_lossy(&self.buf).into_owned())));
 				}
-				Err(e) => return Some(Err(e)),
+				Err(e) => return Some((start, Err(e))),
 			}
 		}
+	}
+
+	/// `next` plus the byte offset of the yielded line's first byte in the
+	/// underlying file. The second pass of a two-pass read (see
+	/// `session_entry_index`) seeks back to that offset to re-read one entry.
+	pub(crate) fn next_with_offset(&mut self) -> Option<(u64, std::io::Result<String>)> {
+		self.read_line()
+	}
+}
+
+impl<R: BufRead> Iterator for LimitedLines<R> {
+	type Item = std::io::Result<String>;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		self.read_line().map(|(_, line)| line)
 	}
 }
 
@@ -230,6 +257,85 @@ pub(crate) fn session_values(
 		}
 		serde_json::from_str::<serde_json::Value>(&line).ok()
 	}))
+}
+
+/// One indexed session entry: just enough to walk a parent chain without
+/// holding the parsed entry in memory.
+pub(crate) struct EntryRef {
+	pub(crate) id: String,
+	pub(crate) parent_id: Option<String>,
+	/// Byte offset of the entry's line — `read_entries_at` re-reads it here.
+	pub(crate) offset: u64,
+}
+
+/// First pass of a two-pass read: the session header (if any) plus a
+/// lightweight index of every entry — id, parent, byte offset.
+///
+/// `fork_session_at` used to parse the whole file into a `Vec<Value>`
+/// (several times the file size in RAM on a long session) just to walk one
+/// parent chain. The index holds a few dozen bytes per entry; the second
+/// pass re-reads only the chain's lines by offset.
+pub(crate) fn session_entry_index(
+	path: &Path,
+) -> std::io::Result<(Option<serde_json::Value>, Vec<EntryRef>)> {
+	let file = File::open(path)?;
+	let mut lines = LimitedLines::new(BufReader::new(file), MAX_JSONL_LINE);
+	let mut header: Option<serde_json::Value> = None;
+	let mut entries: Vec<EntryRef> = Vec::new();
+	while let Some((offset, line)) = lines.next_with_offset() {
+		let Ok(line) = line else { continue };
+		if line.trim().is_empty() {
+			continue;
+		}
+		let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+			continue;
+		};
+		let kind = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+		if kind == "session" {
+			// Last header wins, matching the previous single-pass reader.
+			header = Some(v);
+			continue;
+		}
+		let Some(id) = v.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()) else {
+			continue;
+		};
+		let parent_id = v
+			.get("parentId")
+			.and_then(|x| x.as_str())
+			.filter(|s| !s.is_empty())
+			.map(|s| s.to_string());
+		entries.push(EntryRef {
+			id,
+			parent_id,
+			offset,
+		});
+	}
+	Ok((header, entries))
+}
+
+/// Second pass: re-read and parse the entries whose lines start at `offsets`.
+///
+/// Offsets come from `session_entry_index` on the same file. Session files
+/// are append-only, so a line that indexed cleanly a moment ago is still
+/// readable at its offset; if one is not, the file changed under us and the
+/// caller must not silently fork a different chain.
+pub(crate) fn read_entries_at(
+	path: &Path,
+	offsets: &[u64],
+) -> std::io::Result<Vec<serde_json::Value>> {
+	let mut reader = BufReader::new(File::open(path)?);
+	let mut out = Vec::with_capacity(offsets.len());
+	for &offset in offsets {
+		reader.seek(SeekFrom::Start(offset))?;
+		let mut buf = Vec::new();
+		// Trailing "\n" is harmless whitespace to serde_json.
+		reader.read_until(b'\n', &mut buf)?;
+		let line = String::from_utf8_lossy(&buf);
+		let v = serde_json::from_str::<serde_json::Value>(&line)
+			.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+		out.push(v);
+	}
+	Ok(out)
 }
 
 pub(crate) fn extract_block_text(content: Option<&serde_json::Value>) -> Option<String> {
