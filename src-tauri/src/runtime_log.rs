@@ -57,7 +57,15 @@ fn redact(message: &str) -> String {
 				.unwrap_or(out.len());
 			if end > key_start + 4 {
 				out.replace_range(start..end, &format!("{}***", prefix.trim_end_matches('-')));
-				search_from = start + prefix.len() + 3;
+				// The replacement ("sk***") is SHORTER than the range it replaced
+				// ("sk-" + key), so this offset can overshoot the new end when the
+				// secret ran to the end of the message — exactly the shape of a
+				// provider 401 ("Incorrect API key provided: sk-…"). Slicing past
+				// the end panics, and this runs on the stdout-reader thread (and
+				// inside the panic hook), where a panic kills the session or the
+				// process. Clamping keeps the "skip past the replacement" intent
+				// without the overshoot; the loop then ends on the empty slice.
+				search_from = (start + prefix.len() + 3).min(out.len());
 			} else {
 				search_from = key_start.max(search_from + 1);
 				if search_from >= out.len() {
@@ -137,4 +145,65 @@ pub fn collect_bundle(app: &AppHandle) -> String {
 		}
 	}
 	out
+}
+
+#[cfg(test)]
+mod tests {
+	use super::redact;
+
+	#[test]
+	fn masks_key_at_end_of_message() {
+		// The regression: a secret ending the message overshot the search
+		// offset past the (shorter) replacement and panicked on the next slice.
+		assert_eq!(
+			redact("Incorrect API key provided: sk-1234567890"),
+			"Incorrect API key provided: sk***"
+		);
+	}
+
+	#[test]
+	fn masks_key_at_end_for_every_prefix() {
+		assert_eq!(redact("key sk-ant-abcdef1234"), "key sk-ant***");
+		assert_eq!(redact("key sk-proj-abcdef1234"), "key sk-proj***");
+		assert_eq!(redact("key sk-abcdef1234"), "key sk***");
+	}
+
+	#[test]
+	fn masks_key_in_the_middle() {
+		assert_eq!(
+			redact("auth failed for key sk-1234567890 while calling api"),
+			"auth failed for key sk*** while calling api",
+		);
+	}
+
+	#[test]
+	fn masks_multiple_keys() {
+		assert_eq!(
+			redact("first sk-aaaaaaaaaa then sk-bbbbbbbbbb"),
+			"first sk*** then sk***",
+		);
+	}
+
+	#[test]
+	fn masks_bearer_token() {
+		assert_eq!(
+			redact("Authorization: Bearer abcdef1234567890 failed"),
+			"Authorization: Bearer *** failed",
+		);
+		assert_eq!(redact("Bearer deadbeefdeadbeef"), "Bearer ***");
+	}
+
+	#[test]
+	fn leaves_short_or_absent_keys_alone() {
+		// Below the length floor the loop must not mask (and must not spin).
+		assert_eq!(redact("key sk-abc is too short"), "key sk-abc is too short");
+		assert_eq!(redact("nothing to see here"), "nothing to see here");
+		assert_eq!(redact(""), "");
+	}
+
+	#[test]
+	fn key_immediately_at_end_after_other_content() {
+		// Non-ASCII before the key: byte offsets must stay on char boundaries.
+		assert_eq!(redact("错误：密钥 sk-1234567890"), "错误：密钥 sk***",);
+	}
 }
