@@ -12,6 +12,7 @@ export default defineConfig({
 	test: {
 		environment: "node",
 		include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+		setupFiles: ["src/__tests__/setup.ts"],
 		// Component-less pure helpers + settings/i18n logic; DOM-dependent
 		// suites opt in per file via `// @vitest-environment happy-dom`.
 	},

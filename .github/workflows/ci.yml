@@ -16,6 +16,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Lockfiles are pinned to registry.npmjs.org (.npmrc); audit against the
+      # same registry or npm answers NOT_IMPLEMENTED.
+      - run: npm audit --audit-level=high --registry=https://registry.npmjs.org
       - run: npx tsc --noEmit
       - run: npm run lint
       - run: npm test
@@ -37,3 +40,9 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --lib -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --lib
+      # RustSec advisory database, so a vulnerable transitive crate surfaces on
+      # a PR instead of at the next release audit.
+      - name: cargo audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit --manifest-path src-tauri/Cargo.toml

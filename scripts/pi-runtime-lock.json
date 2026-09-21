@@ -11,7 +11,7 @@
     },
     "node_modules/@earendil-works/pi-coding-agent": {
       "version": "0.84.3",
-      "resolved": "https://registry.npmmirror.com/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
+      "resolved": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.84.3.tgz",
       "integrity": "sha512-Yr2p9PubrbFZmYEPYI+C8KmZP9xlFuLDnAG64RtU0ZDgrdiXYWa+y7WGyJO5OlqPliOkVCMd9IzVszO3/t0D0w==",
       "hasShrinkwrap": true,
       "license": "MIT",
