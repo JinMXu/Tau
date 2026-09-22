@@ -28,9 +28,12 @@ export default defineConfig(async () => ({
 		// never sees it. A desktop app loads from local disk, so one larger
 		// bundle costs nothing meaningful.
 	},
-	// 2. tauri expects a fixed port, fail if that port is not available
+	// 2. tauri expects a fixed port, fail if that port is not available.
+	// 1422 rather than the default 1420: another Tauri project on this machine
+	// (novel-ide) already develops on 1420, and strictPort would collide. Keep
+	// in sync with build.devUrl in src-tauri/tauri.conf.json.
 	server: {
-		port: 1420,
+		port: 1422,
 		strictPort: true,
 		host: host || false,
 		hmr: host

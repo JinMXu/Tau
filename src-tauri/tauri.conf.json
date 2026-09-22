@@ -5,7 +5,7 @@
   "identifier": "dev.tau.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1422",
     "beforeBuildCommand": "npm run vendor:pi && npm run build",
     "frontendDist": "../dist"
   },
