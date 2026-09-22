@@ -588,6 +588,73 @@ fn cli_legacy_command(
 	Ok(cmd)
 }
 
+/// Build the pi launch command: the SDK session host by default
+/// (`TAU_PI_RPC=cli` is the escape hatch back to the legacy CLI launch).
+///
+/// Every deterministic launch failure — a missing runtime piece, an
+/// unwritable workspace, a bad argument — surfaces here, before anything is
+/// killed or spawned. `PiProcess::spawn` builds through this too, so the
+/// pre-flight in `pi_start_inner` and the real spawn can never disagree about
+/// what a valid command looks like.
+#[allow(clippy::too_many_arguments)]
+fn build_pi_command(
+	info: &PiBinaryInfo,
+	workspace: &str,
+	session_file: Option<&str>,
+	fork_of: Option<&str>,
+	session_name: Option<&str>,
+	system_prompt: Option<&str>,
+	append_system_prompt: Option<&str>,
+	tools: Option<&[String]>,
+	excluded_tools: Option<&[String]>,
+	models: Option<&str>,
+) -> Result<Command, String> {
+	let legacy = std::env::var("TAU_PI_RPC").as_deref() == Ok("cli");
+	let mut cmd = if legacy {
+		cli_legacy_command(
+			info,
+			session_file,
+			fork_of,
+			session_name,
+			system_prompt,
+			append_system_prompt,
+			tools,
+			excluded_tools,
+			models,
+		)?
+	} else {
+		session_host_command(
+			info,
+			session_file,
+			fork_of,
+			session_name,
+			system_prompt,
+			append_system_prompt,
+			tools,
+			excluded_tools,
+			models,
+		)?
+	};
+	cmd.current_dir(workspace)
+		.stdin(Stdio::piped())
+		.stdout(Stdio::piped())
+		.stderr(Stdio::piped());
+	#[cfg(windows)]
+	{
+		use std::os::windows::process::CommandExt;
+		const CREATE_NO_WINDOW: u32 = 0x08000000;
+		cmd.creation_flags(CREATE_NO_WINDOW);
+	}
+	#[cfg(unix)]
+	{
+		use std::os::unix::process::CommandExt;
+		// Own process group: kill() can then take down the whole tree
+		// (bash/tool children pi spawned), not just the node process.
+		cmd.process_group(0);
+	}
+	Ok(cmd)
+}
+
 impl PiProcess {
 	// Many launch options (session/fork/name/prompts/tools/models) are passed
 	// through individually from the Tauri command payload.
@@ -616,49 +683,20 @@ impl PiProcess {
 		// Default: the SDK session host (session-host.mjs) — a drop-in
 		// replacement for `pi --mode rpc`, configured entirely through env.
 		// `TAU_PI_RPC=cli` is the escape hatch back to the legacy CLI launch.
-		let legacy = std::env::var("TAU_PI_RPC").as_deref() == Ok("cli");
-		let mut cmd = if legacy {
-			cli_legacy_command(
-				info,
-				session_file,
-				fork_of,
-				session_name,
-				system_prompt,
-				append_system_prompt,
-				tools,
-				excluded_tools,
-				models,
-			)?
-		} else {
-			session_host_command(
-				info,
-				session_file,
-				fork_of,
-				session_name,
-				system_prompt,
-				append_system_prompt,
-				tools,
-				excluded_tools,
-				models,
-			)?
-		};
-		cmd.current_dir(workspace)
-			.stdin(Stdio::piped())
-			.stdout(Stdio::piped())
-			.stderr(Stdio::piped());
-		#[cfg(windows)]
-		{
-			use std::os::windows::process::CommandExt;
-			const CREATE_NO_WINDOW: u32 = 0x08000000;
-			cmd.creation_flags(CREATE_NO_WINDOW);
-		}
-		#[cfg(unix)]
-		{
-			use std::os::unix::process::CommandExt;
-			// Own process group: kill() can then take down the whole tree
-			// (bash/tool children pi spawned), not just the node process.
-			cmd.process_group(0);
-		}
+		// (pi_start_inner pre-flights this same builder before killing the
+		// previous process, so a construction failure never costs a session.)
+		let mut cmd = build_pi_command(
+			info,
+			workspace,
+			session_file,
+			fork_of,
+			session_name,
+			system_prompt,
+			append_system_prompt,
+			tools,
+			excluded_tools,
+			models,
+		)?;
 
 		let mut child = cmd
 			.spawn()
@@ -1322,6 +1360,24 @@ fn pi_start_inner(
 	if !Path::new(workspace).is_dir() {
 		return Err(format!("workspace is not a directory: {workspace}"));
 	}
+	// Pre-flight the launch command and throw it away. Every deterministic
+	// spawn failure (a missing runtime piece, a bad argument) surfaces here,
+	// BEFORE the previous process is killed below: a configuration error must
+	// not take the user's running session down with it and leave the channel
+	// empty. The residual risk — cmd.spawn() itself failing, e.g. antivirus
+	// holding the exe — stays, but that window is now the only one.
+	build_pi_command(
+		&info,
+		workspace,
+		session_file.as_deref(),
+		fork_of.as_deref(),
+		session_name.as_deref(),
+		system_prompt.as_deref(),
+		append_system_prompt.as_deref(),
+		tools.as_deref(),
+		excluded_tools.as_deref(),
+		models.as_deref(),
+	)?;
 	let label = window.label().to_string();
 	let key = channel_key(&label, chan);
 	// Conflict check + detach this channel's previous process (if any) while
@@ -1550,13 +1606,35 @@ async fn pi_send(
 		window.app_handle(),
 		&format!("pi_send begin type={kind} window={label}"),
 	);
+	// The handle is restored INSIDE the blocking task, not after the await: if
+	// this future is dropped (webview reload, disconnect) the code after the
+	// await never runs, and the closure would drop the handle at its end —
+	// leaving the channel with p.stdin = None while pi_status still reports
+	// running, so every later pi_send fails with "pi is not running" on a
+	// perfectly live session. A spawned_blocking task always runs to
+	// completion, so restoring there is drop-safe. (A still-blocked write
+	// keeps the handle out of the map until it finishes, which is correct:
+	// two concurrent writers on one pipe would interleave.)
+	let inner_for_restore = state.inner.clone();
+	let key_for_restore = key.clone();
 	let result = run_blocking(move || {
 		let mut stdin = stdin;
-		stdin
-			.write_all(line.as_bytes())
-			.and_then(|_| stdin.flush())
-			.map(|_| stdin)
-			.map_err(|e| format!("failed to write to pi stdin: {e}"))
+		match stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()) {
+			Ok(()) => {
+				let mut map = lock_state(&inner_for_restore);
+				if let Some(p) = map.get_mut(&key_for_restore) {
+					if p.stdin.is_none() {
+						p.stdin = Some(stdin);
+					}
+				}
+				Ok(())
+			}
+			// A failed write means the pipe is dead (EPIPE): drop the handle
+			// rather than restoring it, so the next attempt reports the real
+			// state (the reader thread's exit cleanup) instead of failing the
+			// same way one more time.
+			Err(e) => Err(format!("failed to write to pi stdin: {e}")),
+		}
 	})
 	.await;
 	{
@@ -1573,23 +1651,7 @@ async fn pi_send(
 			);
 		}
 	}
-	// Restore the handle (best-effort): only if the process wasn't replaced in
-	// the meantime (a replaced process already has its own stdin set). A FAILED
-	// write means the pipe is dead (EPIPE) — dropping the handle instead of
-	// returning it makes the next attempt report the real state (the reader
-	// thread's exit cleanup) rather than failing the same way one more time.
-	match result {
-		Ok(stdin) => {
-			let mut map = lock_state(&state.inner);
-			if let Some(p) = map.get_mut(&key) {
-				if p.stdin.is_none() {
-					p.stdin = Some(stdin);
-				}
-			}
-			Ok(())
-		}
-		Err(e) => Err(e),
-	}
+	result
 }
 
 #[tauri::command]
@@ -2779,6 +2841,16 @@ async fn pi_share_session(session_path: String) -> Result<String, String> {
 		if let Err(e) = export {
 			let _ = std::fs::remove_file(&tmp);
 			return Err(format!("export failed: {e}"));
+		}
+		// The comment above promised owner-only, but the file is written by the
+		// sidecar's Node process under the default umask — on a shared machine
+		// that leaves a world-readable copy of the whole session in /tmp.
+		// write_private can't help (it creates the file itself), so re-apply
+		// its guarantee here. Windows temp ACLs are already user-scoped.
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
 		}
 		// 3. Create the private gist and read its html_url.
 		let gist = no_console_window(
