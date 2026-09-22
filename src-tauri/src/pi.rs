@@ -330,6 +330,39 @@ mod tests {
 	}
 
 	#[test]
+	fn session_errors_distinguish_causes() {
+		use crate::pi_session::SessionError;
+		// A missing file is NotFound through the real read path.
+		let missing =
+			std::env::temp_dir().join(format!("tau-missing-{}.jsonl", std::process::id()));
+		let err = read_session_messages(&missing)
+			.expect_err("a missing file must error, not return an empty session");
+		assert!(matches!(err, SessionError::NotFound { .. }), "got {err:?}");
+		assert!(err.to_string().contains("not found"), "got {err}");
+		// The classification itself (synthetic kinds — a directory behaves
+		// differently per platform, so it can't anchor this).
+		let p = Path::new("/tmp/x.jsonl");
+		assert!(matches!(
+			SessionError::from_io(
+				p,
+				std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+			),
+			SessionError::PermissionDenied { .. }
+		));
+		let other =
+			SessionError::from_io(p, std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+		assert!(
+			matches!(other, SessionError::Io { .. }),
+			"an unclassified kind must stay Io, got {other:?}"
+		);
+		// The message must carry the OS reason for the Io case.
+		assert!(
+			other.to_string().contains("unexpected end of file"),
+			"got {other}"
+		);
+	}
+
+	#[test]
 	fn builds_tree_from_file() {
 		let dir = std::env::temp_dir().join(format!("tau-tree-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
@@ -506,7 +539,7 @@ mod tests {
 				r#"{"type":"message","id":"r1","parentId":"a1","timestamp":"2026-08-10T06:31:16.000Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"bash","content":[{"type":"text","text":"hi\n"}]}}"#,
 			],
 		);
-		let messages = read_session_messages(&path);
+		let messages = read_session_messages(&path).expect("readable temp session");
 		assert_eq!(messages.len(), 2);
 		assert_eq!(messages[1].role, "toolResult");
 		assert_eq!(messages[1].blocks.len(), 1);
@@ -533,7 +566,7 @@ mod tests {
 		assert!(scan.title.contains("Fix the flaky test"));
 		assert!(scan.created_at.is_some());
 
-		let messages = read_session_messages(&path);
+		let messages = read_session_messages(&path).expect("readable temp session");
 		assert_eq!(messages.len(), 2);
 		assert_eq!(messages[0].role, "user");
 		assert_eq!(messages[0].blocks.len(), 1);
@@ -722,7 +755,7 @@ mod tests {
 				r#"{"type":"message","id":"a1","parentId":"u1","timestamp":"2026-08-10T06:31:15.165Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"echo hi"}},{"type":"text","text":"ran it"}]}}"#,
 			],
 		);
-		let messages = read_session_messages(&path);
+		let messages = read_session_messages(&path).expect("readable temp session");
 		assert_eq!(messages[1].blocks[0].kind, "tool");
 		assert_eq!(messages[1].blocks[0].name.as_deref(), Some("bash"));
 		assert!(messages[1].blocks[0].text.contains("echo hi"));

@@ -112,6 +112,10 @@ pub fn log_info(app: &AppHandle, message: &str) {
 	log(app, "info", message);
 }
 
+pub fn log_warn(app: &AppHandle, message: &str) {
+	log(app, "warn", message);
+}
+
 pub fn log_error(app: &AppHandle, message: &str) {
 	log(app, "error", message);
 }

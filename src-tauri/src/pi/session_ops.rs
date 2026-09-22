@@ -26,7 +26,10 @@ use crate::pi_session::{
 #[tauri::command]
 pub async fn pi_read_session(path: String) -> Result<Vec<PiParsedMessage>, String> {
 	let p = require_session_path(Path::new(&path))?;
-	run_blocking(move || Ok(read_session_messages(&p))).await
+	// SessionError's Display reaches the user verbatim, so a permission or
+	// not-found problem is reported as such instead of an "empty session" that
+	// silently hides the cause.
+	run_blocking(move || read_session_messages(&p).map_err(|e| e.to_string())).await
 }
 
 #[derive(Serialize)]
@@ -994,19 +997,37 @@ pub fn slim_get_tree_payload(payload: &Value) -> Value {
 /// Scan every session JSONL for LLM `usage` records (one per assistant
 /// message). The frontend aggregates by day/model/project for the usage
 /// dashboard. Files are scanned on worker threads so a large session set
-/// doesn't block the UI thread.
-pub fn collect_usage(dir: &Path, out: &mut Vec<PiUsageEntry>) {
+/// doesn't block the UI thread. Returns how many files were unreadable (the
+/// caller logs it — silently skipping them used to under-report the dashboard
+/// with no hint why).
+pub fn collect_usage(dir: &Path, out: &mut Vec<PiUsageEntry>) -> usize {
 	let mut files = Vec::new();
 	session_files(dir, &mut files, 0);
 	let entries = par_map(files, usage_from_file);
-	out.extend(entries.into_iter().flatten());
+	let mut skipped = 0;
+	for entry in entries {
+		match entry {
+			Ok(e) => out.extend(e),
+			Err(e) => {
+				skipped += 1;
+				eprintln!("pi-gui: usage scan skipped a session file: {e}");
+			}
+		}
+	}
+	skipped
 }
 
 #[tauri::command]
-pub async fn pi_usage_stats() -> Result<Vec<PiUsageEntry>, String> {
-	run_blocking(|| {
+pub async fn pi_usage_stats(app: AppHandle) -> Result<Vec<PiUsageEntry>, String> {
+	run_blocking(move || {
 		let mut out = Vec::new();
-		collect_usage(&default_session_dir(), &mut out);
+		let skipped = collect_usage(&default_session_dir(), &mut out);
+		if skipped > 0 {
+			crate::runtime_log::log_warn(
+				&app,
+				&format!("usage scan skipped {skipped} unreadable session file(s)"),
+			);
+		}
 		Ok(out)
 	})
 	.await

@@ -12,14 +12,14 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PiParsedImage {
 	pub(crate) mime_type: String,
 	pub(crate) data: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PiParsedBlock {
 	pub(crate) kind: String,
@@ -28,7 +28,7 @@ pub struct PiParsedBlock {
 	pub(crate) image: Option<PiParsedImage>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PiParsedMessage {
 	pub(crate) role: String,
@@ -257,6 +257,39 @@ pub(crate) fn session_values(
 		}
 		serde_json::from_str::<serde_json::Value>(&line).ok()
 	}))
+}
+
+/// Why a session file could not be read, distinguished so callers (and the
+/// user-facing error strings) can tell "no such session" and "no permission"
+/// apart from "unreadable for some other reason". The previous read paths
+/// collapsed every io::Error into "empty result", so a permission problem
+/// looked exactly like an empty session.
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+	#[error("session not found: {path}")]
+	NotFound { path: String },
+	#[error("permission denied reading session {path}")]
+	PermissionDenied { path: String },
+	#[error("cannot read session {path}: {source}")]
+	Io {
+		path: String,
+		#[source]
+		source: std::io::Error,
+	},
+}
+
+impl SessionError {
+	/// Classify an io::Error from a session read. `NotFound` and
+	/// `PermissionDenied` are mapped explicitly; everything else keeps the
+	/// source so the message still carries the OS reason.
+	pub fn from_io(path: &Path, e: std::io::Error) -> Self {
+		let path = path.to_string_lossy().into_owned();
+		match e.kind() {
+			std::io::ErrorKind::NotFound => SessionError::NotFound { path },
+			std::io::ErrorKind::PermissionDenied => SessionError::PermissionDenied { path },
+			_ => SessionError::Io { path, source: e },
+		}
+	}
 }
 
 /// One indexed session entry: just enough to walk a parent chain without
@@ -506,11 +539,9 @@ pub(crate) fn parse_message_blocks(message: &serde_json::Value) -> Vec<PiParsedB
 	blocks
 }
 
-pub(crate) fn read_session_messages(path: &Path) -> Vec<PiParsedMessage> {
+pub(crate) fn read_session_messages(path: &Path) -> Result<Vec<PiParsedMessage>, SessionError> {
 	let mut out = Vec::new();
-	let Ok(values) = session_values(path, None) else {
-		return out;
-	};
+	let values = session_values(path, None).map_err(|e| SessionError::from_io(path, e))?;
 	for v in values {
 		let Some(kind) = v.get("type").and_then(|x| x.as_str()) else {
 			continue;
@@ -583,10 +614,10 @@ pub(crate) fn read_session_messages(path: &Path) -> Vec<PiParsedMessage> {
 			_ => {}
 		}
 	}
-	out
+	Ok(out)
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct PiUsageEntry {
 	pub(crate) date: String,
@@ -609,11 +640,9 @@ pub struct PiUsageEntry {
 /// message). The frontend aggregates by day/model/project for the usage
 /// dashboard.
 /// Scan one session file for LLM `usage` records (one per assistant message).
-pub(crate) fn usage_from_file(path: &Path) -> Vec<PiUsageEntry> {
+pub(crate) fn usage_from_file(path: &Path) -> Result<Vec<PiUsageEntry>, SessionError> {
 	let mut out = Vec::new();
-	let Ok(values) = session_values(path, None) else {
-		return out;
-	};
+	let values = session_values(path, None).map_err(|e| SessionError::from_io(path, e))?;
 	let mut project: Option<String> = None;
 	for v in values {
 		let Some(kind) = v.get("type").and_then(|x| x.as_str()) else {
@@ -676,5 +705,5 @@ pub(crate) fn usage_from_file(path: &Path) -> Vec<PiUsageEntry> {
 			_ => {}
 		}
 	}
-	out
+	Ok(out)
 }
