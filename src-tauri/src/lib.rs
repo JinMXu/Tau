@@ -305,8 +305,10 @@ fn log_frontend_info(app: AppHandle, message: String) {
 
 /// Settings → About → "导出诊断日志": write tau.log (+ the rotated previous
 /// log) with a small environment header to a user-picked file, so crash /
-/// freeze reports can be handed to developers. The save dialog stays on the
-/// UI thread; the file write moves to the blocking pool.
+/// freeze reports can be handed to developers. The dialog and the write share
+/// one blocking-pool task — calling blocking_save_file directly in this async
+/// command would park an async-runtime worker for as long as the user keeps
+/// the dialog open, and other commands queue behind the workers.
 #[tauri::command]
 async fn export_diagnostics(app: AppHandle) -> Result<serde_json::Value, String> {
 	use tauri_plugin_dialog::DialogExt;
@@ -315,35 +317,32 @@ async fn export_diagnostics(app: AppHandle) -> Result<serde_json::Value, String>
 		.duration_since(std::time::UNIX_EPOCH)
 		.map(|d| d.as_millis())
 		.unwrap_or(0);
-	let picked = app
-		.dialog()
-		.file()
-		.set_file_name(format!("tau-diagnostics-{stamp}.log"))
-		.add_filter("Log", &["log", "txt"])
-		.blocking_save_file();
-	let Some(picked) = picked else {
-		return Ok(serde_json::json!({ "ok": true, "canceled": true }));
-	};
-	let target = match picked {
-		tauri_plugin_dialog::FilePath::Path(p) => p,
-		tauri_plugin_dialog::FilePath::Url(_) => {
-			return Err("unsupported save location".into());
-		}
-	};
-
-	let app2 = app.clone();
-	let target2 = target.clone();
 	tauri::async_runtime::spawn_blocking(move || {
-		let bundle = runtime_log::collect_bundle(&app2);
-		std::fs::write(&target2, bundle).map_err(|e| format!("failed to write diagnostics: {e}"))
+		let Some(picked) = app
+			.dialog()
+			.file()
+			.set_file_name(format!("tau-diagnostics-{stamp}.log"))
+			.add_filter("Log", &["log", "txt"])
+			.blocking_save_file()
+		else {
+			return Ok(serde_json::json!({ "ok": true, "canceled": true }));
+		};
+		let target = match picked {
+			tauri_plugin_dialog::FilePath::Path(p) => p,
+			tauri_plugin_dialog::FilePath::Url(_) => {
+				return Err("unsupported save location".into());
+			}
+		};
+		let bundle = runtime_log::collect_bundle(&app);
+		std::fs::write(&target, bundle).map_err(|e| format!("failed to write diagnostics: {e}"))?;
+		Ok(serde_json::json!({
+			"ok": true,
+			"canceled": false,
+			"path": target.to_string_lossy().into_owned()
+		}))
 	})
 	.await
-	.map_err(|e| e.to_string())??;
-	Ok(serde_json::json!({
-		"ok": true,
-		"canceled": false,
-		"path": target.to_string_lossy().into_owned()
-	}))
+	.map_err(|e| e.to_string())?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

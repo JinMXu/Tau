@@ -374,21 +374,23 @@ pub fn move_session_to_aux(path: &Path, target_dir: &Path) -> Result<(), String>
 }
 
 #[tauri::command]
-pub fn pi_archive_session(state: State<'_, PiState>, path: String) -> Result<(), String> {
+pub async fn pi_archive_session(state: State<'_, PiState>, path: String) -> Result<(), String> {
 	let p = require_session_path(Path::new(&path))?;
 	if is_running_session(&state, &p) {
 		return Err("stop the running session before archiving it".into());
 	}
-	move_session_to_aux(&p, &archive_dir())
+	// The move can be hundreds of MB on a slow or OneDrive-synced disk, so it
+	// runs on the blocking pool like pi_compact / pi_list_sessions.
+	run_blocking(move || move_session_to_aux(&p, &archive_dir())).await
 }
 
 #[tauri::command]
-pub fn pi_delete_session(state: State<'_, PiState>, path: String) -> Result<(), String> {
+pub async fn pi_delete_session(state: State<'_, PiState>, path: String) -> Result<(), String> {
 	let p = require_session_path(Path::new(&path))?;
 	if is_running_session(&state, &p) {
 		return Err("stop the running session before deleting it".into());
 	}
-	move_session_to_aux(&p, &trash_dir())
+	run_blocking(move || move_session_to_aux(&p, &trash_dir())).await
 }
 
 #[tauri::command]
@@ -436,8 +438,15 @@ pub async fn pi_list_archived_sessions() -> Result<Vec<PiArchivedSession>, Strin
 }
 
 #[tauri::command]
-pub fn pi_restore_session(path: String) -> Result<(), String> {
-	let path = PathBuf::from(&path);
+pub async fn pi_restore_session(path: String) -> Result<(), String> {
+	run_blocking(move || restore_session_inner(&path)).await
+}
+
+/// Body of `pi_restore_session`, factored out so the command can run it on the
+/// blocking pool: the move is a session file (frequently image-heavy and
+/// hundreds of MB) crossing a disk boundary on rename.
+pub fn restore_session_inner(path: &str) -> Result<(), String> {
+	let path = PathBuf::from(path);
 	let full = std::fs::canonicalize(&path)
 		.map_err(|e| format!("session not found: {}: {e}", path.display()))?;
 	let in_archive = canonical_dir(&archive_dir()).is_some_and(|d| full.starts_with(&d));
@@ -487,8 +496,14 @@ pub fn pi_restore_session(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn pi_purge_session(path: String) -> Result<(), String> {
-	let path = PathBuf::from(&path);
+pub async fn pi_purge_session(path: String) -> Result<(), String> {
+	// Same blocking-pool rationale as pi_restore_session: a synced session
+	// directory makes even a delete take visible time on the main thread.
+	run_blocking(move || purge_session_inner(&path)).await
+}
+
+pub fn purge_session_inner(path: &str) -> Result<(), String> {
+	let path = PathBuf::from(path);
 	let full = std::fs::canonicalize(&path)
 		.map_err(|e| format!("session not found: {}: {e}", path.display()))?;
 	let in_archive = canonical_dir(&archive_dir()).is_some_and(|d| full.starts_with(&d));

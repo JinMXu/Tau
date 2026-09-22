@@ -325,8 +325,7 @@ mod tests {
 		// local/LAN routers, so a public address fails whether or not a key is
 		// stored (the error stays the same).
 		let err = llama_curl_args("https://attacker.example", &None, "/v1/models")
-			.err()
-			.expect("a public host must be refused even without a key");
+			.expect_err("a public host must be refused even without a key");
 		assert!(err.contains("local or private-network"));
 	}
 
@@ -786,9 +785,10 @@ mod tests {
 		assert!(archived.exists());
 		assert!(move_session_to_aux(&archived, &archive_dir()).is_err());
 
-		// Restore: only archive/trash paths are accepted.
-		assert!(pi_restore_session(outside.to_string_lossy().into_owned()).is_err());
-		pi_restore_session(archived.to_string_lossy().into_owned()).unwrap();
+		// Restore: only archive/trash paths are accepted. The commands are thin
+		// async wrappers; the tests drive the inner bodies directly.
+		assert!(restore_session_inner(&outside.to_string_lossy()).is_err());
+		restore_session_inner(&archived.to_string_lossy()).unwrap();
 		assert!(session.exists());
 		assert!(!archived.exists());
 
@@ -796,8 +796,8 @@ mod tests {
 		move_session_to_aux(&session, &trash_dir()).unwrap();
 		let trashed = trash_dir().join("abc.jsonl");
 		assert!(trashed.exists());
-		assert!(pi_purge_session(session.to_string_lossy().into_owned()).is_err());
-		pi_purge_session(trashed.to_string_lossy().into_owned()).unwrap();
+		assert!(purge_session_inner(&session.to_string_lossy()).is_err());
+		purge_session_inner(&trashed.to_string_lossy()).unwrap();
 		assert!(!trashed.exists());
 
 		let _ = std::fs::remove_file(&outside);
