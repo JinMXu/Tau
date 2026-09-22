@@ -85,7 +85,7 @@ const { builtInExtensions } = await import(pathToFileURL(join(distDir, "extensio
 const { applyHttpProxySettings, configureHttpDispatcher } = await import(pathToFileURL(join(distDir, "core/http-dispatcher.js")));
 const { formatNoModelsAvailableMessage } = await import(pathToFileURL(join(distDir, "core/auth-guidance.js")));
 const { runMigrations } = await import(pathToFileURL(join(distDir, "migrations.js")));
-const { theme } = await import(pathToFileURL(join(distDir, "modes/interactive/theme/theme.js")));
+const { initTheme, theme } = await import(pathToFileURL(join(distDir, "modes/interactive/theme/theme.js")));
 const { killTrackedDetachedChildren } = await import(pathToFileURL(join(distDir, "utils/shell.js")));
 
 // --- startup configuration from env ------------------------------------------
@@ -96,6 +96,10 @@ const offlineMode = process.env.PI_OFFLINE === "1" || process.env.PI_OFFLINE ===
 runMigrations(cwd);
 
 const startupSettingsManager = pi.SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+// pi >= 0.87 backs `theme` with a Proxy that throws until initTheme() runs;
+// extension resource loading (MCP init) reads it, so initialize before any
+// session services exist. No file watcher in a headless host.
+initTheme(startupSettingsManager.getTheme(), false);
 applyHttpProxySettings(startupSettingsManager.getGlobalSettings().httpProxy);
 configureHttpDispatcher();
 

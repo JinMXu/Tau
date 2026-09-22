@@ -41,7 +41,7 @@ import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
 
-const PI_VERSION_DEFAULT = "0.84.3";
+const PI_VERSION_DEFAULT = "0.87.0";
 // LTS, ≥20 required by pi. Floor is v22.15.0: zlib gained zstd support there
 // (zlib.createZstdDecompress), and pi's HTTP client dies with an unhandled
 // `TypeError: zlib.createZstdDecompress is not a function` as soon as any
