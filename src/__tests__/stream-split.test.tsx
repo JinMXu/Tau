@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Guards the stream/committed split (see App.tsx): the in-flight message must\n// render, keep its DOM node when it is committed, and leave the committed rows\n// untouched while tokens stream.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MessageList } from "../components/MessageList";
@@ -25,11 +25,25 @@ let render: (
 	extra?: { searchQuery?: string; searchActiveMessageId?: number | null },
 ) => Promise<void>;
 let container: HTMLElement;
+let root: ReturnType<typeof createRoot> | null = null;
+
+// Unmount between tests: a root left mounted keeps React's scheduler armed,
+// and a pending task can fire after happy-dom tore the window down — which
+// surfaces as an unhandled "window is not defined" that fails the whole run
+// even though every assertion passed. Matches the pattern in
+// message-actions.test.tsx / preview-ticker.test.tsx.
+afterEach(async () => {
+	await act(async () => {
+		root?.unmount();
+	});
+	root = null;
+	container.remove();
+});
 
 async function mount() {
 	container = document.createElement("div");
 	document.body.appendChild(container);
-	const root = createRoot(container);
+	root = createRoot(container);
 	const Host = ({
 		messages,
 		stream,
@@ -57,8 +71,10 @@ async function mount() {
 		</div>
 	);
 	render = async (messages, stream, streaming = stream !== null, extra) => {
+		const current = root;
+		if (!current) throw new Error("mount() was not called");
 		await act(async () => {
-			root.render(
+			current.render(
 				<Host
 					messages={messages}
 					stream={stream}
