@@ -127,20 +127,26 @@ fn write_cache(path: &Path, info: &UpdateInfo) -> std::io::Result<()> {
 /// Query the GitHub Releases API and build an `UpdateInfo` for the running
 /// version. Network/parse errors bubble up as readable strings.
 fn fetch_latest(current: &str) -> Result<UpdateInfo, String> {
-	let agent = ureq::AgentBuilder::new()
-		.timeout(HTTP_TIMEOUT)
-		.user_agent(&format!("Tau/{current} (+https://github.com/JinMXu/Tau)"))
-		.build();
+	// ureq 3: AgentBuilder became Agent::config_builder(), and header setting
+	// moved from .set() to .header().
+	let agent = ureq::Agent::new_with_config(
+		ureq::Agent::config_builder()
+			.timeout_global(Some(HTTP_TIMEOUT))
+			.user_agent(format!("Tau/{current} (+https://github.com/JinMXu/Tau)"))
+			.build(),
+	);
 	let res = agent
 		.get(RELEASE_API)
-		.set("Accept", "application/vnd.github+json")
+		.header("Accept", "application/vnd.github+json")
 		.call()
 		.map_err(|e| match e {
-			ureq::Error::Status(code, _) => format!("GitHub API returned HTTP {code}"),
+			ureq::Error::StatusCode(code) => format!("GitHub API returned HTTP {code}"),
 			e => format!("update request failed: {e}"),
 		})?;
+	// ureq 3: Response::into_json() became Body::read_json().
 	let body: serde_json::Value = res
-		.into_json()
+		.into_body()
+		.read_json()
 		.map_err(|e| format!("failed to parse release payload: {e}"))?;
 	let (tag, url, notes, published) =
 		parse_release(&body).ok_or("release payload missing tag_name")?;
