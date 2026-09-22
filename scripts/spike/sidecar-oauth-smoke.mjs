@@ -3,14 +3,14 @@
 // waits for the device_code event (proving notify() reaches oauth.status),
 // then cancels — no login is completed and no credential is written.
 //
-// Run with the vendored node from the repo root:
+// Run with the vendored node from the repo root (node.exe on Windows):
 //   src-tauri/resources/pi-runtime/node/node scripts/spike/sidecar-oauth-smoke.mjs
 
 import { spawn } from "node:child_process";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { requireVendoredNodeBin, root } from "./vendored-runtime.mjs";
 
-const root = resolve(new URL("../..", import.meta.url).pathname);
-const node = join(root, "src-tauri/resources/pi-runtime/node/node");
+const node = requireVendoredNodeBin();
 const script = join(root, "src-tauri/resources/agent-sidecar/sidecar.mjs");
 const pkgIndex = join(
 	root,
@@ -33,7 +33,12 @@ child.stdout.on("data", (chunk) => {
 		const line = buffer.slice(0, nl);
 		buffer = buffer.slice(nl + 1);
 		if (!line.trim()) continue;
-		const msg = JSON.parse(line);
+		let msg;
+		try {
+			msg = JSON.parse(line);
+		} catch {
+			continue;
+		}
 		const slot = pending.get(msg.id);
 		if (slot) {
 			pending.delete(msg.id);

@@ -1,16 +1,16 @@
 // Smoke test for src-tauri/resources/agent-sidecar/session-host.mjs: spawns it
 // on the vendored node with the TAU_* env contract and drives the RPC protocol
 // end-to-end (state, models, prompt roundtrip, bash, session switching).
-// Run from the repo root:
+// Run from the repo root (node.exe on Windows):
 //   src-tauri/resources/pi-runtime/node/node scripts/spike/session-host-smoke.mjs
 
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { requireVendoredNodeBin, root } from "./vendored-runtime.mjs";
 
-const root = resolve(new URL("../..", import.meta.url).pathname);
-const nodeBin = join(root, "src-tauri/resources/pi-runtime/node/node");
+const nodeBin = requireVendoredNodeBin();
 const hostScript = join(root, "src-tauri/resources/agent-sidecar/session-host.mjs");
 const pkgIndex = join(
 	root,

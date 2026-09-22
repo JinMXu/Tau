@@ -1,5 +1,5 @@
 // Stage-0 spike: verify the pi SDK covers everything Tau's session-host needs.
-// Run with the vendored node from the repo root:
+// Run with the vendored node from the repo root (node.exe on Windows):
 //   src-tauri/resources/pi-runtime/node/node scripts/spike/sdk-spike.mjs
 //
 // Each check prints PASS/FAIL. A real prompt is only attempted when a model
@@ -8,9 +8,9 @@
 import { pathToFileURL } from "node:url";
 import { mkdtempSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { root } from "./vendored-runtime.mjs";
 
-const root = resolve(new URL("../..", import.meta.url).pathname);
 const pkgIndex = join(
 	root,
 	"src-tauri/resources/pi-runtime/node_modules/@earendil-works/pi-coding-agent/dist/index.js",

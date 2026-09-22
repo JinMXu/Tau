@@ -2,18 +2,18 @@
 // package.list) against a real session file, talking to sidecar.mjs directly
 // over its JSONL stdio protocol.
 //
-// Run with the vendored node from the repo root:
+// Run with the vendored node from the repo root (node.exe on Windows):
 //   src-tauri/resources/pi-runtime/node/node scripts/spike/sidecar-methods-smoke.mjs [session.jsonl]
 //
-// With no argument, the newest ~/.pi/agent/sessions/&#42;&#42;/*.jsonl is used.
+// With no argument, the newest ~/.pi/agent/sessions/**/*.jsonl is used.
 
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { homedir, requireVendoredNodeBin, root } from "./vendored-runtime.mjs";
 
-const root = resolve(new URL("../..", import.meta.url).pathname);
-const node = join(root, "src-tauri/resources/pi-runtime/node/node");
+const node = requireVendoredNodeBin();
 const script = join(root, "src-tauri/resources/agent-sidecar/sidecar.mjs");
 const pkgIndex = join(
 	root,
@@ -36,7 +36,7 @@ function newestSessionFile(dir) {
 }
 
 const sessionPath =
-	process.argv[2] ?? newestSessionFile(join(process.env.HOME, ".pi/agent/sessions"))?.path;
+	process.argv[2] ?? newestSessionFile(join(homedir(), ".pi/agent/sessions"))?.path;
 if (!sessionPath || !existsSync(sessionPath)) {
 	console.error("no session file found — pass one as argv[2]");
 	process.exit(1);
@@ -58,7 +58,14 @@ child.stdout.on("data", (chunk) => {
 		const line = buffer.slice(0, nl);
 		buffer = buffer.slice(nl + 1);
 		if (!line.trim()) continue;
-		const msg = JSON.parse(line);
+		// A sidecar that dies mid-line (or prints a warning to stdout) would
+		// otherwise crash the smoke script with an opaque JSON error.
+		let msg;
+		try {
+			msg = JSON.parse(line);
+		} catch {
+			continue;
+		}
 		const slot = pending.get(msg.id);
 		if (slot) {
 			pending.delete(msg.id);
@@ -67,10 +74,24 @@ child.stdout.on("data", (chunk) => {
 	}
 });
 
-function call(method, params) {
+function call(method, params, timeoutMs = 60_000) {
 	const id = nextId++;
 	return new Promise((resolvePromise, reject) => {
-		pending.set(id, { resolve: resolvePromise, reject });
+		// A hung sidecar must fail the script, not wedge it forever.
+		const timer = setTimeout(() => {
+			pending.delete(id);
+			reject(new Error(`call ${method} timed out after ${timeoutMs}ms`));
+		}, timeoutMs);
+		pending.set(id, {
+			resolve: (value) => {
+				clearTimeout(timer);
+				resolvePromise(value);
+			},
+			reject: (error) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		});
 		child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
 	});
 }
