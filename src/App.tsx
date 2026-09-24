@@ -655,7 +655,7 @@ export default function App() {
 	// The write back to localStorage is handled by usePersistedState.
 	useEffect(() => {
 		setSendDuringRun(settings.sendDuringRunMode === "queue" ? "followUp" : "steer");
-	}, [settings.sendDuringRunMode]);
+	}, [settings.sendDuringRunMode, setSendDuringRun]);
 
 	// Rebuild the native menu when the interface language changes.
 	useEffect(() => {
@@ -1976,7 +1976,7 @@ useEffect(() => {
 				/* history is best-effort; the connection is already up */
 			});
 		},
-		[loadHistory, refreshStats],
+		[loadHistory, refreshStats, clearTranscript],
 	);
 
 	const connect = useCallback(
@@ -2202,6 +2202,7 @@ useEffect(() => {
 			workspace,
 			loadHistory,
 			refreshStats,
+			clearTranscript,
 			settings.systemPrompt,
 			settings.appendSystemPrompt,
 			settings.customTools,
@@ -2276,7 +2277,7 @@ useEffect(() => {
 		} else {
 			void connect({ sessionFile: null, workspace: ws });
 		}
-	}, [connected, busy, connect, disconnect, toast, t]);
+	}, [connected, busy, connect, toast, t, clearTranscript]);
 
 	const selectWorkspace = useCallback(
 		(ws: string) => {
@@ -2295,7 +2296,7 @@ useEffect(() => {
 				void connect({ sessionFile: null, workspace: ws });
 			}
 		},
-		[connected, busy, connect, disconnect, toast, t],
+		[connected, busy, connect, toast, t, clearTranscript],
 	);
 
 	// Workspaces shown in the composer picker: recent picks first, then any
@@ -2329,7 +2330,7 @@ useEffect(() => {
 		await disconnect();
 		clearTranscript();
 		await connect({ sessionFile: null });
-	}, [connect, disconnect, pendingSession, toast, t]);
+	}, [connect, disconnect, pendingSession, toast, t, clearTranscript]);
 
 	// New task pinned to a specific project dir (sidebar project "+"). Same
 	// fresh-task guard as newTask, but only when we're already on a blank
@@ -2349,7 +2350,16 @@ useEffect(() => {
 				await connect({ sessionFile: null, workspace: ws });
 			})();
 		},
-		[connect, disconnect, pendingSession, workspace, toast, t],
+		[
+			connect,
+			disconnect,
+			pendingSession,
+			workspace,
+			toast,
+			t,
+			clearTranscript,
+			setExpandedProjects,
+		],
 	);
 
 	const openSession = useCallback(
@@ -2506,7 +2516,7 @@ useEffect(() => {
 		};
 		// Re-run per displayed channel: each concurrent session is its own pi
 		// process with its own model list, thinking levels, stats and settings.
-	}, [connected, activeChan, handleResponse]);
+	}, [connected, activeChan, handleResponse, setModel, setThinkingLevel]);
 
 	// ---- actions ----
 	const changeModel = useCallback(
@@ -2526,7 +2536,7 @@ useEffect(() => {
 				setError(String(e));
 			}
 		},
-		[handleResponse, refreshStats],
+		[handleResponse, refreshStats, setModel],
 	);
 
 	const changeThinkingLevel = useCallback(async (level: string) => {
@@ -2536,7 +2546,7 @@ useEffect(() => {
 		} catch (e) {
 			setError(String(e));
 		}
-	}, []);
+	}, [setThinkingLevel]);
 
 	// Cycle to the next available model (TUI Ctrl+P). The RPC command only
 	// cycles forward; the response carries the new model (or null when there
@@ -2555,7 +2565,7 @@ useEffect(() => {
 		} catch (e) {
 			setError(String(e));
 		}
-	}, [connected, handleResponse, refreshStats]);
+	}, [connected, handleResponse, refreshStats, setModel]);
 
 	// Cycle to the next thinking level (TUI Shift+Tab).
 	const cycleThinkingLevel = useCallback(async () => {
@@ -2567,7 +2577,7 @@ useEffect(() => {
 		} catch (e) {
 			setError(String(e));
 		}
-	}, [connected, handleResponse, setSessionInfoData, setSessionInfoOpen, setError]);
+	}, [connected, handleResponse, setError, setThinkingLevel]);
 
 	// Ask the user for the selected provider's API key when it's missing,
 	// right in the chat. Returns true when sending may proceed.
@@ -3114,7 +3124,7 @@ useEffect(() => {
 		setPinnedSessions((prev) =>
 			prev.includes(path) ? prev.filter((p) => p !== path) : [path, ...prev],
 		);
-	}, []);
+	}, [setPinnedSessions]);
 
 
 	const revealCurrent = useCallback(async () => {
@@ -3171,7 +3181,7 @@ useEffect(() => {
 				setError(String(e));
 			}
 		},
-		[handleResponse, refreshSessions, loadHistory, toast, t],
+		[handleResponse, refreshSessions, loadHistory, toast, t, clearTranscript],
 	);
 
 	// 消息分叉（轮次末尾 assistant）：pi 的 fork RPC 固定 position:"before"、
@@ -3209,7 +3219,7 @@ useEffect(() => {
 		} catch (e) {
 			setError(String(e));
 		}
-	}, [send, refreshSessions, loadHistory, toast, t]);
+	}, [refreshSessions, loadHistory, toast, t, clearTranscript, syncWorkingPaths]);
 
 	// ---- /tree: build the session tree from the JSONL file and open the
 	// navigator. The RPC get_tree is not used: pi serializes the tree as one
@@ -3294,7 +3304,7 @@ useEffect(() => {
 		clearTranscript();
 		await connect({ sessionFile: resume });
 		toast(t.chat.reloaded);
-	}, [busy, disconnect, connect, toast, t]);
+	}, [busy, disconnect, connect, toast, t, clearTranscript]);
 
 	// Custom providers live in models.json, which pi reads at process start —
 	// the running session's model catalog is a snapshot that only a reconnect
@@ -3383,7 +3393,7 @@ useEffect(() => {
 		if (connected) setComposerFocusRequest((n) => n + 1);
 	}, [connected]);
 
-	const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), []);
+	const toggleSidebar = useCallback(() => setSidebarCollapsed((v) => !v), [setSidebarCollapsed]);
 
 	// Central opener: `page` picks the initial settings page (menu commands
 	// jump to About); null means the panel's default (General).
@@ -3548,7 +3558,19 @@ useEffect(() => {
 		};
 		window.addEventListener("keydown", onKeyDown);
 		return () => window.removeEventListener("keydown", onKeyDown);
-	}, [newTask, toggleSidebar, focusComposer, archiveCurrent, busy, toast, t, cycleModel, navGo, toggleSearch]);
+	}, [
+		newTask,
+		toggleSidebar,
+		focusComposer,
+		archiveCurrent,
+		busy,
+		toast,
+		t,
+		cycleModel,
+		navGo,
+		toggleSearch,
+		toggleSettings,
+	]);
 
 	// ---- sidebar resize ----
 	const resizeRef = useRef<{ startX: number; startW: number } | null>(null);
@@ -3581,7 +3603,7 @@ useEffect(() => {
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onUp);
 		},
-		[sidebarWidth],
+		[sidebarWidth, setSidebarWidth],
 	);
 
 	const openSessionDir = useCallback(async () => {
