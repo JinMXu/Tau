@@ -1,4 +1,3 @@
-use super::pi_process::CREATE_NO_WINDOW_KILL;
 use super::session_store::{canonical_or, home_dir};
 use super::util::{
 	no_console_window, run_blocking, system_command, unique_suffix, unix_ms, write_private,
@@ -6,7 +5,7 @@ use super::util::{
 
 use std::{
 	path::{Path, PathBuf},
-	process::{Child, Command, Stdio},
+	process::{Child, Command},
 	thread,
 	time::Duration,
 };
@@ -472,7 +471,9 @@ pub fn wait_editor_with_timeout(
 		Err(_) => {
 			#[cfg(windows)]
 			{
+				use super::pi_process::CREATE_NO_WINDOW_KILL;
 				use std::os::windows::process::CommandExt;
+				use std::process::Stdio;
 				let mut taskkill = system_command("taskkill");
 				let _ = taskkill
 					.args(["/PID", &pid.to_string(), "/T", "/F"])

@@ -1,6 +1,6 @@
 use super::session_ops::{cap_strings, slim_get_tree_payload};
 use super::session_store::{canonical_or, default_session_dir, require_session_path};
-use super::util::{run_blocking, system_command};
+use super::util::run_blocking;
 
 use std::collections::HashMap;
 use std::{
@@ -759,6 +759,7 @@ impl PiProcess {
 			// the node child, so kill the whole process tree on Windows.
 			#[cfg(windows)]
 			{
+				use super::util::system_command;
 				use std::os::windows::process::CommandExt;
 				let mut taskkill = system_command("taskkill");
 				let _ = taskkill
