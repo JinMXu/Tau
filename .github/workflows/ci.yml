@@ -60,6 +60,23 @@ jobs:
           --ignore RUSTSEC-2025-0081 --ignore RUSTSEC-2025-0098
           --ignore RUSTSEC-2025-0100
 
+  backend-macos:
+    name: Backend (macOS compile)
+    # The release workflow used to be the only place that ever compiled for
+    # macOS, so a macOS-only compile error — e.g. a `#[cfg(windows)]` item
+    # imported unconditionally — stayed green here and only surfaced after
+    # tagging (v0.1.5 shipped Windows-only because of exactly that). A
+    # `cargo check` of the lib exercises the cfg(unix) / cfg(target_os =
+    # "macos") code paths without paying for a full bundle.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cargo check --manifest-path src-tauri/Cargo.toml --lib
+
   protocol:
     name: Protocol (session-host RPC suite)
     # The suite spawns the vendored runtime, so vendor:pi must run first —

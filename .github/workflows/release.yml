@@ -40,7 +40,10 @@ jobs:
           - label: macOS arm64
             platform: macos-latest
           - label: macOS x64
-            platform: macos-13
+            # macos-13 was retired on 2025-12-04: the job sat queued forever
+            # (never assigned a runner), so no Intel dmg was ever published.
+            # macos-15-intel is the GA Intel image.
+            platform: macos-15-intel
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
