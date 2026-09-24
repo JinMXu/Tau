@@ -410,10 +410,15 @@ export function SelectItem({
   const selected = ctx.value === value;
   const label = typeof children === "string" ? children : value;
 
+  // Both callbacks are `useCallback(…, [])` in the provider, so this effect
+  // should only re-run when the item's own value/label changes. Naming them
+  // locally also stops `exhaustive-deps` from demanding the whole context
+  // object, whose identity changes far more often (open, labels, placement…).
+  const { register, unregister } = ctx;
   useLayoutEffect(() => {
-    ctx.register(value, label);
-    return () => ctx.unregister(value);
-  }, [ctx.register, ctx.unregister, value, label]);
+    register(value, label);
+    return () => unregister(value);
+  }, [register, unregister, value, label]);
 
   return (
     <motion.li variants={ctx.reduce ? undefined : ITEM_VARIANTS}>

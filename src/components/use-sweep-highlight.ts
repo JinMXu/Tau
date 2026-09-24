@@ -58,13 +58,14 @@ export function useSweepHighlight(
 		if (!enabled) return;
 		if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 		const label = labelRef.current;
+		const wrap = wrapRef.current;
 		if (!label) return;
 		// 光带中心（视口绝对 x）；NaN = 首帧初始化：放在并集左界外（光带完全不可见处）起步
 		let centerAbs = Number.NaN;
 		const paint = () => {
 			// 切换动画期间新旧两行并存：全部纳入（同 x 位置堆叠，新行立即有扫光）
 			const nameEls = Array.from(
-				wrapRef.current?.querySelectorAll<HTMLElement>("[data-shimmer-name]") ?? [],
+				wrap?.querySelectorAll<HTMLElement>("[data-shimmer-name]") ?? [],
 			);
 			const targets: HTMLElement[] = [label, ...nameEls];
 			const pairs = targets.map((el) => ({ el, rect: el.getBoundingClientRect() }));
@@ -99,9 +100,11 @@ export function useSweepHighlight(
 		return () => {
 			cancelAnimationFrame(raf);
 			paintRef.current = () => {};
+			// 用 effect 开头捕获的节点，而不是重读 ref：cleanup 要清的是这个
+			// effect 自己画上去的样式，重读 ref 会拿到（可能已换掉的）当前节点。
 			clearSweepStyles([
-				labelRef.current,
-				...Array.from(wrapRef.current?.querySelectorAll<HTMLElement>("[data-shimmer-name]") ?? []),
+				label,
+				...Array.from(wrap?.querySelectorAll<HTMLElement>("[data-shimmer-name]") ?? []),
 			]);
 		};
 	}, [enabled]);

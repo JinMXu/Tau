@@ -76,15 +76,15 @@ export function PreviewTicker({
 		setSnap((current) =>
 			current.currentId === next.currentId && current.switchAt === next.switchAt ? current : next,
 		);
-	}, [slots]);
+	}, [slots, ticker]);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: ticker 实例跨渲染恒定
+	// ticker 实例跨渲染恒定（useState 只初始化一次），列进依赖不会让 effect 重跑
 	useEffect(() => {
 		if (!snap.switchAt) return;
 		const delay = Math.max(0, snap.switchAt - Date.now());
 		const timer = setTimeout(() => setSnap(ticker.tick(Date.now())), delay);
 		return () => clearTimeout(timer);
-	}, [snap]);
+	}, [snap, ticker]);
 
 	const live = snap.currentId ? items.find((item) => item.id === snap.currentId) : undefined;
 	const desired = live ?? null;
